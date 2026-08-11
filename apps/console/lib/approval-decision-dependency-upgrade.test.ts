@@ -14,11 +14,16 @@ vi.mock("@agentrail/db-postgres", () => ({
 vi.mock("./dependency-upgrade-publisher", () => ({
   publishDependencyUpgradeIssue: vi.fn(),
 }));
+vi.mock("./alignment-brief", () => ({
+  extractConfirmedBudgetAndModel: vi.fn(),
+}));
 
 import {
   decideDependencyUpgradeContract,
   enqueueGithubIssue,
   getDependencyUpgradeContractById,
+  recordDependencyUpgradeContractEvent,
+  setDependencyUpgradeContractState,
   stampPublishedIssueUrl,
 } from "@agentrail/db-postgres";
 import { publishDependencyUpgradeIssue } from "./dependency-upgrade-publisher";
@@ -53,6 +58,14 @@ const approval = {
   queueEntryId: null,
 };
 
+function expectNoLegacyDeliverySideEffects() {
+  expect(publishDependencyUpgradeIssue).not.toHaveBeenCalled();
+  expect(stampPublishedIssueUrl).not.toHaveBeenCalled();
+  expect(enqueueGithubIssue).not.toHaveBeenCalled();
+  expect(setDependencyUpgradeContractState).not.toHaveBeenCalled();
+  expect(recordDependencyUpgradeContractEvent).not.toHaveBeenCalled();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getDependencyUpgradeContractById).mockResolvedValue(contract as never);
@@ -60,18 +73,14 @@ beforeEach(() => {
     status: "approved",
     contract: { ...contract, state: "approved" },
   } as never);
-  vi.mocked(publishDependencyUpgradeIssue).mockResolvedValue({
-    url: "https://github.com/acme/widgets/issues/42",
-    number: 42,
-    body: "body",
-    repoFullName: "acme/widgets",
-  });
-  vi.mocked(stampPublishedIssueUrl).mockResolvedValue("stamped");
+  vi.mocked(publishDependencyUpgradeIssue).mockRejectedValue(
+    new Error("legacy publisher must never be reached")
+  );
 });
 
-describe("dependency upgrade approval side effect", () => {
-  it("publishes and admits only after the persisted contract decision is approved", async () => {
-    await applyAlignmentDecision(approval as never, "approved", {
+describe("legacy dependency upgrade approval quarantine", () => {
+  it("records approval truth but never publishes or queues legacy dependency work", async () => {
+    const result = await applyAlignmentDecision(approval as never, "approved", {
       actorType: "console_user",
       actorId: "user-1",
     });
@@ -83,29 +92,64 @@ describe("dependency upgrade approval side effect", () => {
       decision: "approved",
       actor: { actorType: "console_user", actorId: "user-1" },
     }));
-    expect(publishDependencyUpgradeIssue).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: "ws-1",
-      repositoryId: "repo-1",
-      candidate: expect.objectContaining({ fingerprint: contract.candidateFingerprint }),
+    expect(result).toEqual({
+      kind: "dependency_contract_quarantined",
+      decision: "approved",
+      contractId: "contract-1",
+      reason: "legacy_dependency_contract_requires_r10_2_pack",
+      resolution: "approved",
+    });
+    expectNoLegacyDeliverySideEffects();
+  });
+
+  it("retains denied and replayed decision truth without external side effects", async () => {
+    vi.mocked(decideDependencyUpgradeContract).mockResolvedValue({
+      status: "already_resolved",
+      contract: { ...contract, state: "refused" },
+    } as never);
+
+    const result = await applyAlignmentDecision(approval as never, "denied");
+
+    expect(result).toEqual(expect.objectContaining({
+      kind: "dependency_contract_quarantined",
+      decision: "denied",
+      resolution: "already_resolved",
     }));
-    expect(stampPublishedIssueUrl).toHaveBeenCalledWith("approval-1", "https://github.com/acme/widgets/issues/42");
-    expect(enqueueGithubIssue).toHaveBeenCalledWith(expect.objectContaining({ number: 42 }));
+    expectNoLegacyDeliverySideEffects();
   });
 
-  it("does not publish a refusal", async () => {
-    vi.mocked(decideDependencyUpgradeContract).mockResolvedValue({ status: "refused", contract: { ...contract, state: "refused" } } as never);
-    await applyAlignmentDecision(approval as never, "denied");
-    expect(publishDependencyUpgradeIssue).not.toHaveBeenCalled();
-    expect(enqueueGithubIssue).not.toHaveBeenCalled();
-  });
-
-  it("rejects an approval whose request payload disagrees with the persisted binding", async () => {
-    await applyAlignmentDecision({
+  it("quarantines an invalid persisted binding without resolving or delivering it", async () => {
+    const result = await applyAlignmentDecision({
       ...approval,
       toolInput: { contractId: "contract-other" },
     } as never, "approved");
+
+    expect(result).toEqual({
+      kind: "dependency_contract_quarantined",
+      decision: "approved",
+      contractId: "contract-1",
+      reason: "legacy_dependency_contract_binding_is_invalid",
+    });
     expect(getDependencyUpgradeContractById).not.toHaveBeenCalled();
     expect(decideDependencyUpgradeContract).not.toHaveBeenCalled();
-    expect(publishDependencyUpgradeIssue).not.toHaveBeenCalled();
+    expectNoLegacyDeliverySideEffects();
+  });
+
+  it("quarantines missing or cross-workspace contracts and never reaches the publisher", async () => {
+    vi.mocked(getDependencyUpgradeContractById).mockResolvedValue({
+      ...contract,
+      workspaceId: "workspace-other",
+    } as never);
+
+    const result = await applyAlignmentDecision(approval as never, "approved");
+
+    expect(result).toEqual({
+      kind: "dependency_contract_quarantined",
+      decision: "approved",
+      contractId: "contract-1",
+      reason: "legacy_dependency_contract_is_unavailable",
+    });
+    expect(decideDependencyUpgradeContract).not.toHaveBeenCalled();
+    expectNoLegacyDeliverySideEffects();
   });
 });

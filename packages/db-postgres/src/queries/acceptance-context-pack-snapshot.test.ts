@@ -361,7 +361,37 @@ describe("R8.1 correction packet identity reused by Context Pack custody", () =>
       ...contract,
       acceptanceCriteria: [{ ...contract.acceptanceCriteria[0]!, modality: "api" }],
     })).toMatchObject({ acceptanceCriteria: [{ id: "AC-1", modality: "api" }] });
-    expect(projectConfirmedAcceptanceContract({ ...contract, risks: ["Bearer ghp_secret"] })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      risks: ["Bearer ghp_abcdefghijklmnopqrstuvwxyz123456"],
+    })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      originalRequest: "api_key=abcdefghijk12345",
+    })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      acceptanceCriteria: [{
+        ...contract.acceptanceCriteria[0]!,
+        text: "authorization: supersecret",
+      }],
+    })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      environment: { authorization: "abcdefghijk12345" },
+    })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      environment: { "api_key=abcdefghijk12345": "masked" },
+    })).toBeNull();
+    expect(projectConfirmedAcceptanceContract({
+      ...contract,
+      originalRequest: "The authorization step requires an owner.",
+      environment: { authorization: "The owner must approve this request." },
+    })).toMatchObject({
+      originalRequest: "The authorization step requires an owner.",
+      environment: { authorization: "The owner must approve this request." },
+    });
   });
 
   it.each([
@@ -376,9 +406,26 @@ describe("R8.1 correction packet identity reused by Context Pack custody", () =>
       ...correctionPacket.affectedContext,
       reproduction: { modality: "api", request: { method: "POST", path: "/health", expectedStatus: 200 } },
     } },
-    { ...correctionPacket, observed: "Bearer ghp_secret" },
+    { ...correctionPacket, observed: "Bearer ghp_abcdefghijklmnopqrstuvwxyz123456" },
+    { ...correctionPacket, observed: "authorization: Bearer abcdefghijklmnopqrstuvwxyz" },
+    { ...correctionPacket, requiredCorrection: "Replace token=abcdefghijk12345 before retrying." },
+    { ...correctionPacket, impact: "The response exposed api_key=abcdefghijk12345." },
+    { ...correctionPacket, evidence: {
+      ...correctionPacket.evidence,
+      evidenceRef: "github_pat_abcdefghijklmnopqrstuvwxyz123456",
+    } },
+    { ...correctionPacket, reverification:
+      "Check eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N" },
     { ...correctionPacket, extra: "widened" },
   ])("rejects a partial, forged, widened, or secret-bearing packet envelope", (packet) => {
     expect(validateReviewJobCorrectionPacketPayload(packet)).toBe(false);
+  });
+
+  it("does not reject ordinary credential-related correction prose", () => {
+    expect(validateReviewJobCorrectionPacketPayload({
+      ...correctionPacket,
+      observed: "The authorization step did not complete.",
+      requiredCorrection: "Reset the password field and rerun the exact check.",
+    })).toBe(true);
   });
 });

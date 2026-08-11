@@ -24,6 +24,7 @@ import {
 import {
   resolveReviewJobResult,
 } from "./review-job-job-execution";
+import { scanForSecrets } from "./secret-scan";
 
 export type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
 
@@ -112,18 +113,24 @@ export function parseCriterionResults(value: unknown): CriterionResult[] | null 
     const expected = nonBlank(item.expected);
     const observed = nonBlank(item.observed);
     const state = item.state;
+    const evidenceRefs = stringArray(item.evidenceRefs)
+      ? item.evidenceRefs.map((reference) => reference.trim())
+      : null;
     if (
       !criterionId ||
       ids.has(criterionId) ||
       !expected ||
       !observed ||
       !CRITERION_STATES.has(state as CriterionState) ||
-      !stringArray(item.evidenceRefs) ||
-      item.evidenceRefs.some((reference) => !nonBlank(reference))
+      !evidenceRefs ||
+      evidenceRefs.some((reference) => !reference) ||
+      [criterionId, expected, observed, ...evidenceRefs].some(
+        (text) => !scanForSecrets(text).clean,
+      )
     ) {
       return null;
     }
-    if (state !== "not_testable" && item.evidenceRefs.length === 0) {
+    if (state !== "not_testable" && evidenceRefs.length === 0) {
       return null;
     }
     ids.add(criterionId);
@@ -132,7 +139,7 @@ export function parseCriterionResults(value: unknown): CriterionResult[] | null 
       state: state as CriterionState,
       expected,
       observed,
-      evidenceRefs: item.evidenceRefs.map((reference) => reference.trim()),
+      evidenceRefs,
     });
   }
   return results;

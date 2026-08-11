@@ -403,6 +403,48 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
+  it("applies the shared secret scanner before storing or replaying a verification plan", async () => {
+    for (const flow of [
+      "bearer abcdefghijklmnopqrstuvwxyz",
+      "authorization: supersecret",
+      "token=abcdefghijk12345 before retrying",
+    ]) {
+      const plans = structuredClone(REQUEST_PLANS);
+      plans[0]!.flow = flow;
+      const response = await POST(
+        postReq({ eveSessionId: "eve-session-1", plans }),
+        params(),
+      );
+      expect(response.status).toBe(400);
+    }
+
+    const contract = confirmedVerificationContract([CONTRACT]);
+    expect(contract).not.toBeNull();
+    const unsafeStored = structuredClone(STORED_PAYLOAD);
+    unsafeStored.plans[0]!.flow = "api_key: supersecret";
+    expect(parseStoredReviewJobVerificationPlan({
+      payload: unsafeStored,
+      job: RUNNING_JOB,
+      recordId: RECORD.id,
+      contract: contract!,
+    })).toBeNull();
+
+    vi.mocked(readAcceptanceContracts).mockResolvedValueOnce([{
+      ...CONTRACT,
+      contract: {
+        acceptanceCriteria: [
+          { id: "AC-UI", text: "api_key=abcdefghijk12345", userVisible: true },
+          CONTRACT.contract.acceptanceCriteria[1],
+        ],
+      },
+    }] as never);
+    expect((await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: REQUEST_PLANS }),
+      params(),
+    )).status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
+  });
+
   it("keeps a legacy planned API payload without a descriptor readable but non-executable", () => {
     const legacyPayload = {
       ...STORED_PAYLOAD,

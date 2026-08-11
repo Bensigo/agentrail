@@ -4,6 +4,7 @@ import {
   getWorkspaceMembership,
   readCurrentAcceptanceCriterionOutcomeBundle,
 } from "@agentrail/db-postgres";
+import { containsSecretShapedValue } from "../../../../../../../../lib/secret-scan";
 
 function json(body: Record<string, unknown>, status = 200): NextResponse {
   return NextResponse.json(body, {
@@ -47,6 +48,12 @@ export async function GET(
     if (result.kind === "not_found") return json(result, 404);
     if (result.kind === "not_current" || result.kind === "not_ready") {
       return json(result, 409);
+    }
+    if (containsSecretShapedValue(result.bundle.outcomes)) {
+      return json({
+        kind: "not_ready",
+        reason: "invalid_criterion_outcome_custody",
+      }, 409);
     }
     return json(serializeDates(result) as Record<string, unknown>);
   } catch (error) {

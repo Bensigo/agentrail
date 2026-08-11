@@ -66,6 +66,10 @@ import {
   type AcceptanceGatedGithubIssuePacketIdentity,
   type AcceptanceGatedGithubIssueRenderBinding,
 } from "../acceptance-gated-github-issue-renderer.js";
+import {
+  criterionVisibleTextContainsSecret,
+  criterionVisibleValueContainsSecret,
+} from "./criterion-visible-secret-scan.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -3865,6 +3869,12 @@ function safeSnapshotText(value: unknown, max: number): value is string {
     && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value) && !SECRET_LIKE.test(value);
 }
 
+function safeCriterionSnapshotText(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value)
+    && !criterionVisibleTextContainsSecret(value);
+}
+
 function safeRepoPath(value: unknown): value is string {
   return safeSnapshotText(value, 512)
     && !value.startsWith("/")
@@ -4025,7 +4035,7 @@ function isCorrectionApiRequest(value: unknown): boolean {
   return isRecord(value)
     && hasExactKeys(value, ["method", "path", "expectedStatus"])
     && value["method"] === "GET"
-    && safeSnapshotText(value["path"], 2_048)
+    && safeCriterionSnapshotText(value["path"], 2_048)
     && Number.isInteger(value["expectedStatus"])
     && (value["expectedStatus"] as number) >= 100
     && (value["expectedStatus"] as number) <= 599;
@@ -4037,12 +4047,12 @@ function isCorrectionDataRequest(value: unknown): boolean {
       "method", "path", "expectedStatus", "digestAlgorithm", "digestKeyId", "digestContext", "expectedJson",
     ])
     || value["method"] !== "GET"
-    || !safeSnapshotText(value["path"], 2_048)
+    || !safeCriterionSnapshotText(value["path"], 2_048)
     || !Number.isInteger(value["expectedStatus"])
     || (value["expectedStatus"] as number) < 100
     || (value["expectedStatus"] as number) > 599
     || value["digestAlgorithm"] !== "hmac-sha256-v1"
-    || !safeSnapshotText(value["digestKeyId"], 64)
+    || !safeCriterionSnapshotText(value["digestKeyId"], 64)
     || typeof value["digestContext"] !== "string"
     || !EXACT_SHA256.test(value["digestContext"])
     || !Array.isArray(value["expectedJson"])
@@ -4051,7 +4061,7 @@ function isCorrectionDataRequest(value: unknown): boolean {
   ) return false;
   return value["expectedJson"].every((assertion) => isRecord(assertion)
     && hasExactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])
-    && safeSnapshotText(assertion["pointer"], 1_024)
+    && safeCriterionSnapshotText(assertion["pointer"], 1_024)
     && (assertion["equalsType"] === "null" || assertion["equalsType"] === "boolean"
       || assertion["equalsType"] === "number" || assertion["equalsType"] === "string")
     && typeof assertion["equalsHmacSha256"] === "string"
@@ -4071,7 +4081,7 @@ function isCorrectionReproduction(value: unknown, modality: string): boolean {
       || !hasExactKeys(value["request"], ["trigger", "readback"]) || !isRecord(value["request"]["trigger"])
       || !hasExactKeys(value["request"]["trigger"], ["method", "path", "expectedStatus"])
       || value["request"]["trigger"]["method"] !== "POST"
-      || !safeSnapshotText(value["request"]["trigger"]["path"], 2_048)
+      || !safeCriterionSnapshotText(value["request"]["trigger"]["path"], 2_048)
       || !Number.isInteger(value["request"]["trigger"]["expectedStatus"])
       || (value["request"]["trigger"]["expectedStatus"] as number) < 100
       || (value["request"]["trigger"]["expectedStatus"] as number) > 599
@@ -4083,13 +4093,18 @@ function isCorrectionReproduction(value: unknown, modality: string): boolean {
   return value["steps"].every((step) => {
     if (!isRecord(step) || typeof step["action"] !== "string") return false;
     switch (step["action"]) {
-      case "open": return hasExactKeys(step, ["action", "path"]) && safeSnapshotText(step["path"], 2_048);
-      case "click": return hasExactKeys(step, ["action", "selector"]) && safeSnapshotText(step["selector"], 2_048);
+      case "open": return hasExactKeys(step, ["action", "path"])
+        && safeCriterionSnapshotText(step["path"], 2_048);
+      case "click": return hasExactKeys(step, ["action", "selector"])
+        && safeCriterionSnapshotText(step["selector"], 2_048);
       case "fill": return hasExactKeys(step, ["action", "selector", "value"])
-        && safeSnapshotText(step["selector"], 2_048) && step["value"] === "[REDACTED_FILL]";
-      case "press": return hasExactKeys(step, ["action", "key"]) && safeSnapshotText(step["key"], 128);
-      case "expect_text": return hasExactKeys(step, ["action", "text"]) && safeSnapshotText(step["text"], 2_048);
-      case "screenshot": return hasExactKeys(step, ["action", "label"]) && safeSnapshotText(step["label"], 512);
+        && safeCriterionSnapshotText(step["selector"], 2_048) && step["value"] === "[REDACTED_FILL]";
+      case "press": return hasExactKeys(step, ["action", "key"])
+        && safeCriterionSnapshotText(step["key"], 128);
+      case "expect_text": return hasExactKeys(step, ["action", "text"])
+        && safeCriterionSnapshotText(step["text"], 2_048);
+      case "screenshot": return hasExactKeys(step, ["action", "label"])
+        && safeCriterionSnapshotText(step["label"], 512);
       default: return false;
     }
   });
@@ -4121,19 +4136,19 @@ export function validateReviewJobCorrectionPacketPayload(payload: unknown): payl
     || !isRecord(payload["criterion"])
     || !hasExactKeys(payload["criterion"], ["id", "snapshot"])
     || !safeSnapshotText(payload["criterion"]["id"], 512)
-    || !safeSnapshotText(payload["criterion"]["snapshot"], 2_000)
+    || !safeCriterionSnapshotText(payload["criterion"]["snapshot"], 2_000)
     || payload["basis"] !== "acceptance_contract"
     || (payload["state"] !== "failed" && payload["state"] !== "not_proven")
     || payload["expected"] !== payload["criterion"]["snapshot"]
-    || !safeSnapshotText(payload["expected"], 2_000)
-    || !safeSnapshotText(payload["observed"], 2_000)
+    || !safeCriterionSnapshotText(payload["expected"], 2_000)
+    || !safeCriterionSnapshotText(payload["observed"], 2_000)
     || !isRecord(payload["affectedContext"])
     || !hasExactKeys(payload["affectedContext"], ["modality", "environmentKind", "flow", "reproduction"])
     || (payload["affectedContext"]["modality"] !== "ui" && payload["affectedContext"]["modality"] !== "api"
       && payload["affectedContext"]["modality"] !== "data" && payload["affectedContext"]["modality"] !== "job")
     || (payload["affectedContext"]["environmentKind"] !== null
       && payload["affectedContext"]["environmentKind"] !== "isolated_preview")
-    || !safeSnapshotText(payload["affectedContext"]["flow"], 2_000)
+    || !safeCriterionSnapshotText(payload["affectedContext"]["flow"], 2_000)
     || !isCorrectionReproduction(
       payload["affectedContext"]["reproduction"],
       payload["affectedContext"]["modality"] as string
@@ -4143,14 +4158,17 @@ export function validateReviewJobCorrectionPacketPayload(payload: unknown): payl
       key === "evidenceRef" || key === "artifactKey" || key === "executionId" || key === "previewBootId")
     || !hasOwn(payload["evidence"], "evidenceRef")
     || !hasOwn(payload["evidence"], "previewBootId")
-    || !safeSnapshotText(payload["evidence"]["evidenceRef"], 2_000)
-    || !safeSnapshotText(payload["evidence"]["previewBootId"], 512)
-    || (hasOwn(payload["evidence"], "artifactKey") && !safeSnapshotText(payload["evidence"]["artifactKey"], 2_000))
-    || (hasOwn(payload["evidence"], "executionId") && !safeSnapshotText(payload["evidence"]["executionId"], 512))
-    || !safeSnapshotText(payload["scopeBoundary"], 2_000)
-    || !safeSnapshotText(payload["impact"], 2_000)
-    || !safeSnapshotText(payload["requiredCorrection"], 2_000)
-    || !safeSnapshotText(payload["reverification"], 2_000)
+    || !safeCriterionSnapshotText(payload["evidence"]["evidenceRef"], 2_000)
+    || !safeCriterionSnapshotText(payload["evidence"]["previewBootId"], 512)
+    || (hasOwn(payload["evidence"], "artifactKey")
+      && !safeCriterionSnapshotText(payload["evidence"]["artifactKey"], 2_000))
+    || (hasOwn(payload["evidence"], "executionId")
+      && !safeCriterionSnapshotText(payload["evidence"]["executionId"], 512))
+    || !safeCriterionSnapshotText(payload["scopeBoundary"], 2_000)
+    || !safeCriterionSnapshotText(payload["impact"], 2_000)
+    || !safeCriterionSnapshotText(payload["requiredCorrection"], 2_000)
+    || !safeCriterionSnapshotText(payload["reverification"], 2_000)
+    || criterionVisibleValueContainsSecret(payload)
   ) return false;
   const criterionId = payload["criterion"]["id"] as string;
   return payload["packetId"] === reviewJobCorrectionPacketId({
@@ -7095,15 +7113,16 @@ function safeContractValue(value: unknown, depth = 0): boolean {
   if (depth > 4) return false;
   if (value === null || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string") return safeSnapshotText(value, 2_000);
+  if (typeof value === "string") return safeCriterionSnapshotText(value, 2_000);
   if (Array.isArray(value)) return value.length <= 64 && value.every((item) => safeContractValue(item, depth + 1));
   if (!isRecord(value) || Object.keys(value).length > 32) return false;
-  return Object.entries(value).every(([key, nested]) => safeSnapshotText(key, 128)
+  return Object.entries(value).every(([key, nested]) => safeCriterionSnapshotText(key, 128)
     && safeContractValue(nested, depth + 1));
 }
 
 function safeContractStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length <= 100 && value.every((item) => safeSnapshotText(item, 2_000));
+  return Array.isArray(value) && value.length <= 100
+    && value.every((item) => safeCriterionSnapshotText(item, 2_000));
 }
 
 /**
@@ -7116,7 +7135,7 @@ export function projectConfirmedAcceptanceContract(
   const criteria = contract["acceptanceCriteria"];
   const questions = contract["unresolvedQuestions"];
   const environment = contract["environment"];
-  if (!safeSnapshotText(contract["originalRequest"], 4_000)
+  if (!safeCriterionSnapshotText(contract["originalRequest"], 4_000)
     || !safeContractStringArray(contract["normalizedRequirements"])
     || !safeContractStringArray(contract["nonGoals"])
     || !safeContractStringArray(contract["risks"])
@@ -7128,7 +7147,8 @@ export function projectConfirmedAcceptanceContract(
   for (const criterion of criteria) {
     if (!isRecord(criterion) || !hasExactKeys(criterion, ["id", "text", "userVisible"])
       && !(isRecord(criterion) && hasExactKeys(criterion, ["id", "text", "userVisible", "modality"]))) return null;
-    if (!safeSnapshotText(criterion["id"], 512) || !safeSnapshotText(criterion["text"], 2_000)
+    if (!safeCriterionSnapshotText(criterion["id"], 512)
+      || !safeCriterionSnapshotText(criterion["text"], 2_000)
       || typeof criterion["userVisible"] !== "boolean"
       || (hasOwn(criterion, "modality") && criterion["modality"] !== "ui" && criterion["modality"] !== "api"
         && criterion["modality"] !== "data" && criterion["modality"] !== "job")) return null;
@@ -7141,10 +7161,21 @@ export function projectConfirmedAcceptanceContract(
   const projectedQuestions: AcceptanceConfirmedContractProjection["unresolvedQuestions"] = [];
   for (const question of questions) {
     if (!isRecord(question) || !hasExactKeys(question, ["id", "text"])
-      || !safeSnapshotText(question["id"], 512) || !safeSnapshotText(question["text"], 2_000)) return null;
+      || !safeCriterionSnapshotText(question["id"], 512)
+      || !safeCriterionSnapshotText(question["text"], 2_000)) return null;
     projectedQuestions.push({ id: question["id"], text: question["text"] });
   }
   if (new Set(projectedQuestions.map((question) => question.id)).size !== projectedQuestions.length) return null;
+  if (criterionVisibleValueContainsSecret({
+    originalRequest: contract["originalRequest"],
+    normalizedRequirements: contract["normalizedRequirements"],
+    acceptanceCriteria: projectedCriteria,
+    nonGoals: contract["nonGoals"],
+    risks: contract["risks"],
+    stops: contract["stops"],
+    environment,
+    unresolvedQuestions: projectedQuestions,
+  })) return null;
   return {
     originalRequest: contract["originalRequest"],
     normalizedRequirements: [...contract["normalizedRequirements"]],
@@ -18244,7 +18275,8 @@ function assertExactCriterionOutcomeWriteInput(
 
 function boundedCriterionText(value: unknown, max = 2_000): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max
-    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value)
+    && !criterionVisibleTextContainsSecret(value);
 }
 
 function criterionPlanPath(value: unknown): string | null {
@@ -18405,7 +18437,8 @@ function parseCriterionUiSteps(value: unknown): Record<string, unknown>[] | null
         if (!hasExactKeys(raw, ["action", "selector", "value"])
           || !boundedCriterionText(raw["selector"]) || typeof raw["value"] !== "string"
           || raw["value"] !== raw["value"].trim() || raw["value"].length > 2_000
-          || /[\u0000-\u001f\u007f]/u.test(raw["value"])) return null;
+          || /[\u0000-\u001f\u007f]/u.test(raw["value"])
+          || criterionVisibleTextContainsSecret(raw["value"])) return null;
         steps.push({ action: "fill", selector: raw["selector"], value: raw["value"] });
         break;
       case "press":

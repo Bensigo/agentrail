@@ -1434,6 +1434,95 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
       .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
   });
 
+  it("fails closed when member-visible plan or correction text is secret-shaped", async () => {
+    const unsafePlan = await createBundleFixture({
+      workspaceId,
+      workKey: "secret-shaped-plan",
+      prNumber: 228,
+      headSha: "a".repeat(40),
+      notTestable: true,
+    });
+    const planEvent = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, unsafePlan.recordId),
+      eq(changeRecordEvents.eventKey, unsafePlan.planEventKey),
+    )))[0]!;
+    const planPayload = structuredClone(planEvent.payloadRef);
+    (planPayload["plans"] as Record<string, unknown>[])[0]!["notTestableReason"] =
+      "authorization: Bearer abcdefghijklmnopqrstuvwxyz";
+    await db.update(changeRecordEvents).set({ payloadRef: planPayload })
+      .where(eq(changeRecordEvents.id, planEvent.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(unsafePlan)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
+
+    const safePlan = await createBundleFixture({
+      workspaceId,
+      workKey: "ordinary-plan-prose",
+      prNumber: 229,
+      headSha: "b".repeat(40),
+      notTestable: true,
+    });
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(safePlan)))
+      .resolves.toMatchObject({
+        kind: "recorded",
+        bundle: { outcomes: [{
+          state: "not_testable",
+          observed: "No bounded exact-head browser flow exists for this criterion.",
+        }] },
+      });
+
+    const unsafeCorrection = await replaceFixtureWithModality(await createBundleFixture({
+      workspaceId,
+      workKey: "secret-shaped-correction",
+      prNumber: 230,
+      headSha: "c".repeat(40),
+      contractModality: "job",
+    }), "job");
+    const correctionEvent = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, unsafeCorrection.recordId),
+      eq(changeRecordEvents.eventKey, `review:correction:${unsafeCorrection.jobId}:AC-1`),
+    )))[0]!;
+    await db.update(changeRecordEvents).set({
+      payloadRef: {
+        ...correctionEvent.payloadRef,
+        requiredCorrection: "Replace token=abcdefghijk12345 before retrying.",
+      },
+    }).where(eq(changeRecordEvents.id, correctionEvent.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(unsafeCorrection)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
+    await expect(readAcceptanceRecordDetail({
+      workspaceId,
+      recordId: unsafeCorrection.recordId,
+    })).resolves.toEqual({ kind: "unavailable", reason: "invalid_review_custody" });
+  });
+
+  it("does not project secret-shaped confirmed Contract text from an unattached Record", async () => {
+    const draft = await createDraftAcceptanceRecord({
+      workspaceId,
+      repo: REPO,
+      workKey: "unattached-secret-contract",
+      originChannel: "codex_mcp",
+      contract: {
+        ...contract(1),
+        originalRequest: "api_key=abcdefghijk12345",
+        environment: { authorization: "abcdefghijk12345" },
+      },
+      createdBy: "user:r112-secret-test",
+    });
+    await db.update(acceptanceContracts).set({
+      status: "confirmed",
+      confirmedBy: "console_user:r112-secret-test",
+      confirmedAt: new Date("2026-08-11T03:00:00.000Z"),
+    }).where(eq(acceptanceContracts.id, draft.contract.id));
+
+    await expect(readAcceptanceRecordDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({
+      kind: "unavailable",
+      reason: "confirmed_contract_unavailable",
+    });
+  });
+
   it("keeps legacy UI and API plans readable without admitting unknown plan fields", async () => {
     const legacyUi = await createBundleFixture({
       workspaceId, workKey: "legacy-ui-plan", prNumber: 225, headSha: "4".repeat(40),

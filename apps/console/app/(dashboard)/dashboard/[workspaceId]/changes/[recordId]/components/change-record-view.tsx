@@ -8,6 +8,7 @@ import type {
   AcceptanceRecordDetailOccurrence as DbAcceptanceRecordDetailOccurrence,
   ReadAcceptanceRecordDetailResult,
 } from "@agentrail/db-postgres";
+import { containsSecretShapedValue } from "../../../../../../../lib/secret-scan";
 
 export type ChangeRecord = {
   id: string;
@@ -658,6 +659,24 @@ function containsDependencyCommandFields(value: unknown, depth = 0): boolean {
       || containsDependencyCommandFields(nested, depth + 1));
 }
 
+function isCriterionCustodyTimelineEvent(
+  eventKey: string,
+  payloadRef: Record<string, unknown>,
+): boolean {
+  const kind = payloadRef.kind;
+  return eventKey.startsWith("verification:plan:")
+    || eventKey.startsWith("verification:ui-")
+    || eventKey.startsWith("verification:api-")
+    || eventKey.startsWith("verification:data-")
+    || eventKey.startsWith("verification:job-")
+    || eventKey.startsWith("review:correction:")
+    || eventKey.startsWith("review:criterion-outcomes:")
+    || kind === "review_job_verification_plan"
+    || kind === "review_job_correction_packet"
+    || kind === "acceptance_criterion_outcome_bundle"
+    || (typeof kind === "string" && /^review_job_(?:ui_|api_|data_)?execution_/u.test(kind));
+}
+
 function isSafeTimelineEvent(value: unknown): value is ChangeRecordEvent {
   if (!isObject(value) || !hasExactKeys(value, [
     "id", "recordId", "eventKey", "stage", "actor", "payloadRef", "at", "createdAt",
@@ -675,6 +694,8 @@ function isSafeTimelineEvent(value: unknown): value is ChangeRecordEvent {
       && value.payloadRef.version === 1
       && value.payloadRef.disclosure === "bounded_projection_only";
   }
+  if (isCriterionCustodyTimelineEvent(value.eventKey, value.payloadRef)
+    && containsSecretShapedValue(value.payloadRef)) return false;
   return true;
 }
 
@@ -692,7 +713,8 @@ const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za
 
 function isSafeText(value: unknown, max: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max
-    && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value) && !SECRET_LIKE.test(value);
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value)
+    && !containsSecretShapedValue(value);
 }
 
 function isSafeRepo(value: unknown): value is string {
@@ -792,7 +814,7 @@ function isCorrectionReproduction(value: unknown, modality: unknown): value is C
 }
 
 function isAcceptanceCorrectionPacket(value: unknown): value is AcceptanceCorrectionPacket {
-  if (!isObject(value) || !hasExactKeys(value, [
+  if (!isObject(value) || containsSecretShapedValue(value) || !hasExactKeys(value, [
     "kind", "version", "packetId", "workspaceId", "repo", "prNumber", "headSha", "recordId", "jobId",
     "acceptanceContract", "criterion", "basis", "state", "expected", "observed", "affectedContext", "evidence",
     "scopeBoundary", "impact", "requiredCorrection", "reverification",
@@ -1839,7 +1861,8 @@ export function isAcceptanceRecordDetailEnvelope(
       && typeof value.reason === "string" && DETAIL_UNAVAILABLE_REASONS.has(value.reason);
   }
   if (value.kind !== "record" || !hasExactKeys(value, ["kind", "detail"])
-    || !isObject(value.detail) || !hasExactKeys(value.detail, [
+    || !isObject(value.detail) || containsSecretShapedValue(value.detail)
+    || !hasExactKeys(value.detail, [
       "summary", "contract", "pullRequest", "contextPacks", "proofMatrix", "artifactCustody", "gatedIssue",
     ]) || !isAcceptanceRecordSummary(value.detail.summary)
     || !isObject(value.detail.contract) || !hasExactKeys(value.detail.contract, [
@@ -2079,7 +2102,7 @@ function isCriterionEvidence(
 }
 
 function isCriterionOutcome(value: unknown): value is AcceptanceCriterionOutcome {
-  if (!isObject(value) || !hasExactKeys(value, [
+  if (!isObject(value) || containsSecretShapedValue(value) || !hasExactKeys(value, [
     "criterionId", "criterionText", "state", "expected", "observed", "evidence",
   ]) || !isSafeText(value.criterionId, 512)
     || !isSafeText(value.criterionText, 2_000)

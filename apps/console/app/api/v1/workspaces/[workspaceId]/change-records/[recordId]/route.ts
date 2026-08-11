@@ -17,6 +17,7 @@ import {
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
 } from "@agentrail/db-postgres";
+import { containsSecretShapedValue } from "../../../../../../../lib/secret-scan";
 
 const MAX_PATCH_BODY_BYTES = 20 * 1024;
 const MAX_DECISION_RATIONALE_CHARS = 4_000;
@@ -56,6 +57,11 @@ const REDACTED_DEPENDENCY_PROPOSAL_PAYLOAD = {
   version: 1,
   disclosure: "bounded_projection_only",
 } as const;
+const REDACTED_SECRET_SHAPED_CRITERION_PAYLOAD = {
+  kind: "redacted_criterion_custody_payload",
+  version: 1,
+  disclosure: "secret_shaped_text_withheld",
+} as const;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -72,6 +78,24 @@ function containsDependencyCommandFields(value: unknown, depth = 0): boolean {
       || containsDependencyCommandFields(nested, depth + 1));
 }
 
+function isCriterionCustodyTimelineEvent(event: {
+  eventKey: string;
+  payloadRef: unknown;
+}): boolean {
+  const kind = object(event.payloadRef) ? event.payloadRef.kind : null;
+  return event.eventKey.startsWith("verification:plan:")
+    || event.eventKey.startsWith("verification:ui-")
+    || event.eventKey.startsWith("verification:api-")
+    || event.eventKey.startsWith("verification:data-")
+    || event.eventKey.startsWith("verification:job-")
+    || event.eventKey.startsWith("review:correction:")
+    || event.eventKey.startsWith("review:criterion-outcomes:")
+    || kind === "review_job_verification_plan"
+    || kind === "review_job_correction_packet"
+    || kind === "acceptance_criterion_outcome_bundle"
+    || (typeof kind === "string" && /^review_job_(?:ui_|api_|data_)?execution_/u.test(kind));
+}
+
 function timelinePayloadRef(event: {
   stage: string;
   eventKey: string;
@@ -85,7 +109,26 @@ function timelinePayloadRef(event: {
   if (dependencyProposal || containsDependencyCommandFields(event.payloadRef)) {
     return REDACTED_DEPENDENCY_PROPOSAL_PAYLOAD;
   }
+  if (isCriterionCustodyTimelineEvent(event)
+    && containsSecretShapedValue(event.payloadRef)) {
+    return REDACTED_SECRET_SHAPED_CRITERION_PAYLOAD;
+  }
   return object(event.payloadRef) ? event.payloadRef : { kind: "invalid_payload_reference" };
+}
+
+function correctionProjectionContainsSecret(value: unknown): boolean {
+  return object(value) && value.kind === "current"
+    && containsSecretShapedValue(value.packets);
+}
+
+function acceptanceDetailContainsSecret(value: unknown): boolean {
+  return object(value) && value.kind === "record" && object(value.detail)
+    && containsSecretShapedValue(value.detail);
+}
+
+function criterionOutcomeProjectionContainsSecret(value: unknown): boolean {
+  return object(value) && value.kind === "current" && object(value.bundle)
+    && containsSecretShapedValue(value.bundle.outcomes);
 }
 
 function json(body: Record<string, unknown>, status = 200): NextResponse {
@@ -438,7 +481,9 @@ export async function GET(
         !== resolvedCorrectionPackets.binding.authorityGeneration
     )
       ? { kind: "not_current" as const }
-      : resolvedCorrectionPackets;
+      : correctionProjectionContainsSecret(resolvedCorrectionPackets)
+        ? { kind: "not_ready" as const, reason: "invalid_packet_custody" as const }
+        : resolvedCorrectionPackets;
     const finalDecision = resolvedFinalDecision.kind === "current"
       && !currentDecisionMatchesTimeline(timeline, resolvedFinalDecision)
       ? { kind: "not_current" as const }
@@ -453,13 +498,17 @@ export async function GET(
       : serializeDates(resolvedDependencyObservations);
     const acceptanceDetail = resolvedAcceptanceDetail.kind === "record"
       && !acceptanceDetailMatchesTimeline(timeline, resolvedAcceptanceDetail)
-      ? { kind: "unavailable" as const, reason: "invalid_record_custody" as const }
-      : serializeDates(resolvedAcceptanceDetail);
+        ? { kind: "unavailable" as const, reason: "invalid_record_custody" as const }
+      : acceptanceDetailContainsSecret(resolvedAcceptanceDetail)
+        ? { kind: "unavailable" as const, reason: "invalid_review_custody" as const }
+        : serializeDates(resolvedAcceptanceDetail);
     const criterionOutcomes = resolvedCriterionOutcomes.kind === "current"
       && (!criterionOutcomesMatchTimeline(timeline, resolvedCriterionOutcomes)
         || !criterionOutcomesMatchDetail(resolvedCriterionOutcomes, resolvedAcceptanceDetail))
       ? { kind: "not_current" as const }
-      : serializeDates(resolvedCriterionOutcomes);
+      : criterionOutcomeProjectionContainsSecret(resolvedCriterionOutcomes)
+        ? { kind: "not_ready" as const, reason: "invalid_criterion_outcome_custody" as const }
+        : serializeDates(resolvedCriterionOutcomes);
     const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
 
     return json(redactMemberStorageCoordinates({

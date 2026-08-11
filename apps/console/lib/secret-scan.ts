@@ -23,6 +23,9 @@ export type SecretKind =
   | "google_api_key"
   | "openai_key"
   | "anthropic_key"
+  | "stripe_key"
+  | "gitlab_token"
+  | "npm_token"
   | "jwt"
   | "bearer_token"
   | "connection_string_password"
@@ -41,6 +44,9 @@ interface Rule {
   pattern: RegExp;
   reason: string;
 }
+
+const CREDENTIAL_FIELD_NAME = /^(?:api[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?token|auth[_-]?token|authorization|client[_-]?secret|password|passwd|secret|token)$/iu;
+const COMPACT_CREDENTIAL_VALUE = /^[A-Za-z0-9._~+/=-]{8,}$/u;
 
 // The placeholder that replaces a detected secret span in redacted output.
 export const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
@@ -99,6 +105,21 @@ const RULES: Rule[] = [
     reason: "Anthropic API key",
   },
   {
+    kind: "stripe_key",
+    pattern: /\b(?:sk|rk)_live_[0-9A-Za-z]{16,}\b/g,
+    reason: "Stripe live secret key",
+  },
+  {
+    kind: "gitlab_token",
+    pattern: /\bglpat-[0-9A-Za-z_-]{20,}\b/g,
+    reason: "GitLab personal access token",
+  },
+  {
+    kind: "npm_token",
+    pattern: /\bnpm_[0-9A-Za-z]{20,}\b/g,
+    reason: "npm access token",
+  },
+  {
     kind: "jwt",
     // header.payload.signature — three base64url segments.
     pattern: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g,
@@ -112,14 +133,26 @@ const RULES: Rule[] = [
   },
   {
     kind: "bearer_token",
-    pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/g,
+    pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi,
     reason: "bearer authorization token",
   },
   {
     kind: "generic_assigned_secret",
-    // key/token/secret/password/api_key = "at least 8 non-space chars"
+    // '=' is an explicit assignment; allow a following whitespace delimiter.
     pattern:
-      /\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\b\s*[=:]\s*['"]?[^\s'"]{8,}['"]?/gi,
+      /\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?token|auth[_-]?token|authorization|client[_-]?secret|password|passwd|secret|token)\b\s*=\s*(?:["'][A-Za-z0-9._~+/=-]{8,}["']|[A-Za-z0-9._~+/=-]{8,})(?=$|[\s,;)}\]])/gimu,
+    reason: "assigned credential value",
+  },
+  {
+    kind: "generic_assigned_secret",
+    // ':' is common prose punctuation, so an unquoted value must end here or
+    // at a structural delimiter rather than merely at the next space. A
+    // longer quoted compact value remains credential-shaped even when prose
+    // follows it; the shorter quoted form keeps the same terminal boundary so
+    // ordinary text such as `Authorization: "required" by the owner` remains
+    // valid.
+    pattern:
+      /\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?token|auth[_-]?token|authorization|client[_-]?secret|password|passwd|secret|token)\b\s*:\s*(?:["'][A-Za-z0-9._~+/=-]{10,}["'](?=$|[\s,;.!?)}\]])|["'][A-Za-z0-9._~+/=-]{8,9}["'](?=$|[,;)}\]])|[A-Za-z0-9._~+/=-]{8,}(?=$|[,;)}\]]))/gimu,
     reason: "assigned credential value",
   },
 ];
@@ -150,6 +183,36 @@ export function scanForSecrets(content: string): {
   }
 
   return { clean: findings.length === 0, redacted, findings };
+}
+
+/**
+ * Scan string keys and values in an untrusted JSON-like envelope. Exact
+ * credential fields also bind compact credential-like values; a field name
+ * alone or a prose value with spaces remains valid. Cyclic/excessively deep
+ * values fail closed.
+ */
+export function containsSecretShapedValue(value: unknown): boolean {
+  const ancestors = new WeakSet<object>();
+  const visit = (item: unknown, depth: number): boolean => {
+    if (typeof item === "string") return !scanForSecrets(item).clean;
+    if (item === null || typeof item !== "object") return false;
+    if (depth > 16 || ancestors.has(item)) return true;
+    ancestors.add(item);
+    try {
+      return Array.isArray(item)
+        ? item.some((nested) => visit(nested, depth + 1))
+        : Object.entries(item).some(([key, nested]) =>
+          !scanForSecrets(key).clean
+          || (CREDENTIAL_FIELD_NAME.test(key)
+            && typeof nested === "string"
+            && nested === nested.trim()
+            && COMPACT_CREDENTIAL_VALUE.test(nested))
+          || visit(nested, depth + 1));
+    } finally {
+      ancestors.delete(item);
+    }
+  };
+  return visit(value, 0);
 }
 
 /**

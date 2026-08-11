@@ -88,6 +88,29 @@ describe("GET member criterion outcomes", () => {
     expect((await GET(request(), params)).status).toBe(409);
   });
 
+  it.each([
+    "authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+    "token=abcdefghijk12345",
+    "api_key=abcdefghijk12345",
+  ])("fails a secret-shaped DB projection closed without returning the value", async (observed) => {
+    vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValueOnce({
+      kind: "current",
+      bundle: {
+        outcomes: [{ observed }],
+        recordedAt: new Date("2026-08-11T08:00:00.000Z"),
+      },
+    } as never);
+
+    const response = await GET(request(), params);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body).toEqual({
+      kind: "not_ready",
+      reason: "invalid_criterion_outcome_custody",
+    });
+    expect(JSON.stringify(body)).not.toContain(observed);
+  });
+
   it("sanitizes storage failures", async () => {
     vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockRejectedValueOnce(
       new Error("postgres secret detail"),

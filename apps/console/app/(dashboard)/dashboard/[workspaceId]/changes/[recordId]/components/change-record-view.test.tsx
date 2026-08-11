@@ -2602,6 +2602,69 @@ describe("Change Record detail view", () => {
     );
   });
 
+  it.each([
+    "authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+    "token=abcdefghijk12345",
+    "api_key=abcdefghijk12345",
+    "github_pat_abcdefghijklmnopqrstuvwxyz123456",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+  ])("rejects secret-shaped text at the criterion outcome client boundary", (secretText) => {
+    const unsafe = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const bundle = unsafe.bundle as Record<string, unknown>;
+    const outcome = (bundle.outcomes as Array<Record<string, unknown>>)[0]!;
+    outcome.observed = secretText;
+    expect(isCriterionOutcomesEnvelope(unsafe)).toBe(false);
+  });
+
+  it("keeps ordinary credential-related outcome and correction observations", () => {
+    const safeOutcomes = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const bundle = safeOutcomes.bundle as Record<string, unknown>;
+    ((bundle.outcomes as Array<Record<string, unknown>>)[0]!).observed =
+      "The authorization step asked the user to reset their password.";
+    expect(isCriterionOutcomesEnvelope(safeOutcomes)).toBe(true);
+
+    const safeCorrections = structuredClone(currentCorrections) as Record<string, unknown>;
+    ((safeCorrections.packets as Array<Record<string, unknown>>)[0]!).requiredCorrection =
+      "Reset the password field and rerun the exact check.";
+    expect(isCorrectionPacketsEnvelope(safeCorrections)).toBe(true);
+  });
+
+  it("rejects secret-shaped current and historical correction text at the client boundary", () => {
+    const unsafeCurrent = structuredClone(currentCorrections) as Record<string, unknown>;
+    ((unsafeCurrent.packets as Array<Record<string, unknown>>)[0]!).requiredCorrection =
+      "Replace token=abcdefghijk12345 before retrying.";
+    expect(isCorrectionPacketsEnvelope(unsafeCurrent)).toBe(false);
+
+    const unsafeDetail = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const detail = unsafeDetail.detail as Record<string, unknown>;
+    const proofMatrix = detail.proofMatrix as Array<Record<string, unknown>>;
+    const criteria = proofMatrix[0]!.criteria as Array<Record<string, unknown>>;
+    const proof = criteria[0]!.proof as Record<string, unknown>;
+    (proof.packet as Record<string, unknown>).impact = "authorization: abcdefghijk12345";
+    expect(isAcceptanceRecordDetailEnvelope(unsafeDetail)).toBe(false);
+  });
+
+  it("rejects secret-shaped Contract text in an unattached Record detail", () => {
+    const unattached = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const detail = unattached.detail as Record<string, unknown>;
+    const summary = detail.summary as Record<string, unknown>;
+    const requestedWork = summary.requestedWork as Record<string, unknown>;
+    const contract = detail.contract as Record<string, unknown>;
+    const contractProjection = contract.contract as Record<string, unknown>;
+    summary.pullRequest = { kind: "not_attached" };
+    summary.suppliedContext = { kind: "unknown" };
+    summary.proof = { kind: "unknown" };
+    summary.neededDecision = { kind: "not_required", reason: "pr_not_attached" };
+    detail.pullRequest = { kind: "not_attached", occurrences: [] };
+    detail.contextPacks = [];
+    detail.proofMatrix = [];
+
+    expect(isAcceptanceRecordDetailEnvelope(unattached)).toBe(true);
+    requestedWork.originalRequest = "api_key=abcdefghijk12345";
+    contractProjection.originalRequest = "api_key=abcdefghijk12345";
+    expect(isAcceptanceRecordDetailEnvelope(unattached)).toBe(false);
+  });
+
   it("merges the current immutable bundle into the Contract-ordered proof matrix", () => {
     const rendered = AcceptanceRecordDetailPanel({
       acceptanceDetail: currentAcceptanceDetail,
@@ -2757,6 +2820,31 @@ describe("Change Record detail view", () => {
           kind: "redacted_dependency_observation_proposal",
           version: 1,
           disclosure: "bounded_projection_only",
+        },
+      }],
+    })).toBe(true);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      events: [{
+        ...events[0],
+        eventKey: `review:criterion-outcomes:${currentFinalDecision.binding.headCycleId}`,
+        stage: "review",
+        payloadRef: {
+          kind: "acceptance_criterion_outcome_bundle",
+          observed: "token=abcdefghijk12345",
+        },
+      }],
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      events: [{
+        ...events[0],
+        eventKey: `review:criterion-outcomes:${currentFinalDecision.binding.headCycleId}`,
+        stage: "review",
+        payloadRef: {
+          kind: "redacted_criterion_custody_payload",
+          version: 1,
+          disclosure: "secret_shaped_text_withheld",
         },
       }],
     })).toBe(true);

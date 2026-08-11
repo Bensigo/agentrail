@@ -7486,6 +7486,774 @@ export async function resolveAcceptanceCompiledContextPack(
   return rows[0]?.pack ?? null;
 }
 
+export type AcceptanceDependencyObservationStatus =
+  | "observed"
+  | "refused_unsafe_runtime"
+  | "refused_lockfile"
+  | "refused_baseline"
+  | "refused_security"
+  | "not_proven";
+
+export type AcceptanceDependencyObservationReason =
+  | "baseline_head_mismatch"
+  | "manifest_source_not_proven"
+  | "lockfile_source_not_proven"
+  | "unsafe_node_runtime"
+  | "unsafe_package_manager"
+  | "unsafe_package_manager_profile"
+  | "unsafe_package_manager_argv"
+  | "runtime_evidence_unavailable"
+  | "runtime_evidence_ambiguous"
+  | "package_manager_evidence_unavailable"
+  | "package_manager_evidence_ambiguous"
+  | "lockfile_missing"
+  | "lockfile_uncommitted"
+  | "lockfile_evidence_unavailable"
+  | "lockfile_evidence_ambiguous"
+  | "security_affected"
+  | "security_evidence_unavailable"
+  | "security_evidence_ambiguous";
+
+export type AcceptanceDependencyCandidate = {
+  package: string;
+  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+  specifier: string;
+  currentVersion: string;
+  targetVersion: string;
+};
+
+export type AcceptanceDependencyRuntimeEvidence = {
+  disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
+  nodeVersion: string | null;
+  evidenceSha256: string;
+};
+
+export type AcceptanceDependencyPackageManagerEvidence = {
+  disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
+  name: string;
+  version: string | null;
+  profile: string;
+  updateArgv: string[];
+  evidenceSha256: string;
+};
+
+export type AcceptanceDependencyManifestEvidence = {
+  path: string;
+  blobSha: string;
+};
+
+export type AcceptanceDependencyLockfileEvidence = {
+  disposition: "present" | "missing" | "uncommitted" | "unavailable" | "ambiguous";
+  path: string;
+  blobSha: string | null;
+  evidenceSha256: string;
+};
+
+export type AcceptanceDependencyBaselineEvidence = { headSha: string };
+
+export type AcceptanceDependencySecurityEvidence = {
+  disposition: "clear" | "affected" | "unavailable" | "ambiguous";
+  provider: "osv";
+  reference: string;
+  reportSha256: string;
+};
+
+export type RecordAcceptanceDependencyObservationInput = {
+  workspaceId: string;
+  recordId: string;
+  compiledPackId: string;
+  candidate: AcceptanceDependencyCandidate;
+  runtime: AcceptanceDependencyRuntimeEvidence;
+  packageManager: AcceptanceDependencyPackageManagerEvidence;
+  manifest: AcceptanceDependencyManifestEvidence;
+  lockfile: AcceptanceDependencyLockfileEvidence;
+  baseline: AcceptanceDependencyBaselineEvidence;
+  security: AcceptanceDependencySecurityEvidence;
+};
+
+export type AcceptanceDependencyObservationBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  reviewJobId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  compiledPack: {
+    id: string;
+    sha256: string;
+    sourceSnapshotId: string;
+    sourceCustodyIdentitySha256: string;
+    compilerVersion: string;
+    policyVersion: string;
+    exactHeadDependencyTreeProofsSha256: string;
+  };
+};
+
+export type AcceptanceDependencyObservation = {
+  eventId: string;
+  eventKey: string;
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+  candidateFingerprint: string;
+  candidate: AcceptanceDependencyCandidate;
+  runtime: AcceptanceDependencyRuntimeEvidence;
+  packageManager: AcceptanceDependencyPackageManagerEvidence;
+  manifest: AcceptanceDependencyManifestEvidence;
+  lockfile: AcceptanceDependencyLockfileEvidence;
+  baseline: AcceptanceDependencyBaselineEvidence;
+  security: AcceptanceDependencySecurityEvidence;
+  observedAt: Date;
+};
+
+export type RecordAcceptanceDependencyObservationNotReadyReason =
+  | "confirmed_contract_unavailable"
+  | "compiled_pack_unavailable"
+  | "invalid_compiled_pack_custody";
+
+export type RecordAcceptanceDependencyObservationResult =
+  | {
+      kind: "recorded" | "replayed";
+      binding: AcceptanceDependencyObservationBinding;
+      observation: AcceptanceDependencyObservation;
+    }
+  | { kind: "not_found" | "not_current" }
+  | { kind: "not_ready"; reason: RecordAcceptanceDependencyObservationNotReadyReason };
+
+/** Stable immutable-event conflict; storage failures remain ordinary errors. */
+export class AcceptanceDependencyObservationConflictError extends Error {
+  readonly code = "ACCEPTANCE_DEPENDENCY_OBSERVATION_CONFLICT" as const;
+
+  constructor() {
+    super("The current dependency candidate is already bound to different observation evidence");
+    this.name = "AcceptanceDependencyObservationConflictError";
+  }
+}
+
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND = "acceptance_dependency_observation";
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 1;
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE = "dependency_observation";
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR = "server:dependency-observation";
+const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
+const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
+const DEPENDENCY_EVIDENCE_BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+
+function safeDependencyEvidenceText(value: unknown, max: number): value is string {
+  return safeSnapshotText(value, max) && !DEPENDENCY_EVIDENCE_BIDI.test(value);
+}
+
+function safeDependencyEvidencePath(value: unknown): value is string {
+  return safeRepoPath(value) && !DEPENDENCY_EVIDENCE_BIDI.test(value);
+}
+
+function acceptanceDependencySecurityReference(candidate: AcceptanceDependencyCandidate): string {
+  return `osv:npm:${candidate.package}@${candidate.targetVersion}`;
+}
+
+function parseRecordAcceptanceDependencyObservationInput(
+  input: unknown
+): RecordAcceptanceDependencyObservationInput | null {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "recordId", "compiledPackId", "candidate", "runtime",
+    "packageManager", "manifest", "lockfile", "baseline", "security",
+  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])
+    || !isUuid(input["compiledPackId"]) || !isRecord(input["candidate"])
+    || !isRecord(input["runtime"]) || !isRecord(input["packageManager"])
+    || !isRecord(input["manifest"]) || !isRecord(input["lockfile"])
+    || !isRecord(input["baseline"]) || !isRecord(input["security"])) return null;
+
+  const candidate = input["candidate"];
+  if (!hasExactKeys(candidate, ["package", "dependencyKind", "specifier", "currentVersion", "targetVersion"])
+    || typeof candidate["package"] !== "string" || candidate["package"].length > 214
+    || !NPM_PACKAGE_NAME.test(candidate["package"])
+    || (candidate["dependencyKind"] !== "dependencies" && candidate["dependencyKind"] !== "devDependencies"
+      && candidate["dependencyKind"] !== "optionalDependencies" && candidate["dependencyKind"] !== "peerDependencies")
+    || !safeDependencyEvidenceText(candidate["specifier"], 256) || UNSAFE_NPM_SPECIFIER.test(candidate["specifier"])
+    || !safeDependencyEvidenceText(candidate["currentVersion"], 128) || !EXACT_SEMVER.test(candidate["currentVersion"])
+    || !safeDependencyEvidenceText(candidate["targetVersion"], 128) || !EXACT_SEMVER.test(candidate["targetVersion"])
+    || candidate["currentVersion"] === candidate["targetVersion"]) return null;
+
+  const runtime = input["runtime"];
+  if (!hasExactKeys(runtime, ["disposition", "nodeVersion", "evidenceSha256"])
+    || (runtime["disposition"] !== "safe" && runtime["disposition"] !== "unsafe"
+      && runtime["disposition"] !== "unavailable" && runtime["disposition"] !== "ambiguous")
+    || (runtime["nodeVersion"] !== null && !safeDependencyEvidenceText(runtime["nodeVersion"], 64))
+    || (runtime["disposition"] === "safe"
+      ? typeof runtime["nodeVersion"] !== "string" || !EXACT_SEMVER.test(runtime["nodeVersion"])
+      : (runtime["disposition"] === "unavailable" || runtime["disposition"] === "ambiguous")
+        && runtime["nodeVersion"] !== null)
+    || !isSha256(runtime["evidenceSha256"])) return null;
+
+  const packageManager = input["packageManager"];
+  if (!hasExactKeys(packageManager, [
+    "disposition", "name", "version", "profile", "updateArgv", "evidenceSha256",
+  ]) || (packageManager["disposition"] !== "safe"
+      && packageManager["disposition"] !== "unsafe"
+      && packageManager["disposition"] !== "unavailable"
+      && packageManager["disposition"] !== "ambiguous")
+    || typeof packageManager["name"] !== "string"
+    || !SAFE_PACKAGE_MANAGER_NAME.test(packageManager["name"])
+    || (packageManager["version"] !== null && !safeDependencyEvidenceText(packageManager["version"], 64))
+    || (packageManager["disposition"] === "safe"
+      ? typeof packageManager["version"] !== "string" || !EXACT_SEMVER.test(packageManager["version"])
+      : (packageManager["disposition"] === "unavailable" || packageManager["disposition"] === "ambiguous")
+        && packageManager["version"] !== null)
+    || !safeDependencyEvidenceText(packageManager["profile"], 64)
+    || !Array.isArray(packageManager["updateArgv"]) || packageManager["updateArgv"].length < 1
+    || packageManager["updateArgv"].length > 16
+    || !packageManager["updateArgv"].every((token) => safeDependencyEvidenceText(token, 256))
+    || !isSha256(packageManager["evidenceSha256"])) return null;
+
+  const manifest = input["manifest"];
+  if (!hasExactKeys(manifest, ["path", "blobSha"])
+    || !safeDependencyEvidencePath(manifest["path"])
+    || !(manifest["path"] === "package.json" || manifest["path"].endsWith("/package.json"))
+    || !isSha1(manifest["blobSha"])) return null;
+
+  const lockfile = input["lockfile"];
+  if (!hasExactKeys(lockfile, ["disposition", "path", "blobSha", "evidenceSha256"])
+    || (lockfile["disposition"] !== "present" && lockfile["disposition"] !== "missing"
+      && lockfile["disposition"] !== "uncommitted" && lockfile["disposition"] !== "unavailable"
+      && lockfile["disposition"] !== "ambiguous")
+    || !safeDependencyEvidencePath(lockfile["path"])
+    || !(lockfile["path"] === "pnpm-lock.yaml" || lockfile["path"].endsWith("/pnpm-lock.yaml"))
+    || !isSha256(lockfile["evidenceSha256"])
+    || (lockfile["disposition"] === "present"
+      ? !isSha1(lockfile["blobSha"])
+      : lockfile["blobSha"] !== null)) return null;
+
+  const baseline = input["baseline"];
+  if (!hasExactKeys(baseline, ["headSha"]) || !isSha1(baseline["headSha"])) return null;
+
+  const security = input["security"];
+  if (!hasExactKeys(security, ["disposition", "provider", "reference", "reportSha256"])
+    || (security["disposition"] !== "clear" && security["disposition"] !== "affected"
+      && security["disposition"] !== "unavailable" && security["disposition"] !== "ambiguous")
+    || security["provider"] !== "osv"
+    || security["reference"] !== acceptanceDependencySecurityReference(candidate as AcceptanceDependencyCandidate)
+    || !isSha256(security["reportSha256"])) return null;
+
+  return {
+    workspaceId: (input["workspaceId"] as string).toLowerCase(),
+    recordId: (input["recordId"] as string).toLowerCase(),
+    compiledPackId: (input["compiledPackId"] as string).toLowerCase(),
+    candidate: {
+      package: candidate["package"] as string,
+      dependencyKind: candidate["dependencyKind"] as AcceptanceDependencyCandidate["dependencyKind"],
+      specifier: candidate["specifier"] as string,
+      currentVersion: candidate["currentVersion"] as string,
+      targetVersion: candidate["targetVersion"] as string,
+    },
+    runtime: {
+      disposition: runtime["disposition"] as AcceptanceDependencyRuntimeEvidence["disposition"],
+      nodeVersion: runtime["nodeVersion"] as string | null,
+      evidenceSha256: (runtime["evidenceSha256"] as string).toLowerCase(),
+    },
+    packageManager: {
+      disposition: packageManager["disposition"] as AcceptanceDependencyPackageManagerEvidence["disposition"],
+      name: packageManager["name"] as string,
+      version: packageManager["version"] as string | null,
+      profile: packageManager["profile"] as string,
+      updateArgv: [...packageManager["updateArgv"] as string[]],
+      evidenceSha256: (packageManager["evidenceSha256"] as string).toLowerCase(),
+    },
+    manifest: {
+      path: manifest["path"] as string,
+      blobSha: (manifest["blobSha"] as string).toLowerCase(),
+    },
+    lockfile: {
+      disposition: lockfile["disposition"] as AcceptanceDependencyLockfileEvidence["disposition"],
+      path: lockfile["path"] as string,
+      blobSha: lockfile["blobSha"] === null
+        ? null : (lockfile["blobSha"] as string).toLowerCase(),
+      evidenceSha256: (lockfile["evidenceSha256"] as string).toLowerCase(),
+    },
+    baseline: { headSha: (baseline["headSha"] as string).toLowerCase() },
+    security: {
+      disposition: security["disposition"] as AcceptanceDependencySecurityEvidence["disposition"],
+      provider: "osv",
+      reference: security["reference"] as string,
+      reportSha256: (security["reportSha256"] as string).toLowerCase(),
+    },
+  };
+}
+
+function acceptanceDependencyCandidateFingerprint(
+  candidate: AcceptanceDependencyCandidate,
+  manifestPath: string,
+): string {
+  return `sha256:${acceptanceContextPackCanonicalSha256({
+    ecosystem: "node",
+    manifestPath,
+    package: candidate.package,
+    dependencyKind: candidate.dependencyKind,
+    specifier: candidate.specifier,
+    currentVersion: candidate.currentVersion,
+    targetVersion: candidate.targetVersion,
+  })}`;
+}
+
+function acceptanceDependencyObservationEventKey(
+  headCycleId: string,
+  candidateFingerprint: string
+): string {
+  return `acceptance-dependency-observation:${headCycleId}:${candidateFingerprint.slice("sha256:".length)}`;
+}
+
+function expectedPnpmUpdateArgv(candidate: AcceptanceDependencyCandidate): string[] {
+  return [
+    "pnpm", "update", `${candidate.package}@${candidate.targetVersion}`,
+    "--lockfile-only", "--ignore-scripts",
+  ];
+}
+
+function compiledPackDependencyTreeMetadataMatches(pack: ParsedCompiledPack): boolean {
+  const expected = (pack.manifest["sources"] as Record<string, unknown>[])
+    .filter((source) => isExactPackSource(source) && source["kind"] === "exact_head_dependency")
+    .map((source) => `${source["path"]}\u0000${source["blobSha"]}`)
+    .sort(compareUtf8Text);
+  const actual = pack.exactHeadDependencyTreeProofs
+    .map((proof) => `${proof.path}\u0000${proof.blobSha}`)
+    .sort(compareUtf8Text);
+  return isDeepStrictEqual(actual, expected);
+}
+
+function compiledPackExactSourceMatches(
+  pack: ParsedCompiledPack,
+  source: { path: string; blobSha: string }
+): boolean {
+  const matched = (pack.manifest["sources"] as Record<string, unknown>[]).find((candidate) =>
+    isExactPackSource(candidate)
+    && candidate["path"] === source.path
+    && candidate["blobSha"] === source.blobSha
+  );
+  if (!matched) return false;
+  return matched["kind"] === "exact_head_overlay"
+    || pack.exactHeadDependencyTreeProofs.some((proof) =>
+      proof.path === source.path && proof.blobSha === source.blobSha
+    );
+}
+
+function compiledPackExactPathExists(pack: ParsedCompiledPack, path: string): boolean {
+  return (pack.manifest["sources"] as Record<string, unknown>[]).some((source) =>
+    isExactPackSource(source) && source["path"] === path
+  ) || (pack.sourceCustodyReceipt["directReadReceipts"] as Record<string, unknown>[]).some((read) =>
+    read["requestedPath"] === path && read["outcome"] === "record"
+  );
+}
+
+function compiledPackLockfilePathCustodyMatches(
+  pack: ParsedCompiledPack,
+  lockfile: AcceptanceDependencyLockfileEvidence,
+): boolean {
+  if (lockfile.disposition === "present") {
+    return lockfile.blobSha !== null && compiledPackExactSourceMatches(pack, {
+      path: lockfile.path,
+      blobSha: lockfile.blobSha,
+    });
+  }
+  if (lockfile.disposition === "uncommitted") {
+    return compiledPackExactPathExists(pack, lockfile.path);
+  }
+  const read = (pack.sourceCustodyReceipt["directReadReceipts"] as Record<string, unknown>[])
+    .find((candidate) => candidate["requestedPath"] === lockfile.path
+      && candidate["outcome"] === "not_proven");
+  if (!read) return false;
+  return lockfile.disposition === "missing"
+    ? read["reason"] === "path_not_found"
+    : true;
+}
+
+function acceptanceDependencyObservationDisposition(input: {
+  evidence: RecordAcceptanceDependencyObservationInput;
+  currentHeadSha: string;
+  manifestSourceProven: boolean;
+  lockfileSourceProven: boolean;
+}): {
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+} {
+  const { evidence } = input;
+  const reasons: AcceptanceDependencyObservationReason[] = [];
+  const add = (reason: AcceptanceDependencyObservationReason) => {
+    if (!reasons.includes(reason)) reasons.push(reason);
+  };
+
+  if (evidence.baseline.headSha !== input.currentHeadSha) add("baseline_head_mismatch");
+  if (!input.manifestSourceProven) add("manifest_source_not_proven");
+  if (!input.lockfileSourceProven) {
+    add("lockfile_source_not_proven");
+  }
+
+  if (evidence.runtime.disposition === "unsafe") add("unsafe_node_runtime");
+  if (evidence.runtime.disposition === "unavailable") add("runtime_evidence_unavailable");
+  if (evidence.runtime.disposition === "ambiguous") add("runtime_evidence_ambiguous");
+
+  if (evidence.packageManager.disposition === "unsafe") add("unsafe_package_manager");
+  if (evidence.packageManager.disposition === "unavailable") {
+    add("package_manager_evidence_unavailable");
+  }
+  if (evidence.packageManager.disposition === "ambiguous") {
+    add("package_manager_evidence_ambiguous");
+  }
+  if (evidence.packageManager.disposition === "safe") {
+    if (evidence.packageManager.name !== "pnpm") add("unsafe_package_manager");
+    if (evidence.packageManager.profile !== ACCEPTANCE_DEPENDENCY_PNPM_PROFILE) {
+      add("unsafe_package_manager_profile");
+    }
+    if (!isDeepStrictEqual(evidence.packageManager.updateArgv, expectedPnpmUpdateArgv(evidence.candidate))) {
+      add("unsafe_package_manager_argv");
+    }
+  }
+
+  if (evidence.lockfile.disposition === "missing") add("lockfile_missing");
+  if (evidence.lockfile.disposition === "uncommitted") add("lockfile_uncommitted");
+  if (evidence.lockfile.disposition === "unavailable") add("lockfile_evidence_unavailable");
+  if (evidence.lockfile.disposition === "ambiguous") add("lockfile_evidence_ambiguous");
+
+  if (evidence.security.disposition === "affected") add("security_affected");
+  if (evidence.security.disposition === "unavailable") add("security_evidence_unavailable");
+  if (evidence.security.disposition === "ambiguous") add("security_evidence_ambiguous");
+
+  if (reasons.includes("baseline_head_mismatch")) {
+    return { status: "refused_baseline", reasons };
+  }
+  if (reasons.includes("manifest_source_not_proven")
+    || reasons.includes("lockfile_source_not_proven")) {
+    return { status: "not_proven", reasons };
+  }
+  if (reasons.some((reason) => reason === "unsafe_node_runtime"
+    || reason === "unsafe_package_manager"
+    || reason === "unsafe_package_manager_profile"
+    || reason === "unsafe_package_manager_argv")) {
+    return { status: "refused_unsafe_runtime", reasons };
+  }
+  if (evidence.lockfile.disposition !== "present") {
+    return { status: "refused_lockfile", reasons };
+  }
+  if (evidence.security.disposition !== "clear") {
+    return { status: "refused_security", reasons };
+  }
+  if (evidence.runtime.disposition !== "safe"
+    || evidence.packageManager.disposition !== "safe") {
+    return { status: "not_proven", reasons };
+  }
+  return { status: "observed", reasons };
+}
+
+function acceptanceDependencyObservationPayload(input: {
+  binding: AcceptanceDependencyObservationBinding;
+  evidence: RecordAcceptanceDependencyObservationInput;
+  candidateFingerprint: string;
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+}): Record<string, unknown> {
+  return {
+    kind: ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND,
+    version: ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION,
+    binding: input.binding,
+    candidateFingerprint: input.candidateFingerprint,
+    candidate: input.evidence.candidate,
+    runtime: input.evidence.runtime,
+    packageManager: input.evidence.packageManager,
+    manifest: input.evidence.manifest,
+    lockfile: input.evidence.lockfile,
+    baseline: input.evidence.baseline,
+    security: input.evidence.security,
+    status: input.status,
+    reasons: input.reasons,
+  };
+}
+
+function acceptanceDependencyObservationFromEvent(input: {
+  event: ChangeRecordEventRow;
+  eventKey: string;
+  payload: Record<string, unknown>;
+  evidence: RecordAcceptanceDependencyObservationInput;
+  candidateFingerprint: string;
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+}): AcceptanceDependencyObservation | null {
+  const { event } = input;
+  if (event.id !== changeRecordEventId({ recordId: input.evidence.recordId, eventKey: input.eventKey })
+    || event.recordId !== input.evidence.recordId || event.eventKey !== input.eventKey
+    || event.stage !== ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE
+    || event.actor !== ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR
+    || !isDeepStrictEqual(event.payloadRef, input.payload)
+    || !(event.at instanceof Date) || Number.isNaN(event.at.valueOf())) return null;
+  return {
+    eventId: event.id,
+    eventKey: event.eventKey,
+    status: input.status,
+    reasons: [...input.reasons],
+    candidateFingerprint: input.candidateFingerprint,
+    candidate: structuredClone(input.evidence.candidate),
+    runtime: structuredClone(input.evidence.runtime),
+    packageManager: structuredClone(input.evidence.packageManager),
+    manifest: structuredClone(input.evidence.manifest),
+    lockfile: structuredClone(input.evidence.lockfile),
+    baseline: structuredClone(input.evidence.baseline),
+    security: structuredClone(input.evidence.security),
+    observedAt: event.at,
+  };
+}
+
+/**
+ * Records one immutable dependency observation for the current exact PR-head
+ * occurrence. This API observes or refuses only; it never queues work,
+ * approves a proposal, installs a package, creates an issue, or selects a
+ * builder route.
+ */
+export async function recordAcceptanceDependencyObservation(
+  input: RecordAcceptanceDependencyObservationInput
+): Promise<RecordAcceptanceDependencyObservationResult> {
+  const parsed = parseRecordAcceptanceDependencyObservationInput(input);
+  if (!parsed) {
+    throw new Error("Acceptance dependency observation requires exact bounded runner evidence");
+  }
+
+  const candidateRecord = (await db.select({
+    repo: changeRecords.repo,
+    prNumber: changeRecords.prNumber,
+  }).from(changeRecords).where(and(
+    eq(changeRecords.id, parsed.recordId),
+    eq(changeRecords.workspaceId, parsed.workspaceId),
+  )).limit(1))[0];
+  if (!candidateRecord) return { kind: "not_found" };
+  if (candidateRecord.prNumber == null) return { kind: "not_current" };
+
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: parsed.workspaceId,
+    recordId: parsed.recordId,
+    repo: candidateRecord.repo,
+    prNumber: candidateRecord.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, parsed.recordId),
+      eq(changeRecords.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" as const };
+    if (record.repo !== candidateRecord.repo || record.prNumber !== candidateRecord.prNumber
+      || record.prNumber == null || record.state !== "open" || record.mergedSha !== null
+      || !record.currentPrHeadAuthoritative || !isSha1(record.currentPrHeadSha)
+      || !isUuid(record.currentPrHeadCycleId)
+      || !record.headShas.includes(record.currentPrHeadSha)
+      || !Number.isSafeInteger(record.currentPrHeadAuthorityGeneration)
+      || record.currentPrHeadAuthorityGeneration < 0) {
+      return { kind: "not_current" as const };
+    }
+
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, record.id),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    if (confirmedRows.length !== 1) {
+      return { kind: "not_ready" as const, reason: "confirmed_contract_unavailable" as const };
+    }
+    const confirmed = confirmedRows[0]!;
+    if (!isNonBlankString(confirmed.confirmedBy) || !(confirmed.confirmedAt instanceof Date)
+      || Number.isNaN(confirmed.confirmedAt.valueOf())
+      || !projectConfirmedAcceptanceContract(confirmed.contract)) {
+      return { kind: "not_ready" as const, reason: "confirmed_contract_unavailable" as const };
+    }
+    let acceptanceContractSha: string;
+    try {
+      acceptanceContractSha = acceptanceContractSha256({
+        acceptanceContractId: confirmed.id,
+        acceptanceContractVersion: confirmed.version,
+        contract: confirmed.contract,
+      });
+    } catch {
+      return { kind: "not_ready" as const, reason: "confirmed_contract_unavailable" as const };
+    }
+
+    const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.id, parsed.compiledPackId),
+      eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!pack) {
+      return { kind: "not_ready" as const, reason: "compiled_pack_unavailable" as const };
+    }
+    const sourceSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.id, pack.sourceSnapshotId),
+      eq(acceptanceContextPackSnapshots.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!sourceSnapshot) {
+      return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+    if (sourceSnapshot.recordId !== record.id || sourceSnapshot.repo !== record.repo
+      || sourceSnapshot.prNumber !== record.prNumber
+      || sourceSnapshot.expectedHeadSha !== record.currentPrHeadSha
+      || sourceSnapshot.reviewJobId !== record.currentPrHeadCycleId) {
+      return { kind: "not_current" as const };
+    }
+    if (sourceSnapshot.acceptanceContractId !== confirmed.id
+      || sourceSnapshot.acceptanceContractVersion !== confirmed.version
+      || sourceSnapshot.acceptanceContractSha256 !== acceptanceContractSha) {
+      return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+
+    let custody: AcceptanceContextPackCustodyResolution;
+    try {
+      custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
+        workspaceId: parsed.workspaceId,
+        sourceSnapshotId: pack.sourceSnapshotId,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Context Pack custody ")) {
+        return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+      }
+      throw error;
+    }
+
+    const reconstructed = parseCompiledAcceptanceContextPack({
+      kind: "compiled_acceptance_context_pack",
+      version: 1,
+      binding: pack.binding,
+      compiler: {
+        version: pack.compilerVersion,
+        policyVersion: pack.policyVersion,
+        byteCounter: "utf8_byte_upper_bound_v1",
+        byteBudget: COMPILED_PACK_BYTE_BUDGET,
+      },
+      manifest: pack.manifest,
+      sourceCustodyReceipt: pack.sourceCustodyReceipt,
+      exactHeadDependencyTreeProofs: pack.exactHeadDependencyTreeProofs,
+      representations: {
+        jsonSha256: pack.jsonSha256,
+        markdownSha256: pack.markdownSha256,
+      },
+      renderedByteCount: pack.renderedByteCount,
+      packSha256: pack.packSha256,
+    });
+    if (!reconstructed
+      || pack.id !== acceptanceCompiledContextPackId({
+        sourceSnapshotId: pack.sourceSnapshotId,
+        compilerVersion: pack.compilerVersion,
+        policyVersion: pack.policyVersion,
+      })
+      || compiledPackIdentity(reconstructed) !== pack.packSha256
+      || reconstructed.sourceCustodyReceipt["identitySha256"] !== pack.sourceCustodyIdentitySha256
+      || !bindingMatchesCustody(reconstructed.binding, custody)
+      || !receiptMatchesCustody(reconstructed.sourceCustodyReceipt, custody)
+      || !manifestMatchesCustody(reconstructed, custody)
+      || !compiledPackDependencyTreeMetadataMatches(reconstructed)
+      || custody.acceptanceContractSha256 !== acceptanceContractSha) {
+      return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+
+    const manifestSourceProven = compiledPackExactSourceMatches(reconstructed, parsed.manifest);
+    const lockfileSourceProven = compiledPackLockfilePathCustodyMatches(
+      reconstructed,
+      parsed.lockfile,
+    );
+    const disposition = acceptanceDependencyObservationDisposition({
+      evidence: parsed,
+      currentHeadSha: record.currentPrHeadSha,
+      manifestSourceProven,
+      lockfileSourceProven,
+    });
+    const candidateFingerprint = acceptanceDependencyCandidateFingerprint(
+      parsed.candidate,
+      parsed.manifest.path,
+    );
+    const binding: AcceptanceDependencyObservationBinding = {
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: record.prNumber,
+      headSha: record.currentPrHeadSha,
+      headCycleId: record.currentPrHeadCycleId,
+      authorityGeneration: record.currentPrHeadAuthorityGeneration,
+      reviewJobId: sourceSnapshot.reviewJobId,
+      acceptanceContract: {
+        id: confirmed.id,
+        version: confirmed.version,
+        sha256: acceptanceContractSha,
+      },
+      compiledPack: {
+        id: pack.id,
+        sha256: pack.packSha256,
+        sourceSnapshotId: pack.sourceSnapshotId,
+        sourceCustodyIdentitySha256: pack.sourceCustodyIdentitySha256,
+        compilerVersion: pack.compilerVersion,
+        policyVersion: pack.policyVersion,
+        exactHeadDependencyTreeProofsSha256: acceptanceContextPackCanonicalSha256({
+          kind: "acceptance_dependency_tree_proof_set",
+          version: 1,
+          proofs: pack.exactHeadDependencyTreeProofs,
+        }),
+      },
+    };
+    const eventKey = acceptanceDependencyObservationEventKey(
+      record.currentPrHeadCycleId,
+      candidateFingerprint,
+    );
+    const payload = acceptanceDependencyObservationPayload({
+      binding,
+      evidence: parsed,
+      candidateFingerprint,
+      status: disposition.status,
+      reasons: disposition.reasons,
+    });
+
+    const existing = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, record.id),
+      eq(changeRecordEvents.eventKey, eventKey),
+    )).limit(1))[0] as ChangeRecordEventRow | undefined;
+    if (existing) {
+      const observation = acceptanceDependencyObservationFromEvent({
+        event: existing,
+        eventKey,
+        payload,
+        evidence: parsed,
+        candidateFingerprint,
+        status: disposition.status,
+        reasons: disposition.reasons,
+      });
+      if (!observation) throw new AcceptanceDependencyObservationConflictError();
+      return { kind: "replayed" as const, binding, observation };
+    }
+
+    let appended: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: record.id,
+        eventKey,
+        stage: ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE,
+        actor: ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR,
+        payloadRef: payload,
+      }]);
+    } catch (error) {
+      if (error instanceof Error
+        && error.message.startsWith("appendChangeRecordEventsAtomically: event key is already bound")) {
+        throw new AcceptanceDependencyObservationConflictError();
+      }
+      throw error;
+    }
+    const event = appended.events[0]?.event;
+    const observation = event && acceptanceDependencyObservationFromEvent({
+      event,
+      eventKey,
+      payload,
+      evidence: parsed,
+      candidateFingerprint,
+      status: disposition.status,
+      reasons: disposition.reasons,
+    });
+    if (!observation) throw new AcceptanceDependencyObservationConflictError();
+    return { kind: "recorded" as const, binding, observation };
+  });
+}
+
 /** Closed, metadata-only identity for one exact review-job/head Context Pack snapshot. */
 export function validateAcceptanceContextPackSnapshotInput(
   value: unknown

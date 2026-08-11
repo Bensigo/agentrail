@@ -76,6 +76,51 @@ describe("renderApprovalMessage — create_issue", () => {
   });
 });
 
+describe("renderApprovalMessage — packet-bound correction issue", () => {
+  it("shows the opaque request, exact Record/head/cycle/Contract/packet/draft custody", () => {
+    const text = renderApprovalMessage("create_issue", {
+      acceptanceGatedIssueRequestId: "11111111-1111-4111-8111-111111111111",
+      _acceptanceGatedIssue: {
+        version: 1,
+        requestIdentitySha256: "1".repeat(64),
+        bindingId: "22222222-2222-4222-8222-222222222222",
+        workspaceId: "33333333-3333-4333-8333-333333333333",
+        recordId: "44444444-4444-4444-8444-444444444444",
+        repo: "acme/widgets",
+        prNumber: 41,
+        headSha: "a".repeat(40),
+        headCycleId: "55555555-5555-4555-8555-555555555555",
+        authorityGeneration: 3,
+        acceptanceContract: {
+          id: "66666666-6666-4666-8666-666666666666",
+          version: 2,
+          sha256: "b".repeat(64),
+        },
+        packets: [
+          { packetId: "correction-" + "c".repeat(48), sha256: "d".repeat(64) },
+          { packetId: "correction-" + "e".repeat(48), sha256: "f".repeat(64) },
+        ],
+        packetSetSha256: "7".repeat(64),
+        correctionPacketPayloadSetSha256: "8".repeat(64),
+        title: "Correct the current PR head",
+        titleSha256: "9".repeat(64),
+        body: "Correct both failed criteria against the confirmed agreement.",
+        bodySha256: "0".repeat(64),
+      },
+    });
+    expect(text).toContain("Request: 11111111-1111-4111-8111-111111111111");
+    expect(text).toContain("Record: 44444444-4444-4444-8444-444444444444");
+    expect(text).toContain(`Head: ${"a".repeat(40)}`);
+    expect(text).toContain("Contract: 66666666-6666-4666-8666-666666666666 v2");
+    expect(text).toContain(`Packet set: ${"7".repeat(64)}`);
+    expect(text).toContain("Correction packets (2):");
+    expect(text).toContain("Correct the current PR head");
+    expect(text).toContain("Correct both failed criteria");
+    expect(text).toContain("not repair proof");
+    expect(text.length).toBeLessThanOrEqual(TELEGRAM_TEXT_LIMIT);
+  });
+});
+
 describe("renderApprovalMessage — create_issue WITH _brief (#1274 PR ②, chat-born one-confirm collapse)", () => {
   const ENRICHED_INPUT = {
     title: "Add dark mode toggle",

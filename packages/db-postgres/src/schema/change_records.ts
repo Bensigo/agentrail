@@ -13,6 +13,8 @@ import {
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 import { reviewJobs } from "./review_jobs.js";
+import { users } from "./auth.js";
+import { jaceApprovals, jaceSessions } from "./jace_sessions.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -1251,6 +1253,119 @@ export const changeRecordEvents = pgTable(
 );
 
 /**
+ * Server-minted approval custody for one exact current gated-issue draft.
+ * Model input never supplies repo, title, body, packet ids, or binding data;
+ * every field below is projected from the current Acceptance Record under its
+ * PR advisory lock before Jace asks a human to approve `create_issue`.
+ */
+export const acceptanceGatedGithubIssueRequests = pgTable(
+  "acceptance_gated_github_issue_requests",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    jaceSessionId: uuid("jace_session_id").notNull()
+      .references(() => jaceSessions.id, { onDelete: "restrict" }),
+    eveSessionId: text("eve_session_id").notNull(),
+    requestedByUserId: uuid("requested_by_user_id").notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    requestedRole: text("requested_role").notNull(),
+    repo: text("repo").notNull(),
+    repoNormalized: text("repo_normalized").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    reviewJobId: uuid("review_job_id").notNull()
+      .references(() => reviewJobs.id, { onDelete: "restrict" }),
+    bindingId: uuid("binding_id").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    criterionOutcomeBundleId: uuid("criterion_outcome_bundle_id").notNull(),
+    criterionOutcomeBundleEventId: uuid("criterion_outcome_bundle_event_id").notNull(),
+    criterionOutcomeBundleSha256: text("criterion_outcome_bundle_sha256").notNull(),
+    postedAttestationEventId: uuid("posted_attestation_event_id").notNull(),
+    packets: jsonb("packets").$type<Array<{ packetId: string; sha256: string }>>().notNull(),
+    packetSetSha256: text("packet_set_sha256").notNull(),
+    correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256").notNull(),
+    requestIdentitySha256: text("request_identity_sha256").notNull(),
+    title: text("title").notNull(),
+    titleSha256: text("title_sha256").notNull(),
+    body: text("body").notNull(),
+    bodySha256: text("body_sha256").notNull(),
+    status: text("status").notNull().default("draft"),
+    approvalId: uuid("approval_id")
+      .references(() => jaceApprovals.id, { onDelete: "restrict" }),
+    publishedIssueUrl: text("published_issue_url"),
+    observedIssueUrl: text("observed_issue_url"),
+    reconciliationReason: text("reconciliation_reason"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    reconciliationAt: timestamp("reconciliation_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    recordCycle: uniqueIndex("acceptance_gated_github_issue_requests_record_cycle_key")
+      .on(t.recordId, t.headCycleId),
+    approval: uniqueIndex("acceptance_gated_github_issue_requests_approval_key")
+      .on(t.approvalId).where(sql`${t.approvalId} IS NOT NULL`),
+    publishedUrl: uniqueIndex("acceptance_gated_github_issue_requests_url_key")
+      .on(sql`lower(${t.publishedIssueUrl})`).where(sql`${t.publishedIssueUrl} IS NOT NULL`),
+    bindingCheck: check(
+      "acceptance_gated_github_issue_requests_binding_check",
+      sql`octet_length(${t.eveSessionId}) BETWEEN 1 AND 512
+        AND ${t.requestedRole} IN ('owner', 'admin')
+        AND char_length(${t.repo}) BETWEEN 3 AND 201
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repoNormalized} = lower(${t.repo})
+        AND ${t.repoNormalized} ~ '^[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9][a-z0-9._-]{0,99}$'
+        AND ${t.repo} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[a-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.acceptanceContractVersion} > 0
+        AND ${t.acceptanceContractSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.criterionOutcomeBundleSha256} ~ '^[a-f0-9]{64}$'
+        AND jsonb_typeof(${t.packets}) = 'array'
+        AND jsonb_array_length(${t.packets}) BETWEEN 1 AND 100
+        AND ${t.packetSetSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.correctionPacketPayloadSetSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.requestIdentitySha256} ~ '^[a-f0-9]{64}$'
+        AND octet_length(${t.title}) BETWEEN 1 AND 256
+        AND octet_length(${t.body}) BETWEEN 1 AND 24576
+        AND ${t.titleSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.bodySha256} ~ '^[a-f0-9]{64}$'`,
+    ),
+    stateCheck: check(
+      "acceptance_gated_github_issue_requests_state_check",
+      sql`${t.status} IN ('draft', 'reserved', 'published', 'manual_reconciliation')
+        AND (${t.status} = 'draft') = (${t.approvalId} IS NULL)
+        AND (${t.status} = 'draft') = (${t.reservedAt} IS NULL)
+        AND (${t.status} = 'published') = (${t.publishedIssueUrl} IS NOT NULL)
+        AND (${t.status} = 'published') = (${t.publishedAt} IS NOT NULL)
+        AND (${t.status} = 'manual_reconciliation') = (${t.reconciliationReason} IS NOT NULL)
+        AND (${t.status} = 'manual_reconciliation') = (${t.reconciliationAt} IS NOT NULL)
+        AND (${t.status} <> 'published' OR (
+          ${t.publishedIssueUrl} ~ '^https://github\\.com/[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9][a-z0-9._-]{0,99}/issues/[1-9][0-9]*$'
+          AND split_part(${t.publishedIssueUrl}, '/issues/', 1) = ('https://github.com/' || ${t.repoNormalized})
+        ))
+        AND (${t.observedIssueUrl} IS NULL OR (${t.status} = 'manual_reconciliation'
+          AND ${t.observedIssueUrl} ~ '^https://github\\.com/[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9][a-z0-9._-]{0,99}/issues/[1-9][0-9]*$'))
+        AND (${t.status} <> 'manual_reconciliation' OR ${t.reconciliationReason} IN (
+          'external_write_indeterminate', 'publication_receipt_failed', 'external_issue_wrong_repo'
+        ))`,
+    ),
+  }),
+);
+
+/**
  * One human-gated GitHub issue publication for one exact reviewed PR-head
  * occurrence. Identity and rendered request custody are immutable; only the
  * closed external receipt columns transition once from `reserved`.
@@ -1264,6 +1379,7 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
     recordId: uuid("record_id").notNull()
       .references(() => changeRecords.id, { onDelete: "cascade" }),
     repo: text("repo").notNull(),
+    repoNormalized: text("repo_normalized").notNull(),
     prNumber: integer("pr_number").notNull(),
     headSha: text("head_sha").notNull(),
     headCycleId: uuid("head_cycle_id").notNull(),
@@ -1283,6 +1399,11 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
     packetSetSha256: text("packet_set_sha256").notNull(),
     correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256").notNull(),
     requestProtocolVersion: integer("request_protocol_version").notNull().default(1),
+    approvalRequestId: uuid("approval_request_id")
+      .references(() => acceptanceGatedGithubIssueRequests.id, { onDelete: "restrict" }),
+    approvalId: uuid("approval_id")
+      .references(() => jaceApprovals.id, { onDelete: "restrict" }),
+    eveSessionId: text("eve_session_id"),
     requestIdentitySha256: text("request_identity_sha256").notNull(),
     title: text("title").notNull(),
     titleSha256: text("title_sha256").notNull(),
@@ -1301,6 +1422,7 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
     responseBodySha256: text("response_body_sha256"),
     githubState: text("github_state"),
     resultReason: text("result_reason"),
+    observedIssueUrl: text("observed_issue_url"),
     reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1312,11 +1434,17 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
     githubIssueIdReceipt: uniqueIndex("acceptance_gated_github_issues_github_id_key")
       .on(t.githubIssueId).where(sql`${t.githubIssueId} IS NOT NULL`),
     githubIssueNumberReceipt: uniqueIndex("acceptance_gated_github_issues_repo_number_key")
-      .on(t.repo, t.githubIssueNumber).where(sql`${t.githubIssueNumber} IS NOT NULL`),
+      .on(t.repoNormalized, t.githubIssueNumber).where(sql`${t.githubIssueNumber} IS NOT NULL`),
+    approvalRequest: uniqueIndex("acceptance_gated_github_issues_request_key")
+      .on(t.approvalRequestId).where(sql`${t.approvalRequestId} IS NOT NULL`),
+    approval: uniqueIndex("acceptance_gated_github_issues_approval_key")
+      .on(t.approvalId).where(sql`${t.approvalId} IS NOT NULL`),
     bindingCheck: check(
       "acceptance_gated_github_issues_binding_check",
       sql`char_length(${t.repo}) BETWEEN 3 AND 201
         AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repoNormalized} = lower(${t.repo})
+        AND ${t.repoNormalized} ~ '^[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9][a-z0-9._-]{0,99}$'
         AND ${t.repo} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
         AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
         AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
@@ -1330,7 +1458,11 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
         AND jsonb_array_length(${t.packets}) BETWEEN 1 AND 100
         AND ${t.packetSetSha256} ~ '^[a-f0-9]{64}$'
         AND ${t.correctionPacketPayloadSetSha256} ~ '^[a-f0-9]{64}$'
-        AND ${t.requestProtocolVersion} = 1
+        AND ${t.requestProtocolVersion} IN (1, 2)
+        AND ((${t.requestProtocolVersion} = 1 AND ${t.approvalRequestId} IS NULL
+          AND ${t.approvalId} IS NULL AND ${t.eveSessionId} IS NULL)
+          OR (${t.requestProtocolVersion} = 2 AND ${t.approvalRequestId} IS NOT NULL
+            AND ${t.approvalId} IS NOT NULL AND octet_length(${t.eveSessionId}) BETWEEN 1 AND 512))
         AND ${t.requestIdentitySha256} ~ '^[a-f0-9]{64}$'
         AND octet_length(${t.title}) BETWEEN 1 AND 256
         AND octet_length(${t.body}) BETWEEN 1 AND 24576
@@ -1347,8 +1479,8 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
           ${t.httpStatus} = 201
           AND ${t.githubIssueId} ~ '^[1-9][0-9]{0,39}$'
           AND ${t.githubIssueNumber} > 0
-          AND ${t.githubApiUrl} = 'https://api.github.com/repos/' || ${t.repo} || '/issues/' || (${t.githubIssueNumber})::text
-          AND ${t.githubIssueUrl} = 'https://github.com/' || ${t.repo} || '/issues/' || (${t.githubIssueNumber})::text
+          AND ${t.githubApiUrl} = 'https://api.github.com/repos/' || CASE WHEN ${t.requestProtocolVersion} = 2 THEN ${t.repoNormalized} ELSE ${t.repo} END || '/issues/' || (${t.githubIssueNumber})::text
+          AND ${t.githubIssueUrl} = 'https://github.com/' || CASE WHEN ${t.requestProtocolVersion} = 2 THEN ${t.repoNormalized} ELSE ${t.repo} END || '/issues/' || (${t.githubIssueNumber})::text
           AND char_length(${t.githubRequestId}) BETWEEN 1 AND 128
           AND ${t.githubRequestId} ~ '^[A-Za-z0-9:-]+$'
           AND ${t.responseTitleSha256} = ${t.titleSha256}
@@ -1360,8 +1492,11 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
           'github_rejected', 'invalid_db_issued_request'
         ))
         AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN (
-          'github_unavailable', 'ambiguous_response'
+          'github_unavailable', 'ambiguous_response', 'external_write_indeterminate',
+          'publication_receipt_failed', 'external_issue_wrong_repo'
         ))
+        AND (${t.observedIssueUrl} IS NULL OR (${t.status} = 'ambiguous_hold'
+          AND ${t.observedIssueUrl} ~ '^https://github\\.com/[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9][a-z0-9._-]{0,99}/issues/[1-9][0-9]*$'))
         AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
         AND (${t.status} <> 'reserved' OR (
           ${t.httpStatus} IS NULL AND ${t.githubIssueId} IS NULL AND ${t.githubIssueNumber} IS NULL
@@ -1394,5 +1529,6 @@ export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceC
 export type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow = typeof acceptanceCorrectionDispatchGithubClaudeAckReceipts.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow = typeof acceptanceCorrectionDispatchGithubClaudeRepairObservations.$inferSelect;
 export type AcceptanceGatedGithubIssuePublicationRow = typeof acceptanceGatedGithubIssuePublications.$inferSelect;
+export type AcceptanceGatedGithubIssueRequestRow = typeof acceptanceGatedGithubIssueRequests.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

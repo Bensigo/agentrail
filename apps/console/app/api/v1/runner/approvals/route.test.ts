@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  acceptanceGatedGithubIssueApprovalToolInput: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   recordApprovalRequest: vi.fn(),
   getBriefById: vi.fn(),
   getInvestigationById: vi.fn(),
+  resolveAcceptanceGatedGithubIssueApprovalRequest: vi.fn(),
 }));
 vi.mock("../../../../../lib/approval-message", () => ({
   renderApprovalMessage: vi.fn(),
@@ -17,10 +19,12 @@ vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
 
 import { POST } from "./route";
 import {
+  acceptanceGatedGithubIssueApprovalToolInput,
   getJaceSessionByEveSessionId,
   recordApprovalRequest,
   getBriefById,
   getInvestigationById,
+  resolveAcceptanceGatedGithubIssueApprovalRequest,
 } from "@agentrail/db-postgres";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
 import {
@@ -35,6 +39,8 @@ const mockSend = vi.mocked(sendTelegramMessage);
 const mockBuildKeyboard = vi.mocked(buildApprovalKeyboard);
 const mockGetBrief = vi.mocked(getBriefById);
 const mockGetInvestigation = vi.mocked(getInvestigationById);
+const mockResolveGatedIssue = vi.mocked(resolveAcceptanceGatedGithubIssueApprovalRequest);
+const mockGatedToolInput = vi.mocked(acceptanceGatedGithubIssueApprovalToolInput);
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
 const ORIGINAL_TOKEN_ENV = process.env["TELEGRAM_BOT_TOKEN"];
@@ -163,6 +169,10 @@ beforeEach(() => {
   mockBuildKeyboard.mockReturnValue({ inline_keyboard: [[]] } as never);
   mockSend.mockResolvedValue({ ok: true } as never);
   mockGetInvestigation.mockResolvedValue(null);
+  mockGatedToolInput.mockImplementation((request) => ({
+    acceptanceGatedIssueRequestId: (request as { id: string }).id,
+    _acceptanceGatedIssue: { version: 1, serverDerived: true },
+  }) as never);
 });
 
 afterEach(() => {
@@ -440,6 +450,66 @@ describe("POST /api/v1/runner/approvals — idempotent replay (created: false, i
     expect(mockRecord).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: MOCK_BODY.idempotencyKey })
     );
+  });
+});
+
+describe("POST /api/v1/runner/approvals — packet-bound correction custody", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const correctionBody = {
+    eveSessionId: "eve-session-1",
+    toolName: "create_issue",
+    toolInput: { acceptanceGatedIssueRequestId: requestId },
+    idempotencyKey: "opaque-correction-approval",
+  };
+
+  it("replaces the opaque request with the server-derived exact draft before recording approval", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockResolveGatedIssue.mockResolvedValue({
+      kind: "ready",
+      request: { id: requestId, status: "draft" },
+    } as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: false } as never);
+
+    const res = await POST(req(correctionBody));
+
+    expect(res.status).toBe(200);
+    expect(mockResolveGatedIssue).toHaveBeenCalledWith({
+      eveSessionId: "eve-session-1",
+      requestId,
+    });
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "create_issue",
+      toolInput: {
+        acceptanceGatedIssueRequestId: requestId,
+        _acceptanceGatedIssue: { version: 1, serverDerived: true },
+      },
+    }));
+    expect(mockGatedToolInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses model repo/title/body or any other field beside the opaque request id", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    const res = await POST(req({
+      ...correctionBody,
+      toolInput: {
+        acceptanceGatedIssueRequestId: requestId,
+        repo: "attacker/repo",
+        title: "caller title",
+        body: "caller body",
+      },
+    }));
+    expect(res.status).toBe(400);
+    expect(mockResolveGatedIssue).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the opaque request is not bound to this Eve session", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockResolveGatedIssue.mockResolvedValue({ kind: "not_authorized" } as never);
+    const res = await POST(req(correctionBody));
+    expect(res.status).toBe(403);
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
 

@@ -14,9 +14,6 @@ import {
   dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
   formatChangeRecordDate,
-  gatedGithubIssueApiPath,
-  gatedGithubIssueMutationStatusMatches,
-  gatedGithubIssuePostBody,
   isCorrectionPacketsEnvelope,
   isChangeRecordResponse,
   isAcceptanceRecordDetailEnvelope,
@@ -24,7 +21,6 @@ import {
   isDependencyObservationsEnvelope,
   isDependencyDraftProposal,
   isFinalDecisionEnvelope,
-  isGatedGithubIssueMutationResponse,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
   criterionArtifactApiPath,
@@ -1243,13 +1239,6 @@ const criterionOutcomesNotReady: AcceptanceCriterionOutcomesEnvelope = {
   reason: "criterion_outcome_bundle_not_recorded",
 };
 
-const detailPanelActionProps = {
-  canCreateGatedGithubIssue: false,
-  onCreateGatedGithubIssue: () => undefined,
-  creatingGatedGithubIssue: false,
-  gatedGithubIssueError: null,
-};
-
 describe("Change Record detail view", () => {
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
@@ -1264,12 +1253,6 @@ describe("Change Record detail view", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
       "/api/v1/workspaces/workspace%2F1/change-records/record%2F2"
     );
-    expect(gatedGithubIssueApiPath("workspace/1", "record/2")).toBe(
-      "/api/v1/workspaces/workspace%2F1/change-records/record%2F2/gated-issue",
-    );
-    expect(gatedGithubIssuePostBody(GATED_BINDING_ID)).toEqual({
-      bindingId: GATED_BINDING_ID,
-    });
   });
 
   it("renders issue and PR anchors from the record, not event text", () => {
@@ -2346,7 +2329,6 @@ describe("Change Record detail view", () => {
       criterionOutcomes: criterionOutcomesNotReady,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
     });
     const content = textContent(rendered);
 
@@ -2423,83 +2405,19 @@ describe("Change Record detail view", () => {
     expect(isAcceptanceRecordDetailEnvelope(wrongReceipt)).toBe(false);
   });
 
-  it("accepts only closed gated-issue mutation responses before a client reload", () => {
-    const reported = {
-      kind: "reported",
-      current: true,
-      issue: publishedGatedIssue,
-    } as const;
-    expect(isGatedGithubIssueMutationResponse(reported, gatedIssueBinding)).toBe(true);
-    expect(gatedGithubIssueMutationStatusMatches(201, reported)).toBe(true);
-    expect(gatedGithubIssueMutationStatusMatches(200, reported)).toBe(false);
-    const replayed = { ...reported, kind: "replayed" as const };
-    expect(gatedGithubIssueMutationStatusMatches(200, replayed)).toBe(true);
-    expect(gatedGithubIssueMutationStatusMatches(201, replayed)).toBe(false);
-
-    const failedIssue: CurrentGatedIssue = {
-      ...reservedGatedIssue,
-      status: "bounded_failed",
-      receipt: { kind: "bounded_failed", reason: "github_rejected" },
-      reportedAt: "2026-08-11T09:01:01.000Z",
-    };
-    const reportedFailure = { kind: "reported" as const, current: true, issue: failedIssue };
-    expect(gatedGithubIssueMutationStatusMatches(200, reportedFailure)).toBe(true);
-    expect(gatedGithubIssueMutationStatusMatches(201, reportedFailure)).toBe(false);
-
-    expect(isGatedGithubIssueMutationResponse({
-      kind: "held",
-      binding: gatedIssueBinding,
-      issue: reservedGatedIssue,
-    }, gatedIssueBinding)).toBe(true);
-    expect(isGatedGithubIssueMutationResponse({
-      kind: "terminal",
-      binding: gatedIssueBinding,
-      issue: publishedGatedIssue,
-    }, gatedIssueBinding)).toBe(true);
-    expect(isGatedGithubIssueMutationResponse({
-      kind: "held",
-      reason: "publication_outcome_not_persisted",
-    }, gatedIssueBinding)).toBe(true);
-    expect(gatedGithubIssueMutationStatusMatches(503, {
-      kind: "held",
-      reason: "publication_outcome_not_persisted",
-    })).toBe(true);
-    expect(isGatedGithubIssueMutationResponse({ kind: "reported" }, gatedIssueBinding)).toBe(false);
-    expect(isGatedGithubIssueMutationResponse({
-      kind: "held",
-      binding: gatedIssueBinding,
-      issue: reservedGatedIssue,
-      request: { title: "untrusted", body: "untrusted" },
-    }, gatedIssueBinding)).toBe(false);
-    expect(isGatedGithubIssueMutationResponse({
-      kind: "terminal",
-      binding: { ...gatedIssueBinding, headSha: "0".repeat(40) },
-      issue: publishedGatedIssue,
-    }, gatedIssueBinding)).toBe(false);
-  });
-
-  it("renders the gated issue state without implying labels, factory intake, or retry authority", () => {
-    const created: string[] = [];
+  it("renders read-only gated issue custody without exposing a Console write path", () => {
     const eligible = GatedGithubIssueCard({
       gatedIssue: gatedIssueProjection(null),
-      canCreate: true,
-      onCreate: (bindingId) => created.push(bindingId),
-      creating: false,
-      error: null,
     });
     expect(textContent(eligible)).toContain("Gated issue: Not recorded");
-    expect(textContent(eligible)).toContain("This creation sends no trigger label");
-    expect(buttonLabels(eligible)).toEqual(["Create unlabeled GitHub issue"]);
-    const button = elementsOfType(eligible, "button")[0];
-    (button?.props?.onClick as (() => void) | undefined)?.();
-    expect(created).toEqual([GATED_BINDING_ID]);
+    expect(textContent(eligible)).toContain("Ask Jace to create the current correction issue");
+    expect(textContent(eligible)).toContain(record.id);
+    expect(textContent(eligible)).toContain("request human approval before GitHub is called");
+    expect(textContent(eligible)).toContain("Jace's gated path sends no trigger label");
+    expect(buttonLabels(eligible)).toEqual([]);
 
     const reserved = GatedGithubIssueCard({
       gatedIssue: gatedIssueProjection(reservedGatedIssue),
-      canCreate: true,
-      onCreate: () => undefined,
-      creating: false,
-      error: null,
     });
     expect(textContent(reserved)).toContain("Gated issue publication: Held");
     expect(textContent(reserved)).toContain("will not be retried automatically");
@@ -2507,10 +2425,6 @@ describe("Change Record detail view", () => {
 
     const published = GatedGithubIssueCard({
       gatedIssue: gatedIssueProjection(publishedGatedIssue),
-      canCreate: true,
-      onCreate: () => undefined,
-      creating: false,
-      error: null,
     });
     expect(textContent(published)).toContain("Gated issue custody: Created");
     expect(links(published)).toEqual([publishedGatedIssue.receipt.githubIssueUrl]);
@@ -2523,10 +2437,6 @@ describe("Change Record detail view", () => {
     };
     expect(textContent(GatedGithubIssueCard({
       gatedIssue: gatedIssueProjection(failedIssue),
-      canCreate: true,
-      onCreate: () => undefined,
-      creating: false,
-      error: null,
     }))).toContain("Gated issue publication: Failed");
 
     const ambiguousIssue: CurrentGatedIssue = {
@@ -2537,34 +2447,27 @@ describe("Change Record detail view", () => {
     };
     expect(textContent(GatedGithubIssueCard({
       gatedIssue: gatedIssueProjection(ambiguousIssue),
-      canCreate: true,
-      onCreate: () => undefined,
-      creating: false,
-      error: null,
     }))).toContain("held without retry");
   });
 
-  it("offers gated issue creation only when the exact current bundle matches the detail binding", () => {
+  it("keeps gated issue guidance read-only even when the current bundle is available", () => {
     const exact = AcceptanceRecordDetailPanel({
       acceptanceDetail: currentGatedIssueDetail,
       criterionOutcomes: currentCriterionOutcomes,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
-      canCreateGatedGithubIssue: true,
     });
-    expect(buttonLabels(exact)).toContain("Create unlabeled GitHub issue");
+    expect(buttonLabels(exact)).toEqual([]);
+    expect(textContent(exact)).toContain("Ask Jace to create the current correction issue");
 
     const unavailableBundle = AcceptanceRecordDetailPanel({
       acceptanceDetail: currentGatedIssueDetail,
       criterionOutcomes: criterionOutcomesNotReady,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
-      canCreateGatedGithubIssue: true,
     });
-    expect(buttonLabels(unavailableBundle)).not.toContain("Create unlabeled GitHub issue");
-    expect(textContent(unavailableBundle)).toContain("Creation requires this exact current bundle");
+    expect(buttonLabels(unavailableBundle)).toEqual([]);
+    expect(textContent(unavailableBundle)).toContain("Ask Jace to create the current correction issue");
   });
 
   it("strictly validates current criterion custody without accepting keys, URLs, or artifact claims on non-proof", () => {
@@ -2720,7 +2623,6 @@ describe("Change Record detail view", () => {
       criterionOutcomes: currentCriterionOutcomes,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
     });
     const content = textContent(rendered);
 
@@ -2763,7 +2665,6 @@ describe("Change Record detail view", () => {
       criterionOutcomes: noArtifactOutcomes,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
     });
     const content = textContent(rendered);
 
@@ -2778,7 +2679,6 @@ describe("Change Record detail view", () => {
       criterionOutcomes: criterionOutcomesNotReady,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      ...detailPanelActionProps,
     });
 
     expect(textContent(rendered)).toContain("No detail is inferred from the raw timeline");

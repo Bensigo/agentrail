@@ -133,6 +133,50 @@ export function sanitizeField(value: unknown, maxLen: number): string {
  * in `approval-message.test.ts`.
  */
 function renderCreateIssue(input: Record<string, unknown>): string {
+  const gated = input["_acceptanceGatedIssue"];
+  if (gated && typeof gated === "object" && !Array.isArray(gated)) {
+    const custody = gated as Record<string, unknown>;
+    const contract = custody["acceptanceContract"] && typeof custody["acceptanceContract"] === "object"
+      && !Array.isArray(custody["acceptanceContract"])
+      ? custody["acceptanceContract"] as Record<string, unknown> : {};
+    const packets = Array.isArray(custody["packets"])
+      ? custody["packets"].map((value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+          const packet = value as Record<string, unknown>;
+          return `${sanitizeField(packet["packetId"], 96)} @ ${sanitizeField(packet["sha256"], 64)}`;
+        }).filter(Boolean)
+      : [];
+    const lines = [
+      "Approve creating this correction issue?",
+      "",
+      `Request: ${sanitizeField(input["acceptanceGatedIssueRequestId"], 64)}`,
+      `Record: ${sanitizeField(custody["recordId"], 64)}`,
+      `Repository: ${sanitizeField(custody["repo"], 201)}`,
+      `Pull request: #${sanitizeField(custody["prNumber"], 20)}`,
+      `Head: ${sanitizeField(custody["headSha"], 40)}`,
+      `Cycle: ${sanitizeField(custody["headCycleId"], 64)}`,
+      `Authority generation: ${sanitizeField(custody["authorityGeneration"], 20)}`,
+      `Contract: ${sanitizeField(contract["id"], 64)} v${sanitizeField(contract["version"], 20)} @ ${sanitizeField(contract["sha256"], 64)}`,
+      `Packet set: ${sanitizeField(custody["packetSetSha256"], 64)}`,
+      `Packet payload set: ${sanitizeField(custody["correctionPacketPayloadSetSha256"], 64)}`,
+      `Draft digest: title ${sanitizeField(custody["titleSha256"], 64)} / body ${sanitizeField(custody["bodySha256"], 64)}`,
+    ];
+    if (packets.length > 0) {
+      lines.push("", `Correction packets (${packets.length}):`);
+      for (const packet of packets) lines.push(`- ${packet}`);
+    }
+    lines.push(
+      "",
+      `Title: ${sanitizeField(custody["title"], 256) || "(untitled)"}`,
+      "",
+      "Draft body:",
+      sanitizeField(custody["body"], 2200),
+      "",
+      "This issue requests correction. It is not repair proof and does not authorize merge.",
+    );
+    return hardTruncate(lines.join("\n"));
+  }
+
   const brief = input["_brief"];
   if (brief && typeof brief === "object" && !Array.isArray(brief)) {
     return renderAlignmentBrief({

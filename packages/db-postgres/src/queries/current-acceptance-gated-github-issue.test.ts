@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  mintAcceptanceGatedGithubIssueApprovalRequest,
+  normalizeAcceptanceGatedGithubIssueReceipt,
   readCurrentAcceptanceGatedGithubIssue,
+  reportAcceptanceGatedGithubIssueApprovalPublication,
+  reportAcceptanceGatedGithubIssueManualReconciliation,
   reportAcceptanceGatedGithubIssuePublication,
+  reserveAcceptanceGatedGithubIssueApprovalRequest,
   reserveCurrentAcceptanceGatedGithubIssue,
+  resolveAcceptanceGatedGithubIssueApprovalRequest,
 } from "./change_records.js";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -81,5 +87,81 @@ describe("current Acceptance gated GitHub issue input boundary", () => {
       outcome: { kind: "ambiguous_hold", reason: "github_unavailable" },
       labels: [],
     } as never)).rejects.toThrow("requires only workspace, publication, and closed receipt");
+  });
+});
+
+describe("Jace approval-bound gated issue boundary", () => {
+  const REQUEST_ID = "66666666-6666-4666-8666-666666666666";
+  const APPROVAL_ID = "77777777-7777-4777-8777-777777777777";
+  const receipt = {
+    kind: "github_201" as const,
+    httpStatus: 201 as const,
+    githubIssueId: "123",
+    githubIssueNumber: 9,
+    githubApiUrl: "https://api.github.com/repos/Acme/Widgets/issues/9",
+    githubIssueUrl: "https://github.com/Acme/Widgets/issues/9",
+    githubRequestId: "REQ:1",
+    responseTitleSha256: "a".repeat(64),
+    responseBodySha256: "b".repeat(64),
+    state: "open" as const,
+  };
+
+  it("accepts no caller draft, repo, packet subset, or workspace locator", async () => {
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: "eve-1",
+      recordId: RECORD_ID,
+      title: "caller title",
+    } as never)).rejects.toThrow("requires only Eve session and Acceptance Record");
+    await expect(resolveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: "eve-1",
+      requestId: REQUEST_ID,
+      workspaceId: WORKSPACE_ID,
+    } as never)).rejects.toThrow("requires only Eve session and opaque request id");
+    await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: "eve-1",
+      requestId: REQUEST_ID,
+      approvalId: APPROVAL_ID,
+      repo: "attacker/repo",
+    } as never)).rejects.toThrow("requires only Eve session, request, and approval");
+    await expect(reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: "eve-1",
+      requestId: REQUEST_ID,
+      approvalId: APPROVAL_ID,
+      receipt,
+      packetIds: ["subset"],
+    } as never)).rejects.toThrow("requires only Eve session, request, approval, and exact receipt");
+    await expect(reportAcceptanceGatedGithubIssueManualReconciliation({
+      eveSessionId: "eve-1",
+      requestId: REQUEST_ID,
+      approvalId: APPROVAL_ID,
+      reason: "retry_allowed",
+    } as never)).rejects.toThrow("requires a closed server reason");
+  });
+
+  it("normalizes owner/repo case and rejects wrong-repo, query, fragment, or digest drift", () => {
+    expect(normalizeAcceptanceGatedGithubIssueReceipt({
+      receipt,
+      repoNormalized: "acme/widgets",
+      titleSha256: receipt.responseTitleSha256,
+      bodySha256: receipt.responseBodySha256,
+    })).toEqual({
+      ...receipt,
+      githubApiUrl: "https://api.github.com/repos/acme/widgets/issues/9",
+      githubIssueUrl: "https://github.com/acme/widgets/issues/9",
+    });
+    for (const changed of [
+      { githubIssueUrl: "https://github.com/other/repo/issues/9" },
+      { githubIssueUrl: "https://github.com/acme/widgets/issues/9?tab=activity" },
+      { githubIssueUrl: "https://github.com/acme/widgets/issues/9#issuecomment-1" },
+      { githubApiUrl: "https://api.github.com/repos/other/repo/issues/9" },
+      { responseBodySha256: "0".repeat(64) },
+    ]) {
+      expect(normalizeAcceptanceGatedGithubIssueReceipt({
+        receipt: { ...receipt, ...changed },
+        repoNormalized: "acme/widgets",
+        titleSha256: receipt.responseTitleSha256,
+        bodySha256: receipt.responseBodySha256,
+      })).toBeNull();
+    }
   });
 });

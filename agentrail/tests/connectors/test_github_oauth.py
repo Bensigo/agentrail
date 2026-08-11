@@ -207,6 +207,48 @@ class CreateIssueTests(unittest.TestCase):
         self.assertEqual(ref.number, 7)
         self.assertEqual(ref.url, "https://github.com/acme/widgets/issues/7")
 
+    def test_create_unlabeled_issue_returns_exact_201_receipt(self):
+        created = {
+            "id": 9001,
+            "number": 8,
+            "title": "Correction",
+            "body": _GOOD_BODY,
+            "state": "open",
+            "url": "https://api.github.com/repos/Acme/Widgets/issues/8",
+            "html_url": "https://github.com/Acme/Widgets/issues/8",
+            "_agentrail_github_request_id": "ABCD:1234",
+        }
+        transport = _fake_transport(
+            {"POST /repos/acme/widgets/issues": (201, created)}
+        )
+        client = GitHubOAuthClient(token="t", repos=["acme/widgets"], transport=transport)
+
+        receipt = client.create_unlabeled_issue(
+            repo="acme/widgets", title="Correction", body=_GOOD_BODY
+        )
+
+        post = next(c for c in transport.calls if c["method"] == "POST")
+        sent = json.loads(post["body"])
+        self.assertEqual(sent, {"title": "Correction", "body": _GOOD_BODY})
+        self.assertNotIn("labels", sent)
+        self.assertEqual(receipt.github_issue_id, "9001")
+        self.assertEqual(receipt.github_issue_number, 8)
+        self.assertEqual(receipt.github_request_id, "ABCD:1234")
+        self.assertEqual(receipt.github_issue_url, created["html_url"])
+
+    def test_create_unlabeled_issue_fails_closed_without_complete_receipt(self):
+        transport = _fake_transport({
+            "POST /repos/acme/widgets/issues": (
+                201,
+                {"number": 8, "html_url": "https://github.com/acme/widgets/issues/8"},
+            )
+        })
+        client = GitHubOAuthClient(token="t", repos=["acme/widgets"], transport=transport)
+        with self.assertRaisesRegex(RuntimeError, "complete issue creation receipt"):
+            client.create_unlabeled_issue(
+                repo="acme/widgets", title="Correction", body=_GOOD_BODY
+            )
+
 
 class UpdateIssueTests(unittest.TestCase):
     def test_update_issue_patches_title_and_body(self):

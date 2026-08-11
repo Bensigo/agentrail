@@ -13,6 +13,7 @@ import {
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceGatedGithubIssuePublications,
+  acceptanceGatedGithubIssueRequests,
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
@@ -33,9 +34,11 @@ describe("0096 Acceptance gated GitHub issue migration", () => {
     expect(acceptanceGatedGithubIssuePublications.packets.getSQLType()).toBe("jsonb");
     const config = getTableConfig(acceptanceGatedGithubIssuePublications);
     expect(config.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_gated_github_issues_approval_key",
       "acceptance_gated_github_issues_github_id_key",
       "acceptance_gated_github_issues_record_cycle_key",
       "acceptance_gated_github_issues_repo_number_key",
+      "acceptance_gated_github_issues_request_key",
     ]);
   });
 
@@ -59,6 +62,61 @@ describe("0096 Acceptance gated GitHub issue migration", () => {
     expect(journal.entries.find(
       (entry: { tag: string }) => entry.tag === "0096_acceptance_gated_github_issues",
     )).toMatchObject({ idx: 101, version: "7", breakpoints: true });
+  });
+});
+
+describe("0097 Jace approval custody for gated GitHub issues", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0097_acceptance_gated_issue_approval_custody.sql",
+  );
+
+  it("stores one Eve/member-bound opaque request and one approval-bound publication", () => {
+    expect(acceptanceGatedGithubIssueRequests.workspaceId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.recordId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.jaceSessionId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.eveSessionId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.repoNormalized.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.packetSetSha256.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.bodySha256.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssueRequests.status.hasDefault).toBe(true);
+    const requestConfig = getTableConfig(acceptanceGatedGithubIssueRequests);
+    expect(requestConfig.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_gated_github_issue_requests_approval_key",
+      "acceptance_gated_github_issue_requests_record_cycle_key",
+      "acceptance_gated_github_issue_requests_url_key",
+    ]);
+    expect(acceptanceGatedGithubIssuePublications.approvalRequestId.notNull).toBe(false);
+    expect(acceptanceGatedGithubIssuePublications.approvalId.notNull).toBe(false);
+    expect(acceptanceGatedGithubIssuePublications.eveSessionId.notNull).toBe(false);
+    expect(acceptanceGatedGithubIssuePublications.repoNormalized.notNull).toBe(true);
+  });
+
+  it("preserves protocol-v1 rows while making every v2 write approval-bound and case-normalized", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_gated_github_issue_requests"');
+    expect(sqlText).toContain('"repo_normalized" = lower("repo")');
+    expect(sqlText).toContain('"request_protocol_version" IN (1, 2)');
+    expect(sqlText).toContain('"approval_request_id" IS NOT NULL');
+    expect(sqlText).toContain('"approval_id" IS NOT NULL');
+    expect(sqlText).toContain("external_write_indeterminate");
+    expect(sqlText).toContain("publication_receipt_failed");
+    expect(sqlText).toContain("external_issue_wrong_repo");
+    expect(sqlText).toContain("split_part(\"published_issue_url\", '/issues/', 1)");
+    expect(sqlText).toContain('("repo_normalized", "github_issue_number")');
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("refresh_token");
+  });
+
+  it("is the sole next migration after #1704's 0096 packet custody", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8",
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0097_acceptance_gated_issue_approval_custody",
+    )).toMatchObject({ idx: 102, version: "7", breakpoints: true });
+    expect(journal.entries.at(-2)?.tag).toBe("0096_acceptance_gated_github_issues");
+    expect(journal.entries.at(-1)?.tag).toBe("0097_acceptance_gated_issue_approval_custody");
   });
 });
 

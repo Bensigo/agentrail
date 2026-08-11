@@ -246,6 +246,26 @@ describe("POST /api/v1/runner/approvals/[id]/published — create_issue-only (#1
     expect(res.status).toBe(200);
     expect(mockStamp).toHaveBeenCalledWith("approval-1", REAL_URL);
   });
+
+  it("409 for a packet-bound correction approval before session lookup or the generic URL stamp", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: {
+        acceptanceGatedIssueRequestId: "11111111-1111-4111-8111-111111111111",
+        _acceptanceGatedIssue: { version: 1, bodySha256: "a".repeat(64) },
+      },
+    } as never);
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "Acceptance correction publication requires its bound receipt route",
+    });
+    expect(mockGetSession).not.toHaveBeenCalled();
+    expect(mockStamp).not.toHaveBeenCalled();
+    expect(mockLink).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/v1/runner/approvals/[id]/published — resolution chain (404-indistinguishable)", () => {

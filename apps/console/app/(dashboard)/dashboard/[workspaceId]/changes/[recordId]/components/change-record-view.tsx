@@ -295,14 +295,202 @@ export type AcceptancePrReviewMetricsEnvelope =
         | "invalid_post_merge_custody";
     };
 
-type ChangeRecordResponse = {
+type AcceptanceDependencyObservationStatus =
+  | "observed"
+  | "refused_unsafe_runtime"
+  | "refused_lockfile"
+  | "refused_baseline"
+  | "refused_security"
+  | "not_proven";
+
+type AcceptanceDependencyObservationReason =
+  | "baseline_head_mismatch"
+  | "manifest_source_not_proven"
+  | "lockfile_source_not_proven"
+  | "unsafe_node_runtime"
+  | "unsafe_package_manager"
+  | "unsafe_package_manager_profile"
+  | "unsafe_package_manager_argv"
+  | "runtime_evidence_unavailable"
+  | "runtime_evidence_ambiguous"
+  | "package_manager_evidence_unavailable"
+  | "package_manager_evidence_ambiguous"
+  | "lockfile_missing"
+  | "lockfile_uncommitted"
+  | "lockfile_evidence_unavailable"
+  | "lockfile_evidence_ambiguous"
+  | "security_affected"
+  | "security_evidence_unavailable"
+  | "security_evidence_ambiguous";
+
+type AcceptanceDependencyCandidate = {
+  package: string;
+  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+  specifier: string;
+  currentVersion: string;
+  targetVersion: string;
+};
+
+type AcceptanceDependencyRuntimeEvidence = {
+  disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
+  nodeVersion: string | null;
+  evidenceSha256: string;
+};
+
+type AcceptanceDependencyPackageManagerEvidence = {
+  disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
+  name: string;
+  version: string | null;
+  profile: string;
+  updateArgv: string[];
+  evidenceSha256: string;
+};
+
+type AcceptanceDependencyManifestEvidence = { path: string; blobSha: string };
+type AcceptanceDependencyLockfileEvidence = {
+  disposition: "present" | "missing" | "uncommitted" | "unavailable" | "ambiguous";
+  path: string;
+  blobSha: string | null;
+  evidenceSha256: string;
+};
+type AcceptanceDependencyBaselineEvidence = { headSha: string };
+type AcceptanceDependencySecurityEvidence = {
+  disposition: "clear" | "affected" | "unavailable" | "ambiguous";
+  provider: "osv";
+  reference: string;
+  reportSha256: string;
+};
+
+type AcceptanceDependencyObservationBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  reviewJobId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  compiledPack: {
+    id: string;
+    sha256: string;
+    sourceSnapshotId: string;
+    sourceCustodyIdentitySha256: string;
+    compilerVersion: string;
+    policyVersion: string;
+    exactHeadDependencyTreeProofsSha256: string;
+  };
+};
+
+type AcceptanceDependencyObservation = {
+  eventId: string;
+  eventKey: string;
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+  candidateFingerprint: string;
+  candidate: AcceptanceDependencyCandidate;
+  runtime: AcceptanceDependencyRuntimeEvidence;
+  packageManager: AcceptanceDependencyPackageManagerEvidence;
+  manifest: AcceptanceDependencyManifestEvidence;
+  lockfile: AcceptanceDependencyLockfileEvidence;
+  baseline: AcceptanceDependencyBaselineEvidence;
+  security: AcceptanceDependencySecurityEvidence;
+  observedAt: string;
+};
+
+type AcceptanceDependencyApproval = {
+  eventId: string;
+  eventKey: string;
+  observationEventId: string;
+  candidateFingerprint: string;
+  approvedBy: string;
+  approvedRole: "owner" | "admin";
+  approvedAt: string;
+};
+
+export type AcceptanceDependencyExternalBuilderPack = {
+  packId: string;
+  eventId: string;
+  eventKey: string;
+  observationEventId: string;
+  approvalEventId: string;
+  candidateFingerprint: string;
+  binding: AcceptanceDependencyObservationBinding;
+  candidate: AcceptanceDependencyCandidate;
+  runtime: AcceptanceDependencyRuntimeEvidence;
+  packageManager: AcceptanceDependencyPackageManagerEvidence;
+  manifest: AcceptanceDependencyManifestEvidence;
+  lockfile: AcceptanceDependencyLockfileEvidence;
+  baseline: AcceptanceDependencyBaselineEvidence;
+  security: AcceptanceDependencySecurityEvidence;
+  route: {
+    selectionEventId: string;
+    id: string;
+    adapter: "github_codex" | "github_claude";
+    configurationVersion: number;
+    snapshot: {
+      builder: { adapter: "github_codex" | "github_claude"; routeId: string };
+      protocol: "github_comment";
+      capability: {
+        availability: "unverified";
+        activation: "github_mention";
+        acknowledgement: "vendor_activity";
+        repairHead: "github_synchronize";
+      };
+      scopeBoundary: "correction_delivery_only";
+    };
+    snapshotSha256: string;
+  };
+  deliveryAuthority: "not_granted";
+  scopeBoundary: "dependency_external_builder_pack_only";
+  reviewRequirement: "exact_head_r7_reentry";
+  mintedAt: string;
+};
+
+export type AcceptanceDependencyObservationsEnvelope =
+  | {
+      kind: "current";
+      binding: {
+        workspaceId: string;
+        recordId: string;
+        repo: string;
+        prNumber: number;
+        headSha: string;
+        headCycleId: string;
+        authorityGeneration: number;
+        acceptanceContract: { id: string; version: number; sha256: string };
+      };
+      observations: Array<{
+        binding: AcceptanceDependencyObservationBinding;
+        observation: AcceptanceDependencyObservation;
+        approval: AcceptanceDependencyApproval | null;
+        externalBuilderPack: AcceptanceDependencyExternalBuilderPack | null;
+      }>;
+    }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | {
+      kind: "not_ready";
+      reason:
+        | "confirmed_contract_unavailable"
+        | "compiled_pack_unavailable"
+        | "invalid_observation_custody"
+        | "invalid_compiled_pack_custody"
+        | "selected_route_unavailable"
+        | "selected_route_not_external_builder"
+        | "invalid_approval_pack_custody";
+    };
+
+export type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   correctionPackets: AcceptanceCorrectionPacketsEnvelope;
   finalDecision: AcceptanceFinalDecisionEnvelope;
   reviewMetrics: AcceptancePrReviewMetricsEnvelope;
+  dependencyObservations: AcceptanceDependencyObservationsEnvelope;
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
+  canApproveDependencyObservation: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -876,8 +1064,364 @@ export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrRe
     && reviewEffort.averageMinutes === totalMinutes / effortValues.length;
 }
 
+const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
+const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
+const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+
+function isSafeRepoPath(value: unknown): value is string {
+  return isSafeText(value, 1_024) && !value.startsWith("/") && !value.includes("\\")
+    && !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+function exactJsonEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => exactJsonEqual(value, right[index]));
+  }
+  if (!isObject(left) || !isObject(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && exactJsonEqual(left[key], right[key]));
+}
+
+function isDependencyCandidate(value: unknown): value is AcceptanceDependencyCandidate {
+  return isObject(value) && hasExactKeys(value, [
+    "package", "dependencyKind", "specifier", "currentVersion", "targetVersion",
+  ]) && typeof value.package === "string" && value.package.length <= 214
+    && NPM_PACKAGE.test(value.package)
+    && (value.dependencyKind === "dependencies" || value.dependencyKind === "devDependencies"
+      || value.dependencyKind === "optionalDependencies" || value.dependencyKind === "peerDependencies")
+    && isSafeText(value.specifier, 256)
+    && isSafeText(value.currentVersion, 128) && EXACT_SEMVER.test(value.currentVersion)
+    && isSafeText(value.targetVersion, 128) && EXACT_SEMVER.test(value.targetVersion)
+    && value.currentVersion !== value.targetVersion;
+}
+
+function isDependencyRuntime(value: unknown): value is AcceptanceDependencyRuntimeEvidence {
+  if (!isObject(value) || !hasExactKeys(value, ["disposition", "nodeVersion", "evidenceSha256"])
+    || (value.disposition !== "safe" && value.disposition !== "unsafe"
+      && value.disposition !== "unavailable" && value.disposition !== "ambiguous")
+    || (value.nodeVersion !== null && !isSafeText(value.nodeVersion, 64))
+    || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
+  return value.disposition === "safe"
+    ? typeof value.nodeVersion === "string" && EXACT_SEMVER.test(value.nodeVersion)
+    : value.disposition === "unsafe"
+      ? true
+      : value.nodeVersion === null;
+}
+
+function isDependencyPackageManager(
+  value: unknown
+): value is AcceptanceDependencyPackageManagerEvidence {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "disposition", "name", "version", "profile", "updateArgv", "evidenceSha256",
+  ]) || (value.disposition !== "safe" && value.disposition !== "unsafe"
+      && value.disposition !== "unavailable" && value.disposition !== "ambiguous")
+    || typeof value.name !== "string" || !SAFE_NAME.test(value.name)
+    || (value.version !== null && !isSafeText(value.version, 64))
+    || !isSafeText(value.profile, 64) || !Array.isArray(value.updateArgv)
+    || value.updateArgv.length < 1 || value.updateArgv.length > 16
+    || !value.updateArgv.every((token) => isSafeText(token, 256))
+    || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
+  return value.disposition === "safe"
+    ? typeof value.version === "string" && EXACT_SEMVER.test(value.version)
+    : value.disposition === "unsafe"
+      ? true
+      : value.version === null;
+}
+
+function isDependencyManifest(value: unknown): value is AcceptanceDependencyManifestEvidence {
+  return isObject(value) && hasExactKeys(value, ["path", "blobSha"])
+    && isSafeRepoPath(value.path)
+    && (value.path === "package.json" || value.path.endsWith("/package.json"))
+    && typeof value.blobSha === "string" && SHA1.test(value.blobSha);
+}
+
+function isDependencyLockfile(value: unknown): value is AcceptanceDependencyLockfileEvidence {
+  if (!isObject(value) || !hasExactKeys(value, ["disposition", "path", "blobSha", "evidenceSha256"])
+    || (value.disposition !== "present" && value.disposition !== "missing"
+      && value.disposition !== "uncommitted" && value.disposition !== "unavailable"
+      && value.disposition !== "ambiguous")
+    || !isSafeRepoPath(value.path)
+    || (value.path !== "pnpm-lock.yaml" && !value.path.endsWith("/pnpm-lock.yaml"))
+    || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
+  return value.disposition === "present"
+    ? typeof value.blobSha === "string" && SHA1.test(value.blobSha)
+    : value.blobSha === null;
+}
+
+function isDependencyBaseline(value: unknown): value is AcceptanceDependencyBaselineEvidence {
+  return isObject(value) && hasExactKeys(value, ["headSha"])
+    && typeof value.headSha === "string" && SHA1.test(value.headSha);
+}
+
+function isDependencySecurity(
+  value: unknown,
+  candidate: AcceptanceDependencyCandidate,
+): value is AcceptanceDependencySecurityEvidence {
+  return isObject(value) && hasExactKeys(value, ["disposition", "provider", "reference", "reportSha256"])
+    && (value.disposition === "clear" || value.disposition === "affected"
+      || value.disposition === "unavailable" || value.disposition === "ambiguous")
+    && value.provider === "osv"
+    && value.reference === `osv:npm:${candidate.package}@${candidate.targetVersion}`
+    && typeof value.reportSha256 === "string" && SHA256.test(value.reportSha256);
+}
+
+function isDependencyObservationBinding(value: unknown): value is AcceptanceDependencyObservationBinding {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId",
+    "authorityGeneration", "reviewJobId", "acceptanceContract", "compiledPack",
+  ]) || typeof value.workspaceId !== "string" || !UUID.test(value.workspaceId)
+    || typeof value.recordId !== "string" || !UUID.test(value.recordId)
+    || !isSafeRepo(value.repo) || !isPositiveInteger(value.prNumber)
+    || typeof value.headSha !== "string" || !SHA1.test(value.headSha)
+    || typeof value.headCycleId !== "string" || !UUID.test(value.headCycleId)
+    || typeof value.reviewJobId !== "string" || !UUID.test(value.reviewJobId)
+    || value.reviewJobId !== value.headCycleId
+    || !isNonNegativeInteger(value.authorityGeneration)
+    || !isObject(value.acceptanceContract)
+    || !hasExactKeys(value.acceptanceContract, ["id", "version", "sha256"])
+    || typeof value.acceptanceContract.id !== "string" || !UUID.test(value.acceptanceContract.id)
+    || !isPositiveInteger(value.acceptanceContract.version)
+    || typeof value.acceptanceContract.sha256 !== "string" || !SHA256.test(value.acceptanceContract.sha256)
+    || !isObject(value.compiledPack) || !hasExactKeys(value.compiledPack, [
+      "id", "sha256", "sourceSnapshotId", "sourceCustodyIdentitySha256", "compilerVersion",
+      "policyVersion", "exactHeadDependencyTreeProofsSha256",
+    ])) return false;
+  return typeof value.compiledPack.id === "string" && UUID.test(value.compiledPack.id)
+    && typeof value.compiledPack.sha256 === "string" && SHA256.test(value.compiledPack.sha256)
+    && typeof value.compiledPack.sourceSnapshotId === "string" && UUID.test(value.compiledPack.sourceSnapshotId)
+    && typeof value.compiledPack.sourceCustodyIdentitySha256 === "string"
+    && SHA256.test(value.compiledPack.sourceCustodyIdentitySha256)
+    && isSafeText(value.compiledPack.compilerVersion, 128)
+    && isSafeText(value.compiledPack.policyVersion, 128)
+    && typeof value.compiledPack.exactHeadDependencyTreeProofsSha256 === "string"
+    && SHA256.test(value.compiledPack.exactHeadDependencyTreeProofsSha256);
+}
+
+function isDependencyObservationReason(value: unknown): value is AcceptanceDependencyObservationReason {
+  return value === "baseline_head_mismatch" || value === "manifest_source_not_proven"
+    || value === "lockfile_source_not_proven" || value === "unsafe_node_runtime"
+    || value === "unsafe_package_manager" || value === "unsafe_package_manager_profile"
+    || value === "unsafe_package_manager_argv" || value === "runtime_evidence_unavailable"
+    || value === "runtime_evidence_ambiguous" || value === "package_manager_evidence_unavailable"
+    || value === "package_manager_evidence_ambiguous" || value === "lockfile_missing"
+    || value === "lockfile_uncommitted" || value === "lockfile_evidence_unavailable"
+    || value === "lockfile_evidence_ambiguous" || value === "security_affected"
+    || value === "security_evidence_unavailable" || value === "security_evidence_ambiguous";
+}
+
+function isDependencyObservation(
+  value: unknown,
+  binding: AcceptanceDependencyObservationBinding,
+): value is AcceptanceDependencyObservation {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "eventId", "eventKey", "status", "reasons", "candidateFingerprint", "candidate", "runtime",
+    "packageManager", "manifest", "lockfile", "baseline", "security", "observedAt",
+  ]) || typeof value.eventId !== "string" || !UUID.test(value.eventId)
+    || (value.status !== "observed" && value.status !== "refused_unsafe_runtime"
+      && value.status !== "refused_lockfile" && value.status !== "refused_baseline"
+      && value.status !== "refused_security" && value.status !== "not_proven")
+    || typeof value.candidateFingerprint !== "string" || !DEPENDENCY_FINGERPRINT.test(value.candidateFingerprint)
+    || value.eventKey !== `acceptance-dependency-observation:${binding.headCycleId}:${value.candidateFingerprint.slice("sha256:".length)}`
+    || !Array.isArray(value.reasons) || value.reasons.length > 20
+    || !value.reasons.every(isDependencyObservationReason)
+    || new Set(value.reasons).size !== value.reasons.length
+    || (value.status === "observed" ? value.reasons.length !== 0 : value.reasons.length === 0)
+    || !isDependencyCandidate(value.candidate)
+    || !isDependencyRuntime(value.runtime)
+    || !isDependencyPackageManager(value.packageManager)
+    || !isDependencyManifest(value.manifest)
+    || !isDependencyLockfile(value.lockfile)
+    || !isDependencyBaseline(value.baseline)
+    || !isDependencySecurity(value.security, value.candidate)
+    || !isIsoTimestamp(value.observedAt)) return false;
+  if (value.status !== "observed") return true;
+  const expectedArgv = [
+    "pnpm", "update", `${value.candidate.package}@${value.candidate.targetVersion}`,
+    "--lockfile-only", "--ignore-scripts",
+  ];
+  return value.runtime.disposition === "safe"
+    && value.packageManager.disposition === "safe"
+    && value.packageManager.name === "pnpm"
+    && value.packageManager.profile === "pnpm_lockfile_only_v1"
+    && exactJsonEqual(value.packageManager.updateArgv, expectedArgv)
+    && value.lockfile.disposition === "present"
+    && value.security.disposition === "clear"
+    && value.baseline.headSha === binding.headSha;
+}
+
+function isDependencyApproval(
+  value: unknown,
+  binding: AcceptanceDependencyObservationBinding,
+  observation: AcceptanceDependencyObservation,
+): value is AcceptanceDependencyApproval {
+  return isObject(value) && hasExactKeys(value, [
+    "eventId", "eventKey", "observationEventId", "candidateFingerprint", "approvedBy",
+    "approvedRole", "approvedAt",
+  ]) && typeof value.eventId === "string" && UUID.test(value.eventId)
+    && value.eventKey === `acceptance-dependency-approval:${binding.headCycleId}:${observation.candidateFingerprint.slice("sha256:".length)}`
+    && value.observationEventId === observation.eventId
+    && value.candidateFingerprint === observation.candidateFingerprint
+    && isUserActor(value.approvedBy)
+    && (value.approvedRole === "owner" || value.approvedRole === "admin")
+    && isIsoTimestamp(value.approvedAt);
+}
+
+function isDependencyExternalBuilderPack(
+  value: unknown,
+  binding: AcceptanceDependencyObservationBinding,
+  observation: AcceptanceDependencyObservation,
+  approval: AcceptanceDependencyApproval,
+): value is AcceptanceDependencyExternalBuilderPack {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "packId", "eventId", "eventKey", "observationEventId", "approvalEventId", "candidateFingerprint",
+    "binding", "candidate", "runtime", "packageManager", "manifest", "lockfile", "baseline", "security",
+    "route", "deliveryAuthority", "scopeBoundary", "reviewRequirement", "mintedAt",
+  ]) || typeof value.packId !== "string" || !UUID.test(value.packId)
+    || typeof value.eventId !== "string" || !UUID.test(value.eventId)
+    || value.eventKey !== `acceptance-dependency-external-builder-pack:${binding.headCycleId}:${observation.candidateFingerprint.slice("sha256:".length)}`
+    || value.observationEventId !== observation.eventId || value.approvalEventId !== approval.eventId
+    || value.candidateFingerprint !== observation.candidateFingerprint
+    || !isDependencyObservationBinding(value.binding) || !exactJsonEqual(value.binding, binding)
+    || !exactJsonEqual(value.candidate, observation.candidate)
+    || !exactJsonEqual(value.runtime, observation.runtime)
+    || !exactJsonEqual(value.packageManager, observation.packageManager)
+    || !exactJsonEqual(value.manifest, observation.manifest)
+    || !exactJsonEqual(value.lockfile, observation.lockfile)
+    || !exactJsonEqual(value.baseline, observation.baseline)
+    || !exactJsonEqual(value.security, observation.security)
+    || !isObject(value.route) || !hasExactKeys(value.route, [
+      "selectionEventId", "id", "adapter", "configurationVersion", "snapshot", "snapshotSha256",
+    ]) || typeof value.route.selectionEventId !== "string" || !UUID.test(value.route.selectionEventId)
+    || typeof value.route.id !== "string" || !UUID.test(value.route.id)
+    || (value.route.adapter !== "github_codex" && value.route.adapter !== "github_claude")
+    || !isPositiveInteger(value.route.configurationVersion)
+    || typeof value.route.snapshotSha256 !== "string" || !SHA256.test(value.route.snapshotSha256)
+    || !isObject(value.route.snapshot) || !hasExactKeys(value.route.snapshot, [
+      "builder", "protocol", "capability", "scopeBoundary",
+    ]) || !isObject(value.route.snapshot.builder)
+    || !hasExactKeys(value.route.snapshot.builder, ["adapter", "routeId"])
+    || value.route.snapshot.builder.adapter !== value.route.adapter
+    || value.route.snapshot.builder.routeId !== value.route.id
+    || value.route.snapshot.protocol !== "github_comment"
+    || !isObject(value.route.snapshot.capability)
+    || !hasExactKeys(value.route.snapshot.capability, [
+      "availability", "activation", "acknowledgement", "repairHead",
+    ]) || value.route.snapshot.capability.availability !== "unverified"
+    || value.route.snapshot.capability.activation !== "github_mention"
+    || value.route.snapshot.capability.acknowledgement !== "vendor_activity"
+    || value.route.snapshot.capability.repairHead !== "github_synchronize"
+    || value.route.snapshot.scopeBoundary !== "correction_delivery_only"
+    || value.deliveryAuthority !== "not_granted"
+    || value.scopeBoundary !== "dependency_external_builder_pack_only"
+    || value.reviewRequirement !== "exact_head_r7_reentry"
+    || !isIsoTimestamp(value.mintedAt)) return false;
+  return true;
+}
+
+export function isDependencyObservationsEnvelope(
+  value: unknown
+): value is AcceptanceDependencyObservationsEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found" || value.kind === "not_current") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind === "not_ready") {
+    return hasExactKeys(value, ["kind", "reason"]) && (
+      value.reason === "confirmed_contract_unavailable"
+      || value.reason === "compiled_pack_unavailable"
+      || value.reason === "invalid_observation_custody"
+      || value.reason === "invalid_compiled_pack_custody"
+      || value.reason === "selected_route_unavailable"
+      || value.reason === "selected_route_not_external_builder"
+      || value.reason === "invalid_approval_pack_custody"
+    );
+  }
+  if (value.kind !== "current" || !hasExactKeys(value, ["kind", "binding", "observations"])
+    || !isObject(value.binding) || !hasExactKeys(value.binding, [
+      "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId",
+      "authorityGeneration", "acceptanceContract",
+    ]) || typeof value.binding.workspaceId !== "string" || !UUID.test(value.binding.workspaceId)
+    || typeof value.binding.recordId !== "string" || !UUID.test(value.binding.recordId)
+    || !isSafeRepo(value.binding.repo) || !isPositiveInteger(value.binding.prNumber)
+    || typeof value.binding.headSha !== "string" || !SHA1.test(value.binding.headSha)
+    || typeof value.binding.headCycleId !== "string" || !UUID.test(value.binding.headCycleId)
+    || !isNonNegativeInteger(value.binding.authorityGeneration)
+    || !isObject(value.binding.acceptanceContract)
+    || !hasExactKeys(value.binding.acceptanceContract, ["id", "version", "sha256"])
+    || typeof value.binding.acceptanceContract.id !== "string"
+    || !UUID.test(value.binding.acceptanceContract.id)
+    || !isPositiveInteger(value.binding.acceptanceContract.version)
+    || typeof value.binding.acceptanceContract.sha256 !== "string"
+    || !SHA256.test(value.binding.acceptanceContract.sha256)
+    || !Array.isArray(value.observations) || value.observations.length > 100) return false;
+
+  const binding = value.binding;
+  const eventIds = new Set<string>();
+  const fingerprints = new Set<string>();
+  let priorEventKey: string | null = null;
+  return value.observations.every((item) => {
+    if (!isObject(item) || !hasExactKeys(item, [
+      "binding", "observation", "approval", "externalBuilderPack",
+    ]) || !isDependencyObservationBinding(item.binding)
+      || item.binding.workspaceId !== binding.workspaceId
+      || item.binding.recordId !== binding.recordId
+      || item.binding.repo !== binding.repo
+      || item.binding.prNumber !== binding.prNumber
+      || item.binding.headSha !== binding.headSha
+      || item.binding.headCycleId !== binding.headCycleId
+      || item.binding.authorityGeneration !== binding.authorityGeneration
+      || !exactJsonEqual(item.binding.acceptanceContract, binding.acceptanceContract)
+      || !isDependencyObservation(item.observation, item.binding)
+      || eventIds.has(item.observation.eventId)
+      || fingerprints.has(item.observation.candidateFingerprint)
+      || (priorEventKey !== null && priorEventKey >= item.observation.eventKey)) return false;
+    eventIds.add(item.observation.eventId);
+    fingerprints.add(item.observation.candidateFingerprint);
+    priorEventKey = item.observation.eventKey;
+    if (item.approval === null || item.externalBuilderPack === null) {
+      return item.approval === null && item.externalBuilderPack === null;
+    }
+    return item.observation.status === "observed"
+      && isDependencyApproval(item.approval, item.binding, item.observation)
+      && isDependencyExternalBuilderPack(
+        item.externalBuilderPack,
+        item.binding,
+        item.observation,
+        item.approval,
+      );
+  });
+}
+
+export function isChangeRecordResponse(value: unknown): value is ChangeRecordResponse {
+  return isObject(value) && hasExactKeys(value, [
+    "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
+    "dependencyObservations", "canRecordFinalDecision", "canRecordReviewEffort",
+    "canApproveDependencyObservation",
+  ]) && isObject(value.record) && Array.isArray(value.events)
+    && isCorrectionPacketsEnvelope(value.correctionPackets)
+    && isFinalDecisionEnvelope(value.finalDecision)
+    && isReviewMetricsEnvelope(value.reviewMetrics)
+    && isDependencyObservationsEnvelope(value.dependencyObservations)
+    && typeof value.canRecordFinalDecision === "boolean"
+    && typeof value.canRecordReviewEffort === "boolean"
+    && typeof value.canApproveDependencyObservation === "boolean";
+}
+
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
+}
+
+export function dependencyObservationApprovalPatchBody(observationEventId: string): {
+  action: "approve_dependency_observation";
+  observationEventId: string;
+} {
+  return { action: "approve_dependency_observation", observationEventId };
 }
 
 export function reviewEffortPatchBody(bindingId: string, minutes: number): {
@@ -1549,6 +2093,176 @@ export function ReviewMetricsPanel({
   );
 }
 
+function dependencyObservationStatusLabel(status: AcceptanceDependencyObservationStatus): string {
+  switch (status) {
+    case "observed": return "Observed";
+    case "refused_unsafe_runtime": return "Refused: unsafe runtime";
+    case "refused_lockfile": return "Refused: lockfile";
+    case "refused_baseline": return "Refused: baseline";
+    case "refused_security": return "Refused: security";
+    case "not_proven": return "Not proven";
+  }
+}
+
+export function DependencyObservationsPanel({
+  dependencyObservations,
+  canApproveDependencyObservation,
+  onApprove,
+  approvingObservationEventId,
+  approvalError,
+}: {
+  dependencyObservations: AcceptanceDependencyObservationsEnvelope;
+  canApproveDependencyObservation: boolean;
+  onApprove: (observationEventId: string) => void;
+  approvingObservationEventId: string | null;
+  approvalError: string | null;
+}) {
+  if (dependencyObservations.kind !== "current") {
+    const message = dependencyObservations.kind === "not_found"
+      ? "No Acceptance Record dependency evidence was found."
+      : dependencyObservations.kind === "not_current"
+        ? "Current dependency evidence is unavailable because the authoritative PR head changed."
+        : "Current dependency evidence could not be validated.";
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Dependency observations
+        </h2>
+        <p className="mt-3 text-sm text-[var(--gray-09)]">{message}</p>
+      </section>
+    );
+  }
+
+  const { binding, observations } = dependencyObservations;
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Dependency observations ({observations.length})
+        </h2>
+        <p className="mt-2 text-xs text-[var(--gray-09)]">
+          Current exact-head evidence. Approval records immutable evidence and Pack custody only;
+          it grants no external authority.
+        </p>
+      </div>
+      <div className="space-y-4 px-4 py-4">
+        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
+          <CorrectionDatum label="Exact head" mono>{binding.headSha}</CorrectionDatum>
+          <CorrectionDatum label="Head cycle" mono>{binding.headCycleId}</CorrectionDatum>
+          <CorrectionDatum label="Authority generation" mono>{binding.authorityGeneration}</CorrectionDatum>
+          <CorrectionDatum label="Acceptance Contract" mono>
+            {binding.acceptanceContract.id} v{binding.acceptanceContract.version}
+          </CorrectionDatum>
+          <CorrectionDatum label="Contract SHA-256" mono>{binding.acceptanceContract.sha256}</CorrectionDatum>
+        </dl>
+
+        {observations.length === 0 ? (
+          <p className="text-sm text-[var(--gray-09)]">No dependency observations are recorded for this head.</p>
+        ) : (
+          <ol className="space-y-3">
+            {observations.map(({ binding: itemBinding, observation, approval, externalBuilderPack }) => {
+              const approving = approvingObservationEventId === observation.eventId;
+              return (
+                <li
+                  key={observation.eventId}
+                  className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-medium text-[var(--gray-12)]">
+                      {observation.candidate.package} {observation.candidate.currentVersion}
+                      {" → "}{observation.candidate.targetVersion}
+                    </p>
+                    <span className="rounded border border-[var(--gray-06)] px-2 py-0.5 text-[var(--gray-10)]">
+                      {dependencyObservationStatusLabel(observation.status)}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                    <CorrectionDatum label="Observation" mono>{observation.eventId}</CorrectionDatum>
+                    <CorrectionDatum label="Candidate fingerprint" mono>{observation.candidateFingerprint}</CorrectionDatum>
+                    <CorrectionDatum label="Manifest" mono>
+                      {observation.manifest.path} · {observation.manifest.blobSha}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Lockfile" mono>
+                      {observation.lockfile.disposition} · {observation.lockfile.path}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Runtime">
+                      {observation.runtime.disposition} · {observation.runtime.nodeVersion ?? "version unavailable"}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Package manager">
+                      {observation.packageManager.disposition} · {observation.packageManager.name}
+                      {observation.packageManager.version ? ` ${observation.packageManager.version}` : ""}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Security evidence">
+                      {observation.security.provider} · {observation.security.disposition}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Observed at">{formatChangeRecordDate(observation.observedAt)}</CorrectionDatum>
+                    <CorrectionDatum label="Compiled Context Pack" mono>{itemBinding.compiledPack.id}</CorrectionDatum>
+                    <CorrectionDatum label="Compiled Pack SHA-256" mono>{itemBinding.compiledPack.sha256}</CorrectionDatum>
+                  </dl>
+                  {observation.reasons.length > 0 ? (
+                    <p className="mt-3 text-[var(--gray-09)]">
+                      Reasons: {observation.reasons.join(", ")}
+                    </p>
+                  ) : null}
+
+                  {approval && externalBuilderPack ? (
+                    <div className="mt-4 rounded border border-[var(--green-06)] bg-[var(--green-03)] p-3">
+                      <p className="font-medium text-[var(--gray-12)]">Immutable external-builder Pack receipt</p>
+                      <p className="mt-2 text-[var(--gray-09)]">
+                        Approved by {approval.approvedRole} · {approval.approvedBy} · {formatChangeRecordDate(approval.approvedAt)}
+                      </p>
+                      <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                        <CorrectionDatum label="Pack ID" mono>{externalBuilderPack.packId}</CorrectionDatum>
+                        <CorrectionDatum label="Pack event" mono>{externalBuilderPack.eventId}</CorrectionDatum>
+                        <CorrectionDatum label="Approval event" mono>{approval.eventId}</CorrectionDatum>
+                        <CorrectionDatum label="Source custody SHA-256" mono>
+                          {externalBuilderPack.binding.compiledPack.sourceCustodyIdentitySha256}
+                        </CorrectionDatum>
+                        <CorrectionDatum label="Dependency-tree proof SHA-256" mono>
+                          {externalBuilderPack.binding.compiledPack.exactHeadDependencyTreeProofsSha256}
+                        </CorrectionDatum>
+                        <CorrectionDatum label="Builder adapter" mono>{externalBuilderPack.route.adapter}</CorrectionDatum>
+                        <CorrectionDatum label="Builder selection" mono>{externalBuilderPack.route.selectionEventId}</CorrectionDatum>
+                        <CorrectionDatum label="Configuration version" mono>
+                          {externalBuilderPack.route.configurationVersion}
+                        </CorrectionDatum>
+                        <CorrectionDatum label="Snapshot SHA-256" mono>{externalBuilderPack.route.snapshotSha256}</CorrectionDatum>
+                        <CorrectionDatum label="External authority" mono>{externalBuilderPack.deliveryAuthority}</CorrectionDatum>
+                        <CorrectionDatum label="Required review" mono>{externalBuilderPack.reviewRequirement}</CorrectionDatum>
+                      </dl>
+                    </div>
+                  ) : observation.status !== "observed" ? (
+                    <p className="mt-3 text-[var(--gray-09)]">
+                      This observation is not eligible for approval.
+                    </p>
+                  ) : canApproveDependencyObservation ? (
+                    <button
+                      type="button"
+                      disabled={approvingObservationEventId !== null}
+                      onClick={() => onApprove(observation.eventId)}
+                      className="mt-3 rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                    >
+                      {approving
+                        ? "Approving & minting…"
+                        : "Approve & mint external-builder Pack"}
+                    </button>
+                  ) : (
+                    <p className="mt-3 text-[var(--gray-09)]">
+                      A workspace owner or admin can approve this observation.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+        {approvalError ? <p className="text-sm text-[var(--red-11)]">{approvalError}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   return (
     <section>
@@ -1612,6 +2326,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [recordingEffort, setRecordingEffort] = useState(false);
   const [effortError, setEffortError] = useState<string | null>(null);
   const [effortMinutes, setEffortMinutes] = useState("");
+  const [approvingObservationEventId, setApprovingObservationEventId] = useState<string | null>(null);
+  const [dependencyApprovalError, setDependencyApprovalError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1627,12 +2343,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!response.ok) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        if (!body.record || !Array.isArray(body.events)
-          || !isCorrectionPacketsEnvelope(body.correctionPackets)
-          || !isFinalDecisionEnvelope(body.finalDecision)
-          || !isReviewMetricsEnvelope(body.reviewMetrics)
-          || typeof body.canRecordFinalDecision !== "boolean"
-          || typeof body.canRecordReviewEffort !== "boolean") {
+        if (!isChangeRecordResponse(body)) {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -1726,6 +2437,45 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
+  async function approveDependencyObservation(observationEventId: string) {
+    if (!data || data.dependencyObservations.kind !== "current") {
+      setDependencyApprovalError("The current dependency observation is no longer available");
+      return;
+    }
+    const item = data.dependencyObservations.observations.find(
+      (candidate) => candidate.observation.eventId === observationEventId,
+    );
+    if (!item || item.observation.status !== "observed"
+      || item.approval !== null || item.externalBuilderPack !== null) {
+      setDependencyApprovalError("The dependency observation is not eligible for approval");
+      return;
+    }
+    setApprovingObservationEventId(observationEventId);
+    setDependencyApprovalError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(dependencyObservationApprovalPatchBody(observationEventId)),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        kind?: string;
+        error?: string;
+        reason?: string;
+      };
+      if (!response.ok || (body.kind !== "approved" && body.kind !== "replayed")) {
+        throw new Error(body.error ?? body.reason ?? `HTTP ${response.status}`);
+      }
+      setReloadVersion((current) => current + 1);
+    } catch (caught) {
+      setDependencyApprovalError(
+        caught instanceof Error ? caught.message : "Failed to approve dependency observation",
+      );
+    } finally {
+      setApprovingObservationEventId(null);
+    }
+  }
+
   const backHref = `/dashboard/${workspaceId}/work`;
   if (loading) {
     return (
@@ -1784,6 +2534,13 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         effortError={effortError}
         effortMinutes={effortMinutes}
         onEffortMinutesChange={setEffortMinutes}
+      />
+      <DependencyObservationsPanel
+        dependencyObservations={data.dependencyObservations}
+        canApproveDependencyObservation={data.canApproveDependencyObservation}
+        onApprove={approveDependencyObservation}
+        approvingObservationEventId={approvingObservationEventId}
+        approvalError={dependencyApprovalError}
       />
       <LifecycleTimeline events={data.events} />
     </div>

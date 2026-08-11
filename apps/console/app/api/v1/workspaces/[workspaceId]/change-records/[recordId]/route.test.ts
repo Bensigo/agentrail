@@ -5,10 +5,14 @@ vi.mock("@agentrail/auth", () => ({
   auth: vi.fn(),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
+  AcceptanceDependencyExternalBuilderPackConflictError:
+    class AcceptanceDependencyExternalBuilderPackConflictError extends Error {},
   AcceptancePrDecisionConflictError: class AcceptancePrDecisionConflictError extends Error {},
   AcceptancePrReviewEffortConflictError: class AcceptancePrReviewEffortConflictError extends Error {},
+  approveAcceptanceDependencyObservationAndMintExternalBuilderPack: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   readAcceptancePrReviewMetrics: vi.fn(),
+  readCurrentAcceptanceDependencyObservations: vi.fn(),
   readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
@@ -18,10 +22,13 @@ vi.mock("@agentrail/db-postgres", () => ({
 
 import { auth } from "@agentrail/auth";
 import {
+  AcceptanceDependencyExternalBuilderPackConflictError,
   AcceptancePrDecisionConflictError,
   AcceptancePrReviewEffortConflictError,
+  approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
+  readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
@@ -48,6 +55,14 @@ const POSTED_ATTESTATION_EVENT_ID = "00000000-0000-4000-8000-000000000066";
 const DECISION_BINDING_ID = "00000000-0000-4000-8000-000000000055";
 const EFFORT_EVENT_ID = "00000000-0000-4000-8000-000000000054";
 const EFFORT_AT = new Date("2026-08-03T12:07:00.000Z");
+const DEPENDENCY_OBSERVATION_EVENT_ID = "00000000-0000-4000-8000-000000000053";
+const DEPENDENCY_APPROVAL_EVENT_ID = "00000000-0000-4000-8000-000000000052";
+const EXTERNAL_BUILDER_PACK_EVENT_ID = "00000000-0000-4000-8000-000000000051";
+const EXTERNAL_BUILDER_PACK_ID = "00000000-0000-4000-8000-000000000050";
+const COMPILED_PACK_ID = "00000000-0000-4000-8000-000000000049";
+const CANDIDATE_FINGERPRINT = `sha256:${"9".repeat(64)}`;
+const DEPENDENCY_OBSERVED_AT = new Date("2026-08-03T12:03:00.000Z");
+const DEPENDENCY_APPROVED_AT = new Date("2026-08-03T12:08:00.000Z");
 
 const currentCorrectionPackets = {
   kind: "current" as const,
@@ -169,6 +184,142 @@ const currentReviewMetrics = {
   },
 };
 
+const dependencyCandidate = {
+  package: "@acme/widget",
+  dependencyKind: "dependencies" as const,
+  specifier: "^1.2.0",
+  currentVersion: "1.2.3",
+  targetVersion: "1.3.0",
+};
+const dependencyRuntime = {
+  disposition: "safe" as const,
+  nodeVersion: "22.14.0",
+  evidenceSha256: "1".repeat(64),
+};
+const dependencyPackageManager = {
+  disposition: "safe" as const,
+  name: "pnpm",
+  version: "10.14.0",
+  profile: "pnpm_lockfile_only_v1",
+  updateArgv: ["pnpm", "update", "@acme/widget@1.3.0", "--lockfile-only", "--ignore-scripts"],
+  evidenceSha256: "2".repeat(64),
+};
+const dependencyManifest = { path: "packages/widget/package.json", blobSha: "3".repeat(40) };
+const dependencyLockfile = {
+  disposition: "present" as const,
+  path: "pnpm-lock.yaml",
+  blobSha: "4".repeat(40),
+  evidenceSha256: "5".repeat(64),
+};
+const dependencyBaseline = { headSha: HEAD };
+const dependencySecurity = {
+  disposition: "clear" as const,
+  provider: "osv" as const,
+  reference: "osv:npm:@acme/widget@1.3.0",
+  reportSha256: "6".repeat(64),
+};
+const dependencyBinding = {
+  workspaceId: WS,
+  recordId: RECORD,
+  repo: "ada/widgets",
+  prNumber: 98,
+  headSha: HEAD,
+  headCycleId: CYCLE,
+  authorityGeneration: 1,
+  reviewJobId: CYCLE,
+  acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+  compiledPack: {
+    id: COMPILED_PACK_ID,
+    sha256: "7".repeat(64),
+    sourceSnapshotId: "00000000-0000-4000-8000-000000000048",
+    sourceCustodyIdentitySha256: "8".repeat(64),
+    compilerVersion: "acceptance-context-pack-compiler-v2",
+    policyVersion: "acceptance-context-pack-policy-v2",
+    exactHeadDependencyTreeProofsSha256: "b".repeat(64),
+  },
+};
+const dependencyObservation = {
+  eventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+  eventKey: `acceptance-dependency-observation:${CYCLE}:${CANDIDATE_FINGERPRINT.slice("sha256:".length)}`,
+  status: "observed" as const,
+  reasons: [],
+  candidateFingerprint: CANDIDATE_FINGERPRINT,
+  candidate: dependencyCandidate,
+  runtime: dependencyRuntime,
+  packageManager: dependencyPackageManager,
+  manifest: dependencyManifest,
+  lockfile: dependencyLockfile,
+  baseline: dependencyBaseline,
+  security: dependencySecurity,
+  observedAt: DEPENDENCY_OBSERVED_AT,
+};
+const dependencyApproval = {
+  eventId: DEPENDENCY_APPROVAL_EVENT_ID,
+  eventKey: `acceptance-dependency-approval:${CYCLE}:${CANDIDATE_FINGERPRINT.slice("sha256:".length)}`,
+  observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+  candidateFingerprint: CANDIDATE_FINGERPRINT,
+  approvedBy: `user:${USER}`,
+  approvedRole: "owner" as const,
+  approvedAt: DEPENDENCY_APPROVED_AT,
+};
+const externalBuilderPack = {
+  packId: EXTERNAL_BUILDER_PACK_ID,
+  eventId: EXTERNAL_BUILDER_PACK_EVENT_ID,
+  eventKey: `acceptance-dependency-external-builder-pack:${CYCLE}:${CANDIDATE_FINGERPRINT.slice("sha256:".length)}`,
+  observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+  approvalEventId: DEPENDENCY_APPROVAL_EVENT_ID,
+  candidateFingerprint: CANDIDATE_FINGERPRINT,
+  binding: dependencyBinding,
+  candidate: dependencyCandidate,
+  runtime: dependencyRuntime,
+  packageManager: dependencyPackageManager,
+  manifest: dependencyManifest,
+  lockfile: dependencyLockfile,
+  baseline: dependencyBaseline,
+  security: dependencySecurity,
+  route: {
+    selectionEventId: "00000000-0000-4000-8000-000000000047",
+    id: "00000000-0000-4000-8000-000000000046",
+    adapter: "github_codex" as const,
+    configurationVersion: 2,
+    snapshot: {
+      builder: { adapter: "github_codex" as const, routeId: "00000000-0000-4000-8000-000000000046" },
+      protocol: "github_comment" as const,
+      capability: {
+        availability: "unverified" as const,
+        activation: "github_mention" as const,
+        acknowledgement: "vendor_activity" as const,
+        repairHead: "github_synchronize" as const,
+      },
+      scopeBoundary: "correction_delivery_only" as const,
+    },
+    snapshotSha256: "c".repeat(64),
+  },
+  deliveryAuthority: "not_granted" as const,
+  scopeBoundary: "dependency_external_builder_pack_only" as const,
+  reviewRequirement: "exact_head_r7_reentry" as const,
+  mintedAt: DEPENDENCY_APPROVED_AT,
+};
+const currentDependencyObservations = {
+  kind: "current" as const,
+  binding: {
+    workspaceId: WS,
+    recordId: RECORD,
+    repo: "ada/widgets",
+    prNumber: 98,
+    headSha: HEAD,
+    headCycleId: CYCLE,
+    authorityGeneration: 1,
+    acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+  },
+  observations: [{
+    binding: dependencyBinding,
+    observation: dependencyObservation,
+    approval: null,
+    externalBuilderPack: null,
+  }],
+};
+
 function req(workspaceId = WS, recordId = RECORD): NextRequest {
   return new NextRequest(
     `http://localhost/api/v1/workspaces/${workspaceId}/change-records/${recordId}`,
@@ -246,6 +397,9 @@ beforeEach(() => {
   vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue(currentCorrectionPackets as never);
   vi.mocked(readCurrentAcceptancePrDecision).mockResolvedValue(currentFinalDecision as never);
   vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue(currentReviewMetrics as never);
+  vi.mocked(readCurrentAcceptanceDependencyObservations).mockResolvedValue(
+    currentDependencyObservations as never,
+  );
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
     kind: "recorded",
     binding: currentFinalDecision.binding,
@@ -272,6 +426,13 @@ beforeEach(() => {
       recordedAt: EFFORT_AT,
     },
   } as never);
+  vi.mocked(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).mockResolvedValue({
+    kind: "approved",
+    binding: dependencyBinding,
+    observation: dependencyObservation,
+    approval: dependencyApproval,
+    externalBuilderPack,
+  } as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -286,6 +447,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -299,6 +461,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -314,6 +477,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -384,8 +548,19 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           reviewedAt: REVIEW_AT.toISOString(),
         }],
       },
+      dependencyObservations: {
+        ...currentDependencyObservations,
+        observations: [{
+          ...currentDependencyObservations.observations[0],
+          observation: {
+            ...dependencyObservation,
+            observedAt: DEPENDENCY_OBSERVED_AT.toISOString(),
+          },
+        }],
+      },
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
+      canApproveDependencyObservation: false,
     });
     expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
       workspaceId: WS,
@@ -396,6 +571,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       recordId: RECORD,
     });
     expect(readAcceptancePrReviewMetrics).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+    expect(readCurrentAcceptanceDependencyObservations).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
     });
@@ -410,6 +589,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(200);
     expect(body.canRecordFinalDecision).toBe(true);
     expect(body.canRecordReviewEffort).toBe(true);
+    expect(body.canApproveDependencyObservation).toBe(true);
   });
 
   it("downgrades a current packet set when the separately read Record head cycle changed", async () => {
@@ -475,6 +655,42 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       kind: "unavailable",
       reason: "invalid_review_custody",
     });
+  });
+
+  it("downgrades dependency observations when their separately read current generation races the Record", async () => {
+    vi.mocked(readCurrentAcceptanceDependencyObservations).mockResolvedValue({
+      ...currentDependencyObservations,
+      binding: {
+        ...currentDependencyObservations.binding,
+        headSha: "e".repeat(40),
+        headCycleId: "00000000-0000-4000-8000-000000000100",
+        authorityGeneration: 2,
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).dependencyObservations).toEqual({ kind: "not_current" });
+  });
+
+  it("serializes immutable dependency approval and Pack timestamps", async () => {
+    vi.mocked(readCurrentAcceptanceDependencyObservations).mockResolvedValue({
+      ...currentDependencyObservations,
+      observations: [{
+        ...currentDependencyObservations.observations[0],
+        approval: dependencyApproval,
+        externalBuilderPack,
+      }],
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+    const item = (await response.json()).dependencyObservations.observations[0];
+
+    expect(item.observation.observedAt).toBe(DEPENDENCY_OBSERVED_AT.toISOString());
+    expect(item.approval.approvedAt).toBe(DEPENDENCY_APPROVED_AT.toISOString());
+    expect(item.externalBuilderPack.mintedAt).toBe(DEPENDENCY_APPROVED_AT.toISOString());
+    expect(item.externalBuilderPack.deliveryAuthority).toBe("not_granted");
   });
 
   it("downgrades metrics when current-head authority and the metrics current-cycle marker disagree", async () => {
@@ -667,6 +883,15 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Failed to load change record detail" });
   });
+
+  it("500 when current dependency observation storage fails", async () => {
+    vi.mocked(readCurrentAcceptanceDependencyObservations).mockRejectedValue(new Error("db down"));
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Failed to load change record detail" });
+  });
 });
 
 describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -681,6 +906,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: "not-a-uuid" } } as never);
     const invalidActor = await PATCH(patchReq({ nope: true }), { params: params() });
@@ -688,6 +914,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
@@ -695,6 +922,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(forbidden.status).toBe(403);
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
   });
 
   it("rejects non-JSON, declared oversize, unknown decisions, and extra authority fields", async () => {
@@ -951,6 +1179,115 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "record_pr_review_effort",
       bindingId: DECISION_BINDING_ID,
       minutes: 37,
+    }), { params: params() });
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });
+  });
+
+  it("approves one server-custodied observation and derives workspace, Record, and actor", async () => {
+    const response = await PATCH(patchReq({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+    }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).toHaveBeenCalledTimes(1);
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+      approvedBy: `user:${USER}`,
+    });
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
+    const body = await response.json();
+    expect(body).toMatchObject({
+      kind: "approved",
+      approval: { approvedAt: DEPENDENCY_APPROVED_AT.toISOString() },
+      externalBuilderPack: {
+        packId: EXTERNAL_BUILDER_PACK_ID,
+        deliveryAuthority: "not_granted",
+        mintedAt: DEPENDENCY_APPROVED_AT.toISOString(),
+      },
+    });
+  });
+
+  it.each([
+    { action: "approve_dependency_observation" },
+    { action: "approve_dependency_observation", observationEventId: "not-a-uuid" },
+    {
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+      headSha: HEAD,
+    },
+    {
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+      compiledPackId: COMPILED_PACK_ID,
+    },
+  ])("rejects invalid or authority-bearing dependency approval input %#", async (body) => {
+    const response = await PATCH(patchReq(body), { params: params() });
+
+    expect(response.status).toBe(400);
+    expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
+  });
+
+  it("reports exact dependency approval replay as 200", async () => {
+    vi.mocked(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).mockResolvedValue({
+      kind: "replayed",
+      binding: dependencyBinding,
+      observation: dependencyObservation,
+      approval: dependencyApproval,
+      externalBuilderPack,
+    } as never);
+
+    const response = await PATCH(patchReq({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+    }), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).kind).toBe("replayed");
+  });
+
+  it.each([
+    [{ kind: "not_found" }, 404],
+    [{ kind: "observation_not_found" }, 404],
+    [{ kind: "not_authorized" }, 403],
+    [{ kind: "not_current" }, 409],
+    [{ kind: "observation_not_eligible", reason: "observation_not_observed" }, 409],
+    [{ kind: "not_ready", reason: "selected_route_unavailable" }, 409],
+  ] as const)("maps the closed dependency approval result %# without inventing success", async (result, status) => {
+    vi.mocked(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).mockResolvedValue(result as never);
+
+    const response = await PATCH(patchReq({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+    }), { params: params() });
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(result);
+  });
+
+  it("maps immutable Pack conflict to 409 and sanitizes dependency storage failures", async () => {
+    vi.mocked(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).mockRejectedValueOnce(
+      new AcceptanceDependencyExternalBuilderPackConflictError(),
+    );
+    const conflict = await PATCH(patchReq({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
+    }), { params: params() });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "Dependency observation approval conflicts with existing Pack custody",
+    });
+
+    vi.mocked(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).mockRejectedValueOnce(
+      new Error("postgres://secret@db/internal"),
+    );
+    const unavailable = await PATCH(patchReq({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT_ID,
     }), { params: params() });
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });

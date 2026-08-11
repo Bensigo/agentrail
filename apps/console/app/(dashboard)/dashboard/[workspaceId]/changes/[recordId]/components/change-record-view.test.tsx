@@ -2,17 +2,22 @@ import { describe, expect, it } from "vitest";
 import {
   ChangeRecordAnchors,
   CorrectionsSection,
+  DependencyObservationsPanel,
   FinalDecisionPanel,
   LifecycleTimeline,
   ReviewMetricsPanel,
   changeRecordApiPath,
+  dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
   formatChangeRecordDate,
   isCorrectionPacketsEnvelope,
+  isChangeRecordResponse,
+  isDependencyObservationsEnvelope,
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
   type AcceptanceCorrectionPacketsEnvelope,
+  type AcceptanceDependencyObservationsEnvelope,
   type AcceptanceFinalDecisionEnvelope,
   type AcceptancePrReviewMetricsEnvelope,
   type ChangeRecord,
@@ -328,6 +333,138 @@ const currentReviewMetrics: AcceptancePrReviewMetricsEnvelope = {
     signedMerges: { eligible: 2, known: 1, unknown: 1 },
     postMergeOutcomes: { eligible: 1, known: 1, unknown: 0 },
   },
+};
+
+const DEPENDENCY_OBSERVATION_EVENT = "00000000-0000-4000-8000-000000000067";
+const DEPENDENCY_APPROVAL_EVENT = "00000000-0000-4000-8000-000000000066";
+const DEPENDENCY_PACK_EVENT = "00000000-0000-4000-8000-000000000065";
+const DEPENDENCY_PACK_ID = "00000000-0000-4000-8000-000000000064";
+const DEPENDENCY_FINGERPRINT_VALUE = `sha256:${"9".repeat(64)}`;
+const dependencyBinding = {
+  workspaceId: record.workspaceId,
+  recordId: record.id,
+  repo: record.repo,
+  prNumber: 98,
+  headSha: currentFinalDecision.binding.headSha,
+  headCycleId: currentFinalDecision.binding.headCycleId,
+  authorityGeneration: 7,
+  reviewJobId: currentFinalDecision.binding.reviewJobId,
+  acceptanceContract: currentFinalDecision.binding.acceptanceContract,
+  compiledPack: {
+    id: "00000000-0000-4000-8000-000000000063",
+    sha256: "d".repeat(64),
+    sourceSnapshotId: "00000000-0000-4000-8000-000000000062",
+    sourceCustodyIdentitySha256: "e".repeat(64),
+    compilerVersion: "acceptance-context-pack-compiler-v2",
+    policyVersion: "acceptance-context-pack-policy-v2",
+    exactHeadDependencyTreeProofsSha256: "f".repeat(64),
+  },
+};
+const dependencyCandidate = {
+  package: "@acme/widget",
+  dependencyKind: "dependencies" as const,
+  specifier: "^1.2.0",
+  currentVersion: "1.2.3",
+  targetVersion: "1.3.0",
+};
+const dependencyEvidence = {
+  runtime: { disposition: "safe" as const, nodeVersion: "22.14.0", evidenceSha256: "1".repeat(64) },
+  packageManager: {
+    disposition: "safe" as const,
+    name: "pnpm",
+    version: "10.14.0",
+    profile: "pnpm_lockfile_only_v1",
+    updateArgv: ["pnpm", "update", "@acme/widget@1.3.0", "--lockfile-only", "--ignore-scripts"],
+    evidenceSha256: "2".repeat(64),
+  },
+  manifest: { path: "packages/widget/package.json", blobSha: "3".repeat(40) },
+  lockfile: {
+    disposition: "present" as const,
+    path: "pnpm-lock.yaml",
+    blobSha: "4".repeat(40),
+    evidenceSha256: "5".repeat(64),
+  },
+  baseline: { headSha: currentFinalDecision.binding.headSha },
+  security: {
+    disposition: "clear" as const,
+    provider: "osv" as const,
+    reference: "osv:npm:@acme/widget@1.3.0",
+    reportSha256: "6".repeat(64),
+  },
+};
+const dependencyObservation = {
+  eventId: DEPENDENCY_OBSERVATION_EVENT,
+  eventKey: `acceptance-dependency-observation:${currentFinalDecision.binding.headCycleId}:${DEPENDENCY_FINGERPRINT_VALUE.slice("sha256:".length)}`,
+  status: "observed" as const,
+  reasons: [],
+  candidateFingerprint: DEPENDENCY_FINGERPRINT_VALUE,
+  candidate: dependencyCandidate,
+  ...dependencyEvidence,
+  observedAt: "2026-08-11T09:10:00.000Z",
+};
+const currentDependencyObservations: AcceptanceDependencyObservationsEnvelope = {
+  kind: "current",
+  binding: {
+    workspaceId: record.workspaceId,
+    recordId: record.id,
+    repo: record.repo,
+    prNumber: 98,
+    headSha: currentFinalDecision.binding.headSha,
+    headCycleId: currentFinalDecision.binding.headCycleId,
+    authorityGeneration: 7,
+    acceptanceContract: currentFinalDecision.binding.acceptanceContract,
+  },
+  observations: [{
+    binding: dependencyBinding,
+    observation: dependencyObservation,
+    approval: null,
+    externalBuilderPack: null,
+  }],
+};
+const dependencyApproval = {
+  eventId: DEPENDENCY_APPROVAL_EVENT,
+  eventKey: `acceptance-dependency-approval:${currentFinalDecision.binding.headCycleId}:${DEPENDENCY_FINGERPRINT_VALUE.slice("sha256:".length)}`,
+  observationEventId: DEPENDENCY_OBSERVATION_EVENT,
+  candidateFingerprint: DEPENDENCY_FINGERPRINT_VALUE,
+  approvedBy: "user:00000000-0000-4000-8000-000000000002",
+  approvedRole: "owner" as const,
+  approvedAt: "2026-08-11T09:15:00.000Z",
+};
+const dependencyExternalBuilderPack = {
+  packId: DEPENDENCY_PACK_ID,
+  eventId: DEPENDENCY_PACK_EVENT,
+  eventKey: `acceptance-dependency-external-builder-pack:${currentFinalDecision.binding.headCycleId}:${DEPENDENCY_FINGERPRINT_VALUE.slice("sha256:".length)}`,
+  observationEventId: DEPENDENCY_OBSERVATION_EVENT,
+  approvalEventId: DEPENDENCY_APPROVAL_EVENT,
+  candidateFingerprint: DEPENDENCY_FINGERPRINT_VALUE,
+  binding: dependencyBinding,
+  candidate: dependencyCandidate,
+  ...dependencyEvidence,
+  route: {
+    selectionEventId: "00000000-0000-4000-8000-000000000061",
+    id: "00000000-0000-4000-8000-000000000060",
+    adapter: "github_codex" as const,
+    configurationVersion: 2,
+    snapshot: {
+      builder: {
+        adapter: "github_codex" as const,
+        routeId: "00000000-0000-4000-8000-000000000060",
+      },
+      protocol: "github_comment" as const,
+      capability: {
+        availability: "unverified" as const,
+        activation: "github_mention" as const,
+        acknowledgement: "vendor_activity" as const,
+        repairHead: "github_synchronize" as const,
+      },
+      scopeBoundary: "correction_delivery_only" as const,
+    },
+    snapshotSha256: "7".repeat(64),
+  },
+  deliveryAuthority: "not_granted" as const,
+  scopeBoundary: "dependency_external_builder_pack_only" as const,
+  reviewRequirement: "exact_head_r7_reentry" as const,
+  mintedAt: "2026-08-11T09:15:00.000Z",
 };
 
 describe("Change Record detail view", () => {
@@ -874,6 +1011,160 @@ describe("Change Record detail view", () => {
       bindingId: currentFinalDecision.binding.bindingId,
       minutes: 37,
     });
+  });
+
+  it("strictly validates current dependency observation, approval, and Pack custody", () => {
+    expect(isDependencyObservationsEnvelope(currentDependencyObservations)).toBe(true);
+    expect(isDependencyObservationsEnvelope({
+      ...currentDependencyObservations,
+      observations: [],
+    })).toBe(true);
+    expect(isDependencyObservationsEnvelope({
+      ...currentDependencyObservations,
+      observations: [{
+        ...currentDependencyObservations.observations[0],
+        approval: dependencyApproval,
+        externalBuilderPack: dependencyExternalBuilderPack,
+      }],
+    })).toBe(true);
+    expect(isDependencyObservationsEnvelope({
+      kind: "not_ready",
+      reason: "invalid_approval_pack_custody",
+    })).toBe(true);
+    expect(isDependencyObservationsEnvelope({ kind: "not_ready", reason: "anything" })).toBe(false);
+
+    const mismatchedPack = structuredClone({
+      ...currentDependencyObservations,
+      observations: [{
+        ...currentDependencyObservations.observations[0],
+        approval: dependencyApproval,
+        externalBuilderPack: dependencyExternalBuilderPack,
+      }],
+    }) as Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }>;
+    mismatchedPack.observations[0]!.externalBuilderPack!.candidate.targetVersion = "2.0.0";
+    expect(isDependencyObservationsEnvelope(mismatchedPack)).toBe(false);
+
+    const authorityClaim = structuredClone(currentDependencyObservations) as Record<string, unknown>;
+    const authorityItem = (authorityClaim.observations as Array<Record<string, unknown>>)[0]!;
+    authorityItem.builderStarted = true;
+    expect(isDependencyObservationsEnvelope(authorityClaim)).toBe(false);
+
+    const wrongReference = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope,
+      { kind: "current" }
+    >;
+    wrongReference.observations[0]!.observation.security.reference = "https://osv.dev/report";
+    expect(isDependencyObservationsEnvelope(wrongReference)).toBe(false);
+  });
+
+  it("offers owner/admin approval only for one current observed unapproved item", () => {
+    let approved: string | null = null;
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: currentDependencyObservations,
+      canApproveDependencyObservation: true,
+      onApprove: (eventId) => { approved = eventId; },
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    const buttons = elementsOfType(rendered, "button");
+
+    expect(content).toContain("Current exact-head evidence");
+    expect(content).toContain("grants no external authority");
+    expect(content).toContain("@acme/widget 1.2.3 → 1.3.0");
+    expect(content).toContain(dependencyBinding.compiledPack.id);
+    expect(buttonLabels(rendered)).toEqual(["Approve & mint external-builder Pack"]);
+    (buttons[0]!.props?.onClick as (() => void))();
+    expect(approved).toBe(DEPENDENCY_OBSERVATION_EVENT);
+
+    const member = DependencyObservationsPanel({
+      dependencyObservations: currentDependencyObservations,
+      canApproveDependencyObservation: false,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(buttonLabels(member)).toEqual([]);
+    expect(textContent(member)).toContain("workspace owner or admin");
+
+    const refused = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope,
+      { kind: "current" }
+    >;
+    refused.observations[0]!.observation.status = "refused_security";
+    refused.observations[0]!.observation.reasons = ["security_affected"];
+    refused.observations[0]!.observation.security.disposition = "affected";
+    const refusedPanel = DependencyObservationsPanel({
+      dependencyObservations: refused,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(buttonLabels(refusedPanel)).toEqual([]);
+    expect(textContent(refusedPanel)).toContain("not eligible for approval");
+  });
+
+  it("renders an immutable Pack receipt with no external authority or prohibited action controls", () => {
+    const approved: AcceptanceDependencyObservationsEnvelope = {
+      ...currentDependencyObservations,
+      observations: [{
+        ...currentDependencyObservations.observations[0],
+        approval: dependencyApproval,
+        externalBuilderPack: dependencyExternalBuilderPack,
+      }],
+    };
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: approved,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain(DEPENDENCY_PACK_ID);
+    expect(content).toContain(dependencyApproval.eventId);
+    expect(content).toContain(dependencyExternalBuilderPack.route.snapshotSha256);
+    expect(content).toContain("External authority not_granted");
+    expect(content).toContain("Required review exact_head_r7_reentry");
+    expect(buttonLabels(rendered)).toEqual([]);
+    expect(content).not.toMatch(/\b(?:install|issue|dispatch|merge|managed-build)\b/iu);
+  });
+
+  it("builds the exact observation-only approval body without head, Pack, or builder fields", () => {
+    expect(dependencyObservationApprovalPatchBody(DEPENDENCY_OBSERVATION_EVENT)).toEqual({
+      action: "approve_dependency_observation",
+      observationEventId: DEPENDENCY_OBSERVATION_EVENT,
+    });
+  });
+
+  it("fails the load response closed on malformed dependency custody or capability flags", () => {
+    const validResponse = {
+      record,
+      events,
+      correctionPackets: currentCorrections,
+      finalDecision: currentFinalDecision,
+      reviewMetrics: currentReviewMetrics,
+      dependencyObservations: currentDependencyObservations,
+      canRecordFinalDecision: true,
+      canRecordReviewEffort: true,
+      canApproveDependencyObservation: true,
+    };
+    expect(isChangeRecordResponse(validResponse)).toBe(true);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      dependencyObservations: { kind: "current", binding: {}, observations: [] },
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      canApproveDependencyObservation: "yes",
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      dependencyObservations: undefined,
+    })).toBe(false);
   });
 
   it("formats invalid timestamps without throwing", () => {

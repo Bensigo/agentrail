@@ -133,6 +133,27 @@ describe("preflightGithubCorrectionCarrier", () => {
     expect(reportGithubCorrectionCarrierPreflight).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "github_unavailable",
+    "invalid_github_response",
+    "storage_unavailable",
+  ] as const)("replays persisted indeterminate terminal truth: %s", async (reason) => {
+    vi.mocked(reserveGithubCorrectionCarrierPreflight).mockResolvedValue({
+      kind: "terminal",
+      preflight: {
+        ...reservation.preflight,
+        status: "indeterminate",
+        result: { kind: reason },
+      },
+    } as never);
+    await expect(
+      preflightGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID })
+    ).resolves.toEqual({ kind: "indeterminate", reason });
+    expect(getGithubCorrectionCarrierCredential).not.toHaveBeenCalled();
+    expect(readCurrentGithubPullRequest).not.toHaveBeenCalled();
+    expect(reportGithubCorrectionCarrierPreflight).not.toHaveBeenCalled();
+  });
+
   it("reports known credential denial as unavailable without reading the PR", async () => {
     vi.mocked(getGithubCorrectionCarrierCredential).mockResolvedValue({
       ok: false,

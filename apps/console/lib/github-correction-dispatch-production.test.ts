@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  acceptanceCorrectionDispatchId: vi.fn(() => "00000000-0000-4000-8000-000000000009"),
   acceptanceContractSha256: vi.fn(() => "1".repeat(64)),
   acceptanceCorrectionPacketPayloadSetSha256: vi.fn(() => "2".repeat(64)),
   acceptanceContextOverlayManifestSha256: vi.fn(() => "6".repeat(64)),
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   listWikiPages: vi.fn(),
   projectConfirmedAcceptanceContract: vi.fn(),
   queueSelectedCorrectionDispatch: vi.fn(),
+  readDurableCorrectionDispatchFallback: vi.fn(),
+  recordDurableCorrectionDispatchFallback: vi.fn(),
   readAcceptanceBuilderRouteSelection: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
@@ -30,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@agentrail/db-postgres", () => ({
+  acceptanceCorrectionDispatchId: mocks.acceptanceCorrectionDispatchId,
   acceptanceContractSha256: mocks.acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256: mocks.acceptanceCorrectionPacketPayloadSetSha256,
   acceptanceContextOverlayManifestSha256: mocks.acceptanceContextOverlayManifestSha256,
@@ -43,6 +47,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   listWikiPages: mocks.listWikiPages,
   projectConfirmedAcceptanceContract: mocks.projectConfirmedAcceptanceContract,
   queueSelectedCorrectionDispatch: mocks.queueSelectedCorrectionDispatch,
+  readDurableCorrectionDispatchFallback: mocks.readDurableCorrectionDispatchFallback,
+  recordDurableCorrectionDispatchFallback: mocks.recordDurableCorrectionDispatchFallback,
   readAcceptanceBuilderRouteSelection: mocks.readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts: mocks.readAcceptanceContracts,
   readChangeRecordTimelineByPr: mocks.readChangeRecordTimelineByPr,
@@ -271,6 +277,8 @@ beforeEach(() => {
     githubCommentId: "123",
     githubCommentUrl: "https://github.com/acme/widgets/issues/42#issuecomment-123",
   });
+  mocks.readDurableCorrectionDispatchFallback.mockResolvedValue({ kind: "absent" });
+  mocks.recordDurableCorrectionDispatchFallback.mockResolvedValue({ kind: "not_eligible" });
 });
 
 describe("produceAndRunGithubCorrectionDispatch", () => {
@@ -320,6 +328,10 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
       workspaceId: WORKSPACE_ID,
       dispatchId: DISPATCH_ID,
     });
+    expect(mocks.readDurableCorrectionDispatchFallback).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      dispatchId: DISPATCH_ID,
+    });
 
     const order = (mock: typeof mocks.recordAcceptanceContextPackSnapshot, index = 0) =>
       mock.mock.invocationCallOrder[index]!;
@@ -328,6 +340,109 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
     expect(order(mocks.materializeExactHeadGithubContent)).toBeLessThan(order(mocks.compileAndRecordAcceptanceContextPack));
     expect(order(mocks.compileAndRecordAcceptanceContextPack)).toBeLessThan(order(mocks.queueSelectedCorrectionDispatch));
     expect(order(mocks.queueSelectedCorrectionDispatch)).toBeLessThan(order(mocks.runGithubCorrectionCarrier));
+    expect(mocks.recordDurableCorrectionDispatchFallback).not.toHaveBeenCalled();
+    expect(mocks.readDurableCorrectionDispatchFallback.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.readAcceptanceBuilderRouteSelection.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([
+    { kind: "fallback_candidate", reason: "carrier_unavailable" } as const,
+    { kind: "bounded_failed" } as const,
+    { kind: "held", reason: "unknown_post_outcome" } as const,
+  ])("records one opaque same-dispatch fallback after eligible nonacceptance: $kind", async (
+    carrier,
+  ) => {
+    mocks.runGithubCorrectionCarrier.mockResolvedValueOnce(carrier);
+    mocks.recordDurableCorrectionDispatchFallback.mockResolvedValueOnce({
+      kind: "recorded",
+      fallback: { id: "fallback-1", lane: "jace_only" },
+    });
+
+    await expect(produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    })).resolves.toEqual({
+      kind: "durable_fallback_recorded",
+      dispatchId: DISPATCH_ID,
+      fallbackId: "fallback-1",
+      lane: "jace_only",
+    });
+    expect(mocks.recordDurableCorrectionDispatchFallback).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      dispatchId: DISPATCH_ID,
+    });
+    expect(mocks.recordDurableCorrectionDispatchFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays exact fallback before mutable route/profile work or carrier rerun", async () => {
+    mocks.readDurableCorrectionDispatchFallback.mockResolvedValueOnce({
+      kind: "found",
+      fallback: { id: "fallback-1", lane: "github_findings_and_jace" },
+    });
+    mocks.readAcceptanceBuilderRouteSelection.mockImplementation(async () => {
+      throw new Error("route drift");
+    });
+    const result = await produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    });
+    expect(result).toEqual({
+      kind: "durable_fallback_recorded",
+      dispatchId: DISPATCH_ID,
+      fallbackId: "fallback-1",
+      lane: "github_findings_and_jace",
+    });
+    expect(mocks.readAcceptanceBuilderRouteSelection).not.toHaveBeenCalled();
+    expect(mocks.resolveAcceptanceBuilderRouteCapabilityProfile).not.toHaveBeenCalled();
+    expect(mocks.runGithubCorrectionCarrier).not.toHaveBeenCalled();
+    expect(mocks.recordDurableCorrectionDispatchFallback).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("githubCommentId");
+    expect(result).not.toHaveProperty("acknowledgement");
+    expect(JSON.stringify(result)).not.toMatch(/carrier_accepted|agent_started|repair_head/i);
+  });
+
+  it("stops when fallback replay lookup says the exact dispatch is not current", async () => {
+    mocks.readDurableCorrectionDispatchFallback.mockResolvedValueOnce({ kind: "not_current" });
+    await expect(produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    })).resolves.toEqual({ kind: "not_current" });
+    expect(mocks.readAcceptanceBuilderRouteSelection).not.toHaveBeenCalled();
+    expect(mocks.queueSelectedCorrectionDispatch).not.toHaveBeenCalled();
+    expect(mocks.runGithubCorrectionCarrier).not.toHaveBeenCalled();
+    expect(mocks.recordDurableCorrectionDispatchFallback).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "not_ready" } as const,
+    { kind: "not_current" } as const,
+    { kind: "held", reason: "storage_unavailable" } as const,
+  ])("never asks DB to fallback for an ineligible carrier result: $kind", async (carrier) => {
+    mocks.runGithubCorrectionCarrier.mockResolvedValueOnce(carrier);
+    await expect(produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    })).resolves.toMatchObject(carrier);
+    expect(mocks.recordDurableCorrectionDispatchFallback).not.toHaveBeenCalled();
+  });
+
+  it("preserves DB non-eligibility and fails closed on fallback storage loss", async () => {
+    mocks.runGithubCorrectionCarrier.mockResolvedValue({ kind: "bounded_failed" });
+    mocks.recordDurableCorrectionDispatchFallback.mockResolvedValueOnce({ kind: "not_eligible" });
+    await expect(produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    })).resolves.toEqual({ kind: "bounded_failed", dispatchId: DISPATCH_ID });
+
+    mocks.recordDurableCorrectionDispatchFallback.mockRejectedValueOnce(new Error("db offline"));
+    await expect(produceAndRunGithubCorrectionDispatch({
+      workspaceId: WORKSPACE_ID,
+      jobId: JOB_ID,
+    })).resolves.toEqual({
+      kind: "held",
+      reason: "storage_unavailable",
+      dispatchId: DISPATCH_ID,
+    });
   });
 
   it("replays an existing exact compiled Pack before reading mutable source or Wiki state", async () => {
@@ -456,13 +571,20 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
     expect(mocks.runGithubCorrectionCarrier).not.toHaveBeenCalled();
   });
 
-  it("rejects route drift between selection and queue", async () => {
+  it.each([
+    ["route", { id: DISPATCH_ID, routeAdapter: "github_claude" }],
+    [
+      "dispatch identity",
+      { id: "00000000-0000-4000-8000-000000000010", routeAdapter: "github_codex" },
+    ],
+  ] as const)("rejects %s drift between current aggregate and queue", async (_label, dispatch) => {
     mocks.queueSelectedCorrectionDispatch.mockResolvedValue({
-      dispatch: { id: DISPATCH_ID, routeAdapter: "github_claude" },
+      dispatch,
       inserted: true,
     });
     await expect(produceAndRunGithubCorrectionDispatch({ workspaceId: WORKSPACE_ID, jobId: JOB_ID }))
       .resolves.toEqual({ kind: "not_current" });
     expect(mocks.runGithubCorrectionCarrier).not.toHaveBeenCalled();
+    expect(mocks.recordDurableCorrectionDispatchFallback).not.toHaveBeenCalled();
   });
 });

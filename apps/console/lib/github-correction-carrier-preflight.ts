@@ -163,9 +163,16 @@ function replayTerminal(preflight: PreflightBinding): GithubCorrectionCarrierPre
   if (preflight.status === "ready" && outcome?.kind === "ready") {
     return readyResult(preflight);
   }
-  if (preflight.status !== "unavailable" || !outcome || typeof outcome.kind !== "string") {
+  if (!outcome || typeof outcome.kind !== "string") {
     return { kind: "not_current" };
   }
+  if (preflight.status === "indeterminate"
+    && (outcome.kind === "github_unavailable"
+      || outcome.kind === "invalid_github_response"
+      || outcome.kind === "storage_unavailable")) {
+    return { kind: "indeterminate", reason: outcome.kind };
+  }
+  if (preflight.status !== "unavailable") return { kind: "not_current" };
   if (outcome.kind === "installation_or_permission_denied") {
     return { kind: "unavailable", reason: outcome.kind };
   }

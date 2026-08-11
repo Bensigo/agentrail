@@ -842,7 +842,7 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       ).toEqual([]);
     });
 
-    it("holds completion and notification until the selected carrier receipt is confirmed", async () => {
+    it("holds completion when neither a carrier receipt nor durable fallback is stored", async () => {
       mockProduceCorrectionDispatch.mockResolvedValueOnce({
         kind: "held",
         reason: "storage_unavailable",
@@ -857,6 +857,25 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       });
       expect(mockComplete).not.toHaveBeenCalled();
       expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it("completes after an exact durable fallback without claiming carrier acceptance", async () => {
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+      mockProduceCorrectionDispatch.mockResolvedValueOnce({
+        kind: "durable_fallback_recorded",
+        dispatchId: "00000000-0000-4000-8000-000000000099",
+        fallbackId: "00000000-0000-4000-8000-000000000098",
+        lane: "jace_only",
+      });
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(res.status).toBe(200);
+      const responseText = await res.text();
+      expect(JSON.parse(responseText)).toEqual({ ok: true });
+      expect(responseText).not.toContain("carrier_accepted");
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+      expect(mockNotify).toHaveBeenCalledTimes(1);
     });
 
     it("completes a proven review without creating an unnecessary correction dispatch", async () => {

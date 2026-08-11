@@ -24,6 +24,7 @@ export type GithubCorrectionCarrierInput = { workspaceId: string; dispatchId: st
 export type GithubCorrectionCarrierResult =
   | { kind: "carrier_accepted"; githubCommentId: string; githubCommentUrl: string }
   | { kind: "bounded_failed" }
+  | { kind: "fallback_candidate"; reason: "carrier_unavailable" }
   | { kind: "held"; reason: "unknown_post_outcome" | "storage_unavailable" }
   | { kind: "not_ready" | "not_current" | "invalid_input" };
 
@@ -73,6 +74,21 @@ export async function runGithubCorrectionCarrier(
   if (!isInput(input)) return { kind: "invalid_input" };
   const preflight = await preflightGithubCorrectionCarrier(input);
   if (preflight.kind === "not_current") return { kind: "not_current" };
+  if (preflight.kind === "unavailable") {
+    if (preflight.reason === "remote_pr_not_active"
+      || preflight.reason === "remote_head_mismatch"
+      || preflight.reason === "remote_base_mismatch") return { kind: "not_current" };
+    if (preflight.reason === "invalid_input") return { kind: "invalid_input" };
+    if (preflight.reason === "storage_unavailable") {
+      return { kind: "held", reason: "storage_unavailable" };
+    }
+    return { kind: "fallback_candidate", reason: "carrier_unavailable" };
+  }
+  if (preflight.kind === "indeterminate") {
+    return preflight.reason === "storage_unavailable"
+      ? { kind: "held", reason: "storage_unavailable" }
+      : { kind: "fallback_candidate", reason: "carrier_unavailable" };
+  }
   if (preflight.kind !== "ready") return { kind: "not_ready" };
 
   // Mint after ready preflight but before any delivery reservation. A failed
@@ -86,7 +102,11 @@ export async function runGithubCorrectionCarrier(
   } catch {
     return { kind: "held", reason: "storage_unavailable" };
   }
-  if (!credential.ok) return { kind: "not_ready" };
+  if (!credential.ok) {
+    return credential.kind === "indeterminate" && credential.reason === "storage_unavailable"
+      ? { kind: "held", reason: "storage_unavailable" }
+      : { kind: "fallback_candidate", reason: "carrier_unavailable" };
+  }
 
   for (let count = 0; count < MAX_FINDING_PUBLICATIONS; count += 1) {
     let reservation: Awaited<ReturnType<typeof reserveNextGithubCorrectionFindingPublication>>;
@@ -141,9 +161,9 @@ export async function runGithubCorrectionCarrier(
       prNumber: preflight.prNumber,
     });
   } catch {
-    return { kind: "not_ready" };
+    return { kind: "fallback_candidate", reason: "carrier_unavailable" };
   }
-  if (!remote.ok) return { kind: "not_ready" };
+  if (!remote.ok) return { kind: "fallback_candidate", reason: "carrier_unavailable" };
   if (remote.pullRequest.state !== "open" || remote.pullRequest.draft || remote.pullRequest.merged
     || remote.pullRequest.headSha !== preflight.headSha
     || remote.pullRequest.baseSha !== preflight.baseSha) {

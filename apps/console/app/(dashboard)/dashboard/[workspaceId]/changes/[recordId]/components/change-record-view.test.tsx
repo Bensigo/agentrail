@@ -361,6 +361,7 @@ const dependencyBinding = {
   },
 };
 const dependencyCandidate = {
+  identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
   package: "@acme/widget",
   dependencyKind: "dependencies" as const,
   specifier: "^1.2.0",
@@ -368,7 +369,7 @@ const dependencyCandidate = {
   targetVersion: "1.3.0",
 };
 const dependencyEvidence = {
-  runtime: { disposition: "safe" as const, nodeVersion: "22.14.0", evidenceSha256: "1".repeat(64) },
+  runtime: { identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" }, disposition: "safe" as const, version: "22.14.0", evidenceSha256: "1".repeat(64) },
   packageManager: {
     disposition: "safe" as const,
     name: "pnpm",
@@ -386,6 +387,7 @@ const dependencyEvidence = {
   },
   baseline: { headSha: currentFinalDecision.binding.headSha },
   security: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     disposition: "clear" as const,
     provider: "osv" as const,
     reference: "osv:npm:@acme/widget@1.3.0",
@@ -394,7 +396,7 @@ const dependencyEvidence = {
 };
 const dependencyObservation = {
   eventId: DEPENDENCY_OBSERVATION_EVENT,
-  eventKey: `acceptance-dependency-observation:${currentFinalDecision.binding.headCycleId}:${DEPENDENCY_FINGERPRINT_VALUE.slice("sha256:".length)}`,
+  eventKey: `acceptance-dependency-observation:v2:${currentFinalDecision.binding.headCycleId}:${DEPENDENCY_FINGERPRINT_VALUE.slice("sha256:".length)}`,
   status: "observed" as const,
   reasons: [],
   candidateFingerprint: DEPENDENCY_FINGERPRINT_VALUE,
@@ -415,6 +417,7 @@ const currentDependencyObservations: AcceptanceDependencyObservationsEnvelope = 
     acceptanceContract: currentFinalDecision.binding.acceptanceContract,
   },
   observations: [{
+    payloadVersion: 2,
     binding: dependencyBinding,
     observation: dependencyObservation,
     approval: null,
@@ -1087,6 +1090,23 @@ describe("Change Record detail view", () => {
     expect(buttonLabels(member)).toEqual([]);
     expect(textContent(member)).toContain("workspace owner or admin");
 
+    const legacy = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope,
+      { kind: "current" }
+    >;
+    legacy.observations[0]!.payloadVersion = 1;
+    const legacyObservation = legacy.observations[0]!.observation;
+    legacyObservation.eventKey = `acceptance-dependency-observation:${legacy.binding.headCycleId}:${legacyObservation.candidateFingerprint.slice("sha256:".length)}`;
+    expect(isDependencyObservationsEnvelope(legacy)).toBe(true);
+    const legacyPanel = DependencyObservationsPanel({
+      dependencyObservations: legacy,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(buttonLabels(legacyPanel)).toEqual(["Approve & mint external-builder Pack"]);
+
     const refused = structuredClone(currentDependencyObservations) as Extract<
       AcceptanceDependencyObservationsEnvelope,
       { kind: "current" }
@@ -1103,6 +1123,32 @@ describe("Change Record detail view", () => {
     });
     expect(buttonLabels(refusedPanel)).toEqual([]);
     expect(textContent(refusedPanel)).toContain("not eligible for approval");
+  });
+
+  it("renders a v2 Poetry refusal without inventing pnpm support or a Pack", () => {
+    const poetry = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope, { kind: "current" }
+    >;
+    const observation = poetry.observations[0]!.observation;
+    const identity = { ecosystem: "python", manager: "poetry", profile: "poetry_lock_v1" };
+    observation.candidate = { ...observation.candidate, identity, currentVersion: "1.0rc1", targetVersion: "1.0rc2" };
+    observation.runtime = { ...observation.runtime, identity, version: "cpython-3.13" };
+    observation.security = { ...observation.security, identity, provider: "opaque", reference: "opaque:poetry-observation" };
+    observation.status = "refused_unsupported_profile";
+    observation.reasons = ["unsupported_manager_profile"];
+    observation.eventKey = `acceptance-dependency-observation:v2:${poetry.observations[0]!.binding.headCycleId}:${observation.candidateFingerprint.slice("sha256:".length)}`;
+    expect(isDependencyObservationsEnvelope(poetry)).toBe(true);
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: poetry, canApproveDependencyObservation: true,
+      onApprove: () => undefined, approvingObservationEventId: null, approvalError: null,
+    });
+    expect(textContent(rendered)).toContain("Refused: unsupported profile");
+    expect(textContent(rendered)).toContain("unsupported_manager_profile");
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    observation.status = "observed";
+    observation.reasons = [];
+    expect(isDependencyObservationsEnvelope(poetry)).toBe(false);
   });
 
   it("renders an immutable Pack receipt with no external authority or prohibited action controls", () => {

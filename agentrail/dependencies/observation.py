@@ -34,14 +34,20 @@ from agentrail.dependencies.pnpm import (
     TargetVersionAdapter,
     UnchangedResult,
     UnsupportedResult,
+    adapter_identity_fingerprint,
     observe_pnpm_dependencies,
 )
 from agentrail.dependencies.manager import (
     COMMAND_PLANS,
+    NPM_ADAPTER_PROFILE,
+    NPM_DEPENDENCY_KINDS,
     ManagerId,
     SupportedDetection,
     detect_dependency_manager,
+    npm_save_flag,
 )
+from agentrail.dependencies.npm_semver import npm_constraint_matches
+from agentrail.dependencies.strict_json import loads_strict_json
 
 
 class ManagerName(str, Enum):
@@ -84,6 +90,15 @@ _SEMVER = re.compile(
     r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
 )
+_NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+_EXACT_NPM_SEMVER = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+_UNSAFE_NPM_SPECIFIER = re.compile(
+    r"^(?:file|link|workspace|git\+|git|path|https?|npm):", re.IGNORECASE
+)
 _PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*(.*)$")
 _UV_CANONICAL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _UV_STABLE_RELEASE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -114,7 +129,10 @@ def observe_dependencies(
     repository with multiple detected managers is rejected as ambiguous.
     """
 
-    files = _normalise_files(snapshot.files)
+    try:
+        files = _normalise_files(snapshot.files)
+    except (TypeError, ValueError) as exc:
+        return _insufficient(f"repository snapshot paths are invalid: {exc}")
     detected, reason = _detect_manager(files, manager)
     if detected is None:
         return _insufficient(reason) if reason.startswith("insufficient:") else _unsupported(reason)
@@ -179,6 +197,10 @@ def _detect_manager(
         adapter = next(item for item in _MANAGERS if item.name is requested_name)
         if adapter.manifest_path not in files:
             return None, f"insufficient: {adapter.manifest_path} is missing"
+        if requested_name is ManagerName.NPM:
+            conflict = _explicit_npm_conflict(files)
+            if conflict is not None:
+                return None, f"unsupported: {conflict}"
         if adapter.lockfile_path not in files:
             return None, f"insufficient: {adapter.lockfile_path} is missing"
         return adapter, ""
@@ -210,6 +232,39 @@ def _manager(name: ManagerName) -> _ManagerAdapter:
     return next(item for item in _MANAGERS if item.name is name)
 
 
+def _explicit_npm_conflict(files: Mapping[str, str]) -> Optional[str]:
+    """Reject explicit npm selection when repository evidence says otherwise."""
+
+    try:
+        manifest = loads_strict_json(files["package.json"], document="package.json")
+    except (KeyError, TypeError, ValueError) as exc:
+        return f"package.json is malformed: {exc}"
+    if not isinstance(manifest, dict):
+        return "package.json must contain an object"
+    declared = manifest.get("packageManager")
+    if declared is not None and (
+        not isinstance(declared, str) or re.fullmatch(r"npm(?:@.+)?", declared) is None
+    ):
+        return "explicit npm selection conflicts with the packageManager declaration"
+    conflicting = next(
+        (
+            path
+            for path in (
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "bun.lock",
+                "bun.lockb",
+                "npm-shrinkwrap.json",
+            )
+            if path in files
+        ),
+        None,
+    )
+    if conflicting is not None:
+        return f"explicit npm selection conflicts with {conflicting}"
+    return None
+
+
 def _coerce_manager_name(value: object) -> Optional[ManagerName]:
     if not isinstance(value, str):
         return None
@@ -230,31 +285,54 @@ def _manager_name_for_id(manager_id: ManagerId) -> Optional[ManagerName]:
 
 def _npm_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
     try:
-        manifest = json.loads(files["package.json"])
-        lock = json.loads(files["package-lock.json"])
+        manifest = loads_strict_json(files["package.json"], document="package.json")
+        lock = loads_strict_json(
+            files["package-lock.json"], document="package-lock.json"
+        )
     except (KeyError, TypeError, ValueError) as exc:
         return (), f"npm manifest or lockfile is malformed: {exc}"
     if not isinstance(manifest, dict) or not isinstance(lock, dict):
         return (), "npm manifest and lockfile must contain objects"
+    if "workspaces" in manifest:
+        return (), "npm package.json workspace graphs are unsupported"
+    package_manager = manifest.get("packageManager")
+    if not isinstance(package_manager, str) or re.fullmatch(
+        r"npm@(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", package_manager
+    ) is None:
+        return (), "package.json must declare an exact npm@x.y.z"
+    scripts = manifest.get("scripts")
+    if not isinstance(scripts, dict) or not isinstance(scripts.get("test"), str) or not scripts["test"].strip():
+        return (), "package.json must declare a non-empty test script for npm verification"
     maps, error = _node_dependency_maps(manifest)
     if error:
         return (), error
     lock_root, lock_entries, error = _npm_lock_entries(lock)
     if error:
         return (), error
+    manifest_root = {
+        package: (kind, specifier)
+        for kind, dependencies in maps.items()
+        for package, specifier in dependencies.items()
+    }
+    if manifest_root != lock_root:
+        return (), (
+            "package.json and package-lock.json direct dependency maps do not "
+            "exactly match"
+        )
     return _entries_from_locked_maps(
         maps,
-        lock_root,
+        {package: identity[1] for package, identity in lock_root.items()},
         lock_entries,
         selected,
         "package.json",
         "package-lock.json",
+        require_lock_specifiers=True,
     )
 
 
 def _node_dependency_maps(manifest: Mapping[str, Any]) -> Tuple[Dict[str, Dict[str, str]], Optional[str]]:
     maps: Dict[str, Dict[str, str]] = {}
-    for kind in ("dependencies", "devDependencies", "optionalDependencies"):
+    for kind in NPM_DEPENDENCY_KINDS:
         raw = manifest.get(kind, {})
         if not isinstance(raw, dict):
             return {}, f"package.json {kind} must be an object"
@@ -262,6 +340,10 @@ def _node_dependency_maps(manifest: Mapping[str, Any]) -> Tuple[Dict[str, Dict[s
         for package, specifier in raw.items():
             if not isinstance(package, str) or not package or not isinstance(specifier, str) or not specifier:
                 return {}, f"package.json contains malformed {kind} entries"
+            if _NPM_PACKAGE.fullmatch(package) is None:
+                return {}, f"npm package name is outside npm_package_lock_only_v1: {package}"
+            if _UNSAFE_NPM_SPECIFIER.match(specifier):
+                return {}, f"{package} uses an unsupported local or alias specifier"
             values[package] = specifier
         maps[kind] = values
     seen: Dict[str, str] = {}
@@ -273,51 +355,56 @@ def _node_dependency_maps(manifest: Mapping[str, Any]) -> Tuple[Dict[str, Dict[s
     return maps, None
 
 
-def _npm_lock_entries(lock: Mapping[str, Any]) -> Tuple[Mapping[str, str], Mapping[str, str], Optional[str]]:
-    root: Dict[str, str] = {}
+def _npm_lock_entries(
+    lock: Mapping[str, Any],
+) -> Tuple[Mapping[str, Tuple[str, str]], Mapping[str, str], Optional[str]]:
+    root: Dict[str, Tuple[str, str]] = {}
     entries: Dict[str, str] = {}
+    if lock.get("lockfileVersion") != 3:
+        return {}, {}, "npm adapter supports package-lock.json lockfileVersion 3 only"
+    if "workspaces" in lock:
+        return {}, {}, "npm package-lock v3 workspace graphs are unsupported"
     packages = lock.get("packages")
-    if packages is not None:
-        if not isinstance(packages, dict):
-            return {}, {}, "package-lock.json packages must be an object"
-        root_raw = packages.get("")
-        if root_raw is not None:
-            if not isinstance(root_raw, dict):
-                return {}, {}, "package-lock.json root package is malformed"
-            root = _lock_specifiers(root_raw)
-        for path, value in packages.items():
-            if not isinstance(path, str) or not isinstance(value, dict):
-                return {}, {}, "package-lock.json contains malformed package entries"
-            if path == "":
-                continue
-            if path.startswith("node_modules/"):
-                package = path[len("node_modules/") :]
-                if "/node_modules/" not in path and isinstance(value.get("version"), str):
-                    entries[package] = value["version"]
-        if not isinstance(lock.get("lockfileVersion", 0), int):
-            return {}, {}, "package-lock.json lockfileVersion is malformed"
-    legacy = lock.get("dependencies")
-    if legacy is not None:
-        if not isinstance(legacy, dict):
-            return {}, {}, "package-lock.json dependencies must be an object"
-        for package, value in legacy.items():
-            if not isinstance(package, str) or not isinstance(value, dict) or not isinstance(value.get("version"), str):
-                return {}, {}, "package-lock.json contains malformed dependency entries"
-            entries.setdefault(package, value["version"])
-    if packages is None and legacy is None:
-        return {}, {}, "package-lock.json has no supported package entries"
+    if not isinstance(packages, dict):
+        return {}, {}, "package-lock.json v3 packages must be an object"
+    root_raw = packages.get("")
+    if not isinstance(root_raw, dict):
+        return {}, {}, "package-lock.json v3 root package is missing or malformed"
+    if "workspaces" in root_raw:
+        return {}, {}, "npm package-lock v3 workspace graphs are unsupported"
+    root_sections: Dict[str, str] = {}
+    for kind in NPM_DEPENDENCY_KINDS:
+        raw = root_raw.get(kind, {})
+        if not isinstance(raw, dict) or any(
+            not isinstance(package, str) or not isinstance(value, str)
+            for package, value in raw.items()
+        ):
+            return {}, {}, "package-lock.json root dependency evidence is malformed"
+        for package, specifier in raw.items():
+            previous = root_sections.get(package)
+            if previous is not None:
+                return {}, {}, (
+                    "package-lock.json root dependency appears in multiple sections: "
+                    f"{package} ({previous}, {kind})"
+                )
+            root_sections[package] = kind
+            root[package] = (kind, specifier)
+    for path, value in packages.items():
+        if not isinstance(path, str) or not isinstance(value, dict):
+            return {}, {}, "package-lock.json contains malformed package entries"
+        if path == "":
+            continue
+        if "/node_modules/" in path:
+            return {}, {}, "npm package-lock v3 nested node_modules graphs are unsupported"
+        if not path.startswith("node_modules/"):
+            return {}, {}, "npm package-lock v3 workspace package locations are unsupported"
+        package = path[len("node_modules/") :]
+        if _NPM_PACKAGE.fullmatch(package) is None:
+            return {}, {}, "npm package-lock v3 package location is outside the flat root graph"
+        if not isinstance(value.get("version"), str):
+            return {}, {}, "npm package-lock v3 package version is missing or malformed"
+        entries[package] = value["version"]
     return root, entries, None
-
-
-def _lock_specifiers(root: Mapping[str, Any]) -> Dict[str, str]:
-    values: Dict[str, str] = {}
-    for kind in ("dependencies", "devDependencies", "optionalDependencies"):
-        raw = root.get(kind, {})
-        if isinstance(raw, dict):
-            for package, value in raw.items():
-                if isinstance(package, str) and isinstance(value, str):
-                    values[package] = value
-    return values
 
 
 def _entries_from_locked_maps(
@@ -327,6 +414,7 @@ def _entries_from_locked_maps(
     selected: Sequence[str],
     manifest_path: str,
     lockfile_path: str,
+    require_lock_specifiers: bool = False,
 ) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
     all_names = {package for values in maps.values() for package in values}
     names = sorted(set(selected) if selected else all_names)
@@ -341,6 +429,8 @@ def _entries_from_locked_maps(
         specifier = maps[kind][package]
         if _unsupported_local_specifier(specifier):
             return (), f"{package} uses an unsupported local or alias specifier"
+        if require_lock_specifiers and package not in lock_root:
+            return (), f"{lockfile_path} has no root specifier evidence for {package}"
         if package in lock_root and lock_root[package] != specifier:
             return (), f"manifest and lockfile specifiers disagree for {package}"
         current = lock_versions.get(package)
@@ -779,6 +869,30 @@ def _observe_entries(
     for entry in entries:
         if _parse_version(entry.current_version) is None:
             return _insufficient(f"locked version for {entry.package} is not safely parseable")
+        if manager.name is ManagerName.NPM:
+            if _NPM_PACKAGE.fullmatch(entry.package) is None:
+                return _insufficient(
+                    f"npm package name is outside npm_package_lock_only_v1: {entry.package}"
+                )
+            if _EXACT_NPM_SEMVER.fullmatch(entry.current_version) is None:
+                return _insufficient(
+                    f"locked npm version for {entry.package} must be exact semver"
+                )
+            if _UNSAFE_NPM_SPECIFIER.match(entry.specifier):
+                return _insufficient(
+                    f"{entry.package} uses an unsupported local or alias specifier"
+                )
+            current_matches, constraint_error = npm_constraint_matches(
+                entry.specifier, entry.current_version
+            )
+            if constraint_error is not None:
+                return _insufficient(
+                    f"unsupported npm semver constraint for {entry.package}: {constraint_error}"
+                )
+            if not current_matches:
+                return _insufficient(
+                    f"locked version for {entry.package} does not satisfy its npm semver constraint"
+                )
         try:
             metadata = registry.package_metadata(entry.package)
         except Exception as exc:
@@ -799,6 +913,20 @@ def _observe_entries(
             available = tuple(metadata.available_versions)
             if any(_parse_version(version) is None for version in available):
                 return _insufficient(f"registry versions for {entry.package} are unparseable")
+            if manager.name is ManagerName.NPM:
+                compatible = tuple(
+                    version
+                    for version in available
+                    if not _parse_version(version)[3]
+                    and npm_constraint_matches(entry.specifier, version) == (True, None)
+                )
+                if not any(
+                    _compare_versions(entry.current_version, version) < 0
+                    for version in compatible
+                ):
+                    unchanged.append(entry.package)
+                    continue
+                available = compatible
         try:
             target = target_versions.choose_target_version(
                 entry.package,
@@ -810,6 +938,13 @@ def _observe_entries(
             return _insufficient(f"target version for {entry.package} is unavailable: {exc}")
         if target is None or target not in available or _parse_version(target) is None:
             return _insufficient(f"target version for {entry.package} is unavailable")
+        if (
+            manager.name is ManagerName.NPM
+            and _EXACT_NPM_SEMVER.fullmatch(target) is None
+        ):
+            return _insufficient(
+                f"target npm version for {entry.package} must be exact semver"
+            )
         if manager.name is ManagerName.UV:
             floor = entry.specifier[2:]
             if _uv_release(target) is None or _compare_uv_releases(target, floor) < 0:
@@ -843,7 +978,32 @@ def _make_candidate(
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     manager_id = ManagerId(manager.name.value)
     plan = COMMAND_PLANS[manager_id]
-    render = lambda command: " ".join(command).replace("{dependency}", entry.package).replace("{version}", target)
+    save_flag = npm_save_flag(entry.kind) if manager.name is ManagerName.NPM else None
+    render = lambda command: (
+        " ".join(command)
+        .replace("{dependency}", entry.package)
+        .replace("{version}", target)
+        .replace("{save_flag}", save_flag or "")
+    )
+    verification_commands = (
+        (render(plan.verify),)
+        if manager.name is ManagerName.NPM
+        else (render(plan.install), render(plan.verify))
+    )
+    fingerprint = f"sha256:{digest}"
+    adapter_profile = (
+        NPM_ADAPTER_PROFILE if manager.name is ManagerName.NPM else None
+    )
+    adapter_fingerprint = (
+        adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint,
+            ecosystem=manager.ecosystem,
+            package_manager=manager.name.value,
+            adapter_profile=adapter_profile,
+        )
+        if adapter_profile is not None
+        else None
+    )
     return DependencyCandidate(
         package=entry.package,
         dependency_kind=entry.kind,
@@ -853,10 +1013,12 @@ def _make_candidate(
         manifest_path=entry.manifest_path,
         lockfile_path=entry.lockfile_path,
         baseline_sha=snapshot.baseline_sha,
-        fingerprint=f"sha256:{digest}",
+        fingerprint=fingerprint,
         ecosystem=manager.ecosystem,
         package_manager=manager.name.value,
-        verification_commands=(render(plan.install), render(plan.verify)),
+        adapter_profile=adapter_profile,
+        adapter_identity_fingerprint=adapter_fingerprint,
+        verification_commands=verification_commands,
         manager_commands={
             "version": " ".join(_manager_version_command(manager_id)),
             "install": render(plan.install),
@@ -886,11 +1048,28 @@ def _toml_mapping(text: str, label: str) -> Tuple[Mapping[str, Any], Optional[st
 
 
 def _normalise_files(files: Mapping[str, str]) -> Dict[str, str]:
-    return {str(path).replace("\\", "/").lstrip("./"): text for path, text in files.items()}
+    normalised: Dict[str, str] = {}
+    for raw_path, text in files.items():
+        if not isinstance(raw_path, str):
+            raise ValueError("file paths must be strings")
+        path = raw_path.replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        if (
+            not path
+            or path.startswith("/")
+            or re.match(r"^[A-Za-z]:/", path)
+            or ".." in path.split("/")
+        ):
+            raise ValueError(f"unsafe repository path: {raw_path}")
+        if path in normalised:
+            raise ValueError(f"repository path collision after normalization: {path}")
+        normalised[path] = text
+    return normalised
 
 
 def _unsupported_local_specifier(specifier: str) -> bool:
-    return specifier.startswith(("file:", "link:", "workspace:", "git+", "git:", "path:", "http:"))
+    return specifier.startswith(("file:", "link:", "workspace:", "npm:", "git+", "git:", "path:", "http:"))
 
 
 def _parse_version(value: str) -> Optional[Tuple[int, int, int, Tuple[str, ...]]]:

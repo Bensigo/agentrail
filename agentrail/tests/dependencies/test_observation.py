@@ -15,6 +15,7 @@ from agentrail.dependencies.pnpm import (
     InsufficientEvidenceResult,
     RegistryPackage,
     TargetVersionAdapter,
+    UnchangedResult,
 )
 
 
@@ -77,7 +78,13 @@ def test_npm_package_lock_dispatch_detects_candidate() -> None:
     result = observe_dependencies(
         _snapshot(
             **{
-                "package.json": json.dumps({"dependencies": {"lodash": "^4.17.21"}}),
+                "package.json": json.dumps(
+                    {
+                        "packageManager": "npm@10.8.2",
+                        "scripts": {"test": "node --test"},
+                        "dependencies": {"lodash": "^4.17.21"},
+                    }
+                ),
                 "package-lock.json": json.dumps(
                     {
                         "lockfileVersion": 3,
@@ -97,6 +104,12 @@ def test_npm_package_lock_dispatch_detects_candidate() -> None:
     assert (candidate.package_manager, candidate.ecosystem) == ("npm", "node")
     assert candidate.manifest_path == "package.json"
     assert candidate.lockfile_path == "package-lock.json"
+    assert candidate.manager_commands["install"] == "npm ci --ignore-scripts"
+    assert candidate.manager_commands["update"] == (
+        "npm install lodash@4.17.22 --package-lock-only --ignore-scripts "
+        "--no-audit --save-prod"
+    )
+    assert candidate.verification_commands == ("npm test",)
 
 
 def test_poetry_dispatch_detects_candidate() -> None:
@@ -267,3 +280,495 @@ def test_pnpm_is_dispatched_to_existing_detector() -> None:
     )
     assert isinstance(result, CandidatesResult)
     assert result.candidates[0].package_manager == "pnpm"
+
+
+def _npm_snapshot(
+    specifier: str = "^4.17.21",
+    *,
+    lockfile_version: int = 3,
+    dependency_kind: str = "dependencies",
+    package: str = "lodash",
+    current_version: str = "4.17.21",
+) -> DependencySnapshot:
+    return _snapshot(
+        **{
+            "package.json": json.dumps(
+                {
+                    "packageManager": "npm@10.8.2",
+                    "scripts": {"test": "node --test"},
+                    dependency_kind: {package: specifier},
+                }
+            ),
+            "package-lock.json": json.dumps(
+                {
+                    "lockfileVersion": lockfile_version,
+                    "packages": {
+                        "": {dependency_kind: {package: specifier}},
+                        f"node_modules/{package}": {"version": current_version},
+                    },
+                }
+            ),
+        }
+    )
+
+
+def test_npm_observation_preserves_each_admitted_manifest_kind_and_save_flag() -> None:
+    cases = (
+        ("dependencies", "--save-prod"),
+        ("devDependencies", "--save-dev"),
+        ("optionalDependencies", "--save-optional"),
+        ("peerDependencies", "--save-peer"),
+    )
+    for dependency_kind, save_flag in cases:
+        result = observe_dependencies(
+            _npm_snapshot(dependency_kind=dependency_kind),
+            registry=Registry({"lodash": ("4.17.21", "4.17.22")}),
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, CandidatesResult)
+        candidate = result.candidates[0]
+        assert candidate.dependency_kind == dependency_kind
+        assert candidate.manager_commands["update"] == (
+            "npm install lodash@4.17.22 --package-lock-only --ignore-scripts "
+            f"--no-audit {save_flag}"
+        )
+
+
+def test_npm_observation_does_not_admit_build_dependencies() -> None:
+    result = observe_dependencies(
+        _npm_snapshot(dependency_kind="buildDependencies"),
+        selected_dependencies=("lodash",),
+        registry=Registry({"lodash": ("4.17.21", "4.17.22")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "not declared" in result.reasons[0]
+
+
+def test_npm_observation_refuses_unsafe_package_names_before_registry_access() -> None:
+    for package in ("Lodash", "--force", "@Acme/widget", "@acme", "@/widget", "@acme/Widget"):
+        registry = Registry({package: ("4.17.21", "4.17.22")})
+        result = observe_dependencies(
+            _npm_snapshot(package=package),
+            registry=registry,
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "npm package name" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_rejects_duplicate_json_keys_at_every_depth() -> None:
+    valid_manifest = (
+        '{"packageManager":"npm@10.8.2","scripts":{"test":"node --test"},'
+        '"dependencies":{"lodash":"^4.17.21"}}'
+    )
+    valid_lock = (
+        '{"lockfileVersion":3,"packages":{"":{"dependencies":'
+        '{"lodash":"^4.17.21"}},"node_modules/lodash":{"version":"4.17.21"}}}'
+    )
+    cases = (
+        (
+            '{"packageManager":"npm@10.8.2","packageManager":"npm@10.8.2",'
+            '"scripts":{"test":"node --test"},"dependencies":'
+            '{"lodash":"^4.17.21"}}',
+            valid_lock,
+        ),
+        (
+            '{"packageManager":"npm@10.8.2","scripts":{"test":"node --test"},'
+            '"dependencies":{"lodash":"^4.17.21","lodash":"^4.17.20"}}',
+            valid_lock,
+        ),
+        (
+            valid_manifest,
+            '{"lockfileVersion":3,"lockfileVersion":3,"packages":{"":'
+            '{"dependencies":{"lodash":"^4.17.21"}},"node_modules/lodash":'
+            '{"version":"4.17.21"}}}',
+        ),
+        (
+            valid_manifest,
+            '{"lockfileVersion":3,"packages":{"":{"dependencies":'
+            '{"lodash":"^4.17.21"}},"node_modules/lodash":'
+            '{"version":"4.17.21"},"node_modules/lodash":'
+            '{"version":"4.17.20"}}}',
+        ),
+    )
+    for manifest, lockfile in cases:
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+        result = observe_dependencies(
+            _snapshot(**{"package.json": manifest, "package-lock.json": lockfile}),
+            registry=registry,
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, (InsufficientEvidenceResult, UnsupportedResult))
+        assert "duplicate JSON key" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_explicit_npm_observation_rejects_unsafe_or_colliding_snapshot_paths() -> None:
+    snapshot = _npm_snapshot()
+    manifest = snapshot.files["package.json"]
+    lockfile = snapshot.files["package-lock.json"]
+    cases = (
+        {"../package.json": manifest, "package-lock.json": lockfile},
+        {"/package.json": manifest, "package-lock.json": lockfile},
+        {"C:\\package.json": manifest, "package-lock.json": lockfile},
+        {
+            "package.json": manifest,
+            "./package.json": manifest,
+            "package-lock.json": lockfile,
+        },
+    )
+    for files in cases:
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+        result = observe_dependencies(
+            DependencySnapshot(files=files, baseline_sha=BASELINE),
+            registry=registry,
+            target_versions=Newest(),
+            manager="npm",
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "snapshot paths are invalid" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_rejects_non_finite_manifest_and_lock_json() -> None:
+    valid_manifest = (
+        '{"packageManager":"npm@10.8.2","scripts":{"test":"node --test"},'
+        '"dependencies":{"lodash":"^4.17.21"}}'
+    )
+    valid_lock = (
+        '{"lockfileVersion":3,"packages":{"":{"dependencies":'
+        '{"lodash":"^4.17.21"}},"node_modules/lodash":{"version":"4.17.21"}}}'
+    )
+    cases = (
+        (
+            valid_manifest.replace('"^4.17.21"', "NaN"),
+            valid_lock,
+        ),
+        (
+            valid_manifest,
+            valid_lock.replace('"lockfileVersion":3', '"lockfileVersion":Infinity'),
+        ),
+    )
+    for manifest, lockfile in cases:
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+        result = observe_dependencies(
+            _snapshot(**{"package.json": manifest, "package-lock.json": lockfile}),
+            registry=registry,
+            target_versions=Newest(),
+            manager="npm",
+        )
+
+        assert isinstance(result, (InsufficientEvidenceResult, UnsupportedResult))
+        assert "non-finite JSON constant" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_requires_complete_manifest_lock_root_identity() -> None:
+    manifest = {
+        "packageManager": "npm@10.8.2",
+        "scripts": {"test": "node --test"},
+        "dependencies": {"lodash": "^4.17.21", "helper": "^1.0.0"},
+    }
+    lockfile = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {
+                "dependencies": {"lodash": "^4.17.21", "helper": "^1.0.0"},
+            },
+            "node_modules/lodash": {"version": "4.17.21"},
+            "node_modules/helper": {"version": "1.0.0"},
+        },
+    }
+    cases = []
+
+    missing = (json.loads(json.dumps(manifest)), json.loads(json.dumps(lockfile)))
+    del missing[1]["packages"][""]["dependencies"]["helper"]
+    cases.append(missing)
+
+    extra = (json.loads(json.dumps(manifest)), json.loads(json.dumps(lockfile)))
+    del extra[0]["dependencies"]["helper"]
+    cases.append(extra)
+
+    moved = (json.loads(json.dumps(manifest)), json.loads(json.dumps(lockfile)))
+    del moved[0]["dependencies"]["helper"]
+    moved[0]["devDependencies"] = {"helper": "^1.0.0"}
+    cases.append(moved)
+
+    for manifest_data, lock_data in cases:
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+        result = observe_dependencies(
+            _snapshot(
+                **{
+                    "package.json": json.dumps(manifest_data),
+                    "package-lock.json": json.dumps(lock_data),
+                }
+            ),
+            selected_dependencies=("lodash",),
+            registry=registry,
+            target_versions=Newest(),
+            manager="npm",
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "direct dependency maps do not exactly match" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_refuses_case_insensitive_unsafe_and_alias_specifiers() -> None:
+    for specifier in ("NPM:other@1.0.0", "FILE:../local", "HTTPS://mirror.invalid/pkg.tgz"):
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+        result = observe_dependencies(
+            _npm_snapshot(specifier), registry=registry, target_versions=Newest()
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "unsupported local or alias specifier" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_requires_exact_semver_and_accepts_canonical_scoped_name() -> None:
+    invalid_current_registry = Registry({"lodash": ("v4.17.21", "4.17.22")})
+    invalid_current = observe_dependencies(
+        _npm_snapshot(current_version="v4.17.21"),
+        registry=invalid_current_registry,
+        target_versions=Newest(),
+    )
+    assert isinstance(invalid_current, InsufficientEvidenceResult)
+    assert "exact semver" in invalid_current.reasons[0]
+    assert invalid_current_registry.calls == []
+
+    scoped = observe_dependencies(
+        _npm_snapshot(package="@acme/widget"),
+        registry=Registry({"@acme/widget": ("4.17.21", "4.17.22")}),
+        target_versions=Newest(),
+    )
+    assert isinstance(scoped, CandidatesResult)
+    assert scoped.candidates[0].package == "@acme/widget"
+    assert scoped.candidates[0].adapter_profile == "npm_package_lock_only_v1"
+
+
+def test_npm_comparator_range_filters_out_an_incompatible_latest_version() -> None:
+    result = observe_dependencies(
+        _npm_snapshot(">=4.17.21 <5.0.0"),
+        registry=Registry({"lodash": ("4.17.21", "4.17.22", "5.0.0")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, CandidatesResult)
+    assert result.candidates[0].target_version == "4.17.22"
+
+
+def test_npm_supported_ranges_constrain_target_selection() -> None:
+    cases = (
+        ("~4.17.21", ("4.17.21", "4.17.22", "4.18.0"), "4.17.22"),
+        ("4.17.x", ("4.17.21", "4.17.22", "4.18.0"), "4.17.22"),
+        ("4.17.21 - 4.17.30", ("4.17.21", "4.17.30", "4.17.31"), "4.17.30"),
+        ("^3.0.0 || ^4.17.21", ("4.17.21", "4.17.22", "5.0.0"), "4.17.22"),
+    )
+    for specifier, available, expected in cases:
+        result = observe_dependencies(
+            _npm_snapshot(specifier),
+            registry=Registry({"lodash": available}),
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, CandidatesResult)
+        assert result.candidates[0].target_version == expected
+
+
+def test_npm_exact_constraint_is_unchanged_instead_of_widened() -> None:
+    result = observe_dependencies(
+        _npm_snapshot("4.17.21"),
+        registry=Registry({"lodash": ("4.17.21", "4.17.22")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, UnchangedResult)
+
+
+def test_unsupported_npm_range_refuses_before_registry_access() -> None:
+    for specifier in ("latest", "^4.17.21 || latest"):
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+        result = observe_dependencies(
+            _npm_snapshot(specifier), registry=registry, target_versions=Newest()
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "unsupported npm semver constraint" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_requires_a_repository_declared_test_command() -> None:
+    snapshot = _npm_snapshot()
+    files = dict(snapshot.files)
+    package = json.loads(files["package.json"])
+    package["scripts"] = {}
+    files["package.json"] = json.dumps(package)
+    registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+    result = observe_dependencies(
+        DependencySnapshot(files=files, baseline_sha=BASELINE),
+        registry=registry,
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "non-empty test script" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_npm_observation_requires_an_exact_repository_manager_pin() -> None:
+    snapshot = _npm_snapshot()
+    files = dict(snapshot.files)
+    package = json.loads(files["package.json"])
+    package["packageManager"] = "npm"
+    files["package.json"] = json.dumps(package)
+    registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+    result = observe_dependencies(
+        DependencySnapshot(files=files, baseline_sha=BASELINE),
+        registry=registry,
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "exact npm@x.y.z" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_explicit_npm_selection_rejects_yarn_and_bun_declarations_without_fallback() -> None:
+    registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+    for declaration in ("yarn@4.5.0", "bun@1.1.0"):
+        snapshot = _npm_snapshot()
+        files = dict(snapshot.files)
+        files["package.json"] = json.dumps(
+            {
+                "packageManager": declaration,
+                "scripts": {"test": "node --test"},
+                "dependencies": {"lodash": "^4.17.21"},
+            }
+        )
+        result = observe_dependencies(
+            DependencySnapshot(files=files, baseline_sha=BASELINE),
+            manager="npm",
+            registry=registry,
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, UnsupportedResult)
+        assert "explicit npm selection conflicts" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_explicit_npm_selection_rejects_alternate_node_lockfiles() -> None:
+    for lockfile in ("yarn.lock", "bun.lock"):
+        snapshot = _npm_snapshot()
+        result = observe_dependencies(
+            DependencySnapshot(
+                files={**snapshot.files, lockfile: ""}, baseline_sha=BASELINE
+            ),
+            manager="npm",
+            registry=Registry({}),
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, UnsupportedResult)
+        assert lockfile in result.reasons[0]
+
+
+def test_npm_package_lock_v1_and_v2_are_narrowly_refused() -> None:
+    for version in (1, 2):
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+        result = observe_dependencies(
+            _npm_snapshot(lockfile_version=version),
+            registry=registry,
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "lockfileVersion 3 only" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_refuses_workspace_and_nonflat_lock_graphs_before_registry() -> None:
+    cases = (
+        "manifest-workspaces",
+        "lock-root-workspaces",
+        "workspace-location",
+        "nested-location",
+        "non-package-subpath",
+    )
+    for case in cases:
+        snapshot = _npm_snapshot()
+        files = dict(snapshot.files)
+        manifest = json.loads(files["package.json"])
+        lock = json.loads(files["package-lock.json"])
+        if case == "manifest-workspaces":
+            manifest["workspaces"] = ["packages/*"]
+        elif case == "lock-root-workspaces":
+            lock["packages"][""]["workspaces"] = ["packages/*"]
+        elif case == "workspace-location":
+            lock["packages"]["packages/helper"] = {"version": "1.0.0"}
+        elif case == "nested-location":
+            lock["packages"]["node_modules/react/node_modules/helper"] = {
+                "version": "1.0.0"
+            }
+        else:
+            lock["packages"]["node_modules/react/vendor"] = {"version": "1.0.0"}
+        files["package.json"] = json.dumps(manifest)
+        files["package-lock.json"] = json.dumps(lock)
+        registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+        result = observe_dependencies(
+            DependencySnapshot(files=files, baseline_sha=BASELINE),
+            registry=registry,
+            target_versions=Newest(),
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert "workspace" in result.reasons[0] or "flat root" in result.reasons[0] or "nested" in result.reasons[0]
+        assert registry.calls == []
+
+
+def test_npm_observation_refuses_duplicate_root_dependency_kind_before_registry() -> None:
+    snapshot = _npm_snapshot()
+    files = dict(snapshot.files)
+    lock = json.loads(files["package-lock.json"])
+    lock["packages"][""]["devDependencies"] = {"lodash": "^4.17.21"}
+    files["package-lock.json"] = json.dumps(lock)
+    registry = Registry({"lodash": ("4.17.21", "4.17.22")})
+
+    result = observe_dependencies(
+        DependencySnapshot(files=files, baseline_sha=BASELINE),
+        registry=registry,
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "multiple sections" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_npm_shrinkwrap_is_refused_even_when_package_lock_is_present() -> None:
+    snapshot = _npm_snapshot()
+    result = observe_dependencies(
+        DependencySnapshot(
+            files={**snapshot.files, "npm-shrinkwrap.json": "{}"}, baseline_sha=BASELINE
+        ),
+        manager="npm",
+        registry=Registry({}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, UnsupportedResult)
+    assert "npm-shrinkwrap.json" in result.reasons[0]

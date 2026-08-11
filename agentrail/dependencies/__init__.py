@@ -32,6 +32,7 @@ from agentrail.dependencies.evidence import (
     collect_dependency_evidence,
     dependency_gate_input,
     evaluate_dependency_evidence,
+    resolve_npm_lock_transition,
     resolve_pnpm_lock_transition,
     scan_usage_evidence,
     security_evidence_from_advisory_payload,
@@ -55,6 +56,7 @@ from agentrail.dependencies.pnpm import (
 
 from agentrail.dependencies.observation import observe_dependencies, observe_dependency_candidates
 from agentrail.dependencies.manager import (
+    AdapterCapability,
     CommandPlan,
     DetectionResult,
     DetectionStatus,
@@ -64,6 +66,9 @@ from agentrail.dependencies.manager import (
     SupportedDetection,
     UnsupportedDetection,
     detect_dependency_manager,
+    node_adapter_can_observe,
+    node_adapter_capability,
+    node_adapter_has_managed_execution,
 )
 from agentrail.dependencies.publication import (
     DependencyPublicationDecision,
@@ -103,6 +108,7 @@ __all__ = [
     "SecurityEvidence",
     "TargetVersionAdapter",
     "Toolchain",
+    "AdapterCapability",
     "CommandPlan",
     "DetectionResult",
     "DetectionStatus",
@@ -111,6 +117,9 @@ __all__ = [
     "RepositorySnapshot",
     "SupportedDetection",
     "UnsupportedDetection",
+    "node_adapter_can_observe",
+    "node_adapter_capability",
+    "node_adapter_has_managed_execution",
     "UnchangedResult",
     "UnsupportedResult",
     "UsageEvidence",
@@ -122,6 +131,7 @@ __all__ = [
     "execute_approved_pnpm_upgrade",
     "write_dependency_execution_evidence",
     "observe_pnpm_dependencies",
+    "resolve_npm_lock_transition",
     "resolve_pnpm_lock_transition",
     "scan_usage_evidence",
     "security_evidence_from_advisory_payload",

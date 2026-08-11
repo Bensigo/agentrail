@@ -31,6 +31,8 @@ from agentrail.dependencies.evidence import (
     UsageFinding,
 )
 from agentrail.dependencies.pnpm import DependencyCandidate
+from agentrail.dependencies.manager import NPM_ADAPTER_PROFILE, PNPM_ADAPTER_PROFILE
+from agentrail.dependencies.pnpm import adapter_identity_fingerprint
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dependency"
@@ -100,6 +102,7 @@ class FixtureRunner:
 
 
 def _contract(*, approved: bool = True, verification_commands=("pnpm-test",), **changes: object) -> ApprovedPnpmUpgrade:
+    fingerprint = "sha256:candidate"
     candidate = DependencyCandidate(
         package="left-pad",
         dependency_kind="dependencies",
@@ -109,7 +112,14 @@ def _contract(*, approved: bool = True, verification_commands=("pnpm-test",), **
         manifest_path="package.json",
         lockfile_path="pnpm-lock.yaml",
         baseline_sha=BASELINE_SHA,
-        fingerprint="sha256:candidate",
+        fingerprint=fingerprint,
+        adapter_profile=PNPM_ADAPTER_PROFILE,
+        adapter_identity_fingerprint=adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint,
+            ecosystem="node",
+            package_manager="pnpm",
+            adapter_profile=PNPM_ADAPTER_PROFILE,
+        ),
     )
     source = EvidenceSource("fixture", "https://example.test/evidence", "2026-08-03T00:00:00Z", "fixture")
     identity = CandidateIdentity.from_candidate(candidate)
@@ -171,6 +181,28 @@ def test_clean_upgrade_uses_pinned_toolchain_frozen_installs_and_cleans_checkout
     assert runner.calls.index(next(call for call in runner.calls if call["command"][:3] == ("corepack", "pnpm", "update"))) > runner.calls.index(next(call for call in runner.calls if call["command"][0] == "pnpm-test"))
 
 
+def test_pnpm_preserves_repository_private_registry_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("npm_config_save_prefix", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_SAVE_PREFIX", raising=False)
+    monkeypatch.setenv("npm_config_registry", "https://registry.private.example/")
+    monkeypatch.setenv("npm_config_userconfig", "/workspace/private-pnpmrc")
+    runner = FixtureRunner("clean")
+
+    result, _ = _run(tmp_path, runner)
+
+    assert result.status is ExecutionStatus.GREEN
+    pnpm_envs = [
+        call["env"] for call in runner.calls
+        if call["command"][:2] == ("corepack", "pnpm")
+    ]
+    assert pnpm_envs
+    assert all(env["npm_config_registry"] == "https://registry.private.example/" for env in pnpm_envs)
+    assert all(env["npm_config_userconfig"] == "/workspace/private-pnpmrc" for env in pnpm_envs)
+    assert all("npm_config_save_prefix" not in env for env in pnpm_envs)
+
+
 def test_approval_is_required_and_no_checkout_is_created(tmp_path: Path) -> None:
     runner = FixtureRunner("clean")
     result, parent = _run(tmp_path, runner, _contract(approved=False))
@@ -180,6 +212,60 @@ def test_approval_is_required_and_no_checkout_is_created(tmp_path: Path) -> None
     assert runner.calls == []
     assert result.cleanup_completed is False
     assert list(parent.iterdir()) == []
+
+
+def test_pnpm_execution_refuses_missing_or_cross_manager_profile_before_clone(tmp_path: Path) -> None:
+    for index, contract in enumerate((
+        replace(_contract(), adapter_profile=None),
+        replace(
+            _contract(),
+            adapter_profile=NPM_ADAPTER_PROFILE,
+            adapter_identity_fingerprint=adapter_identity_fingerprint(
+                candidate_fingerprint="sha256:candidate",
+                ecosystem="node",
+                package_manager="pnpm",
+                adapter_profile=NPM_ADAPTER_PROFILE,
+            ),
+        ),
+    )):
+        runner = FixtureRunner("clean")
+        case_dir = tmp_path / f"profile-{index}"
+        case_dir.mkdir()
+        result, parent = _run(case_dir, runner, contract)
+
+        assert result.status is ExecutionStatus.REFUSED
+        assert result.reason_code is ExecutionReason.INVALID_CONTRACT
+        assert "adapter" in result.reason
+        assert runner.calls == []
+        assert list(parent.iterdir()) == []
+
+
+def test_pnpm_execution_refuses_unsafe_or_colliding_contract_paths_before_clone(
+    tmp_path: Path,
+) -> None:
+    contracts = (
+        replace(_contract(), manifest_path="../package.json"),
+        replace(_contract(), lockfile_path="/pnpm-lock.yaml"),
+        replace(_contract(), lockfile_path="C:\\pnpm-lock.yaml"),
+        replace(_contract(), affected_usage_paths=("../README.md",)),
+        replace(_contract(), required_test_paths=("./../test.js",)),
+        replace(
+            _contract(),
+            affected_usage_paths=("test.js",),
+            required_test_paths=("./test.js",),
+        ),
+    )
+    for index, contract in enumerate(contracts):
+        runner = FixtureRunner("clean")
+        case_dir = tmp_path / f"unsafe-path-{index}"
+        case_dir.mkdir()
+
+        result, parent = _run(case_dir, runner, contract)
+
+        assert result.status is ExecutionStatus.REFUSED
+        assert result.reason_code is ExecutionReason.INVALID_CONTRACT
+        assert runner.calls == []
+        assert list(parent.iterdir()) == []
 
 
 def test_candidate_and_approval_without_proof_evidence_cannot_execute(tmp_path: Path) -> None:

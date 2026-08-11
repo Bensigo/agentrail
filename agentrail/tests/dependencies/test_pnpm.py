@@ -104,6 +104,46 @@ def test_identical_inputs_have_identical_fingerprints() -> None:
     assert isinstance(first, CandidatesResult)
     assert isinstance(second, CandidatesResult)
     assert first.candidates[0].fingerprint == second.candidates[0].fingerprint
+    # Frozen #1687 producer vector: adapter custody must not rewrite the
+    # heartbeat/draft candidate fingerprint already persisted by main.
+    assert first.candidates[0].fingerprint == (
+        "sha256:af59eab86acc638cb5a81368338233085e052e60b85ef57c26da3b6516fbdb39"
+    )
+    assert first.candidates[0].adapter_profile == "pnpm_lockfile_only_v1"
+    assert first.candidates[0].adapter_identity_fingerprint == (
+        "sha256:5a3690f2d1aa867bf62d3a5a98a0e555eb107e3666232a96ceba0df5126172b8"
+    )
+
+
+def test_direct_observer_rejects_unsafe_or_colliding_paths_before_registry() -> None:
+    snapshot = _snapshot()
+    manifest = snapshot.files["package.json"]
+    lockfile = snapshot.files["pnpm-lock.yaml"]
+    collision_entries = (
+        ("package.json", manifest),
+        ("./package.json", manifest),
+        ("pnpm-lock.yaml", lockfile),
+    )
+    cases = (
+        {"../package.json": manifest, "../pnpm-lock.yaml": lockfile},
+        {"/package.json": manifest, "/pnpm-lock.yaml": lockfile},
+        {"C:\\package.json": manifest, "C:\\pnpm-lock.yaml": lockfile},
+        {"./../package.json": manifest, "./../pnpm-lock.yaml": lockfile},
+        dict(collision_entries),
+        dict(reversed(collision_entries)),
+    )
+    for files in cases:
+        registry = FakeRegistry({"lodash": ("4.17.21", "4.17.22")})
+
+        result = observe_pnpm_dependencies(
+            DependencySnapshot(files=files, baseline_sha=BASELINE),
+            selected_dependencies=("lodash",),
+            registry=registry,
+            target_versions=FirstNewVersion(),
+        )
+
+        assert isinstance(result, InsufficientEvidenceResult)
+        assert registry.calls == []
 
 
 def test_unchanged_dependency_produces_no_candidate() -> None:

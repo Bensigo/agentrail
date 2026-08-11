@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
+  AcceptanceDependencyExternalBuilderPackConflictError,
   AcceptancePrDecisionConflictError,
   AcceptancePrReviewEffortConflictError,
+  approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
+  readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
@@ -34,7 +37,14 @@ type ParsedReviewEffortBody = {
   minutes: number;
 };
 
-type ParsedPatchBody = ParsedDecisionBody | ParsedReviewEffortBody;
+type ParsedDependencyObservationApprovalBody = {
+  action: "approve_dependency_observation";
+  observationEventId: string;
+};
+
+type ParsedPatchBody = ParsedDecisionBody
+  | ParsedReviewEffortBody
+  | ParsedDependencyObservationApprovalBody;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
@@ -135,6 +145,22 @@ function parseReviewEffortBody(value: unknown): ParsedReviewEffortBody | null {
   };
 }
 
+function parseDependencyObservationApprovalBody(
+  value: unknown
+): ParsedDependencyObservationApprovalBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).length !== 2
+    || !Object.keys(input).every((key) => key === "action" || key === "observationEventId")
+    || input.action !== "approve_dependency_observation"
+    || typeof input.observationEventId !== "string"
+    || !UUID.test(input.observationEventId)) return null;
+  return {
+    action: "approve_dependency_observation",
+    observationEventId: input.observationEventId,
+  };
+}
+
 function parsePatchBody(value: unknown): ParsedPatchBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const action = (value as Record<string, unknown>).action;
@@ -142,7 +168,9 @@ function parsePatchBody(value: unknown): ParsedPatchBody | null {
     ? parseDecisionBody(value)
     : action === "record_pr_review_effort"
       ? parseReviewEffortBody(value)
-      : null;
+      : action === "approve_dependency_observation"
+        ? parseDependencyObservationApprovalBody(value)
+        : null;
 }
 
 function serializeFinalDecision<T extends {
@@ -199,6 +227,20 @@ function reviewMetricsMatchTimeline(
     && timeline.record.currentPrHeadAuthorityGeneration === result.currentCycle.authorityGeneration;
 }
 
+function dependencyObservationsMatchTimeline(
+  timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
+  result: Extract<Awaited<ReturnType<typeof readCurrentAcceptanceDependencyObservations>>, { kind: "current" }>,
+): boolean {
+  return timeline.record.currentPrHeadAuthoritative
+    && timeline.record.workspaceId === result.binding.workspaceId
+    && timeline.record.id === result.binding.recordId
+    && timeline.record.repo === result.binding.repo
+    && timeline.record.prNumber === result.binding.prNumber
+    && timeline.record.currentPrHeadSha === result.binding.headSha
+    && timeline.record.currentPrHeadCycleId === result.binding.headCycleId
+    && timeline.record.currentPrHeadAuthorityGeneration === result.binding.authorityGeneration;
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -220,10 +262,16 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [resolvedCorrectionPackets, resolvedFinalDecision, resolvedReviewMetrics] = await Promise.all([
+    const [
+      resolvedCorrectionPackets,
+      resolvedFinalDecision,
+      resolvedReviewMetrics,
+      resolvedDependencyObservations,
+    ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
       readAcceptancePrReviewMetrics({ workspaceId, recordId }),
+      readCurrentAcceptanceDependencyObservations({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -246,6 +294,10 @@ export async function GET(
       && !reviewMetricsMatchTimeline(timeline, resolvedReviewMetrics)
       ? { kind: "unavailable" as const, reason: "invalid_review_custody" as const }
       : serializeDates(resolvedReviewMetrics);
+    const dependencyObservations = resolvedDependencyObservations.kind === "current"
+      && !dependencyObservationsMatchTimeline(timeline, resolvedDependencyObservations)
+      ? { kind: "not_current" as const }
+      : serializeDates(resolvedDependencyObservations);
     const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
 
     return json({
@@ -277,8 +329,10 @@ export async function GET(
       correctionPackets,
       finalDecision,
       reviewMetrics,
+      dependencyObservations,
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
+      canApproveDependencyObservation: canRecordHumanEvidence,
     });
   } catch (err) {
     console.error("[change-records] failed to load detail:", err);
@@ -314,6 +368,23 @@ export async function PATCH(
   if (!body) return json({ error: "Invalid Change Record action" }, 400);
 
   try {
+    if (body.action === "approve_dependency_observation") {
+      const result = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId,
+        recordId,
+        observationEventId: body.observationEventId,
+        approvedBy: `user:${session.user.id}`,
+      });
+      if (result.kind === "approved" || result.kind === "replayed") {
+        return json(serializeDates(result) as Record<string, unknown>, result.kind === "approved" ? 201 : 200);
+      }
+      if (result.kind === "not_found" || result.kind === "observation_not_found") {
+        return json(result, 404);
+      }
+      if (result.kind === "not_authorized") return json(result, 403);
+      return json(result, 409);
+    }
+
     if (body.action === "record_pr_review_effort") {
       const result = await recordAcceptancePrReviewEffort({
         workspaceId,
@@ -345,6 +416,9 @@ export async function PATCH(
     if (result.kind === "not_authorized") return json(result, 403);
     return json(result, 409);
   } catch (error) {
+    if (error instanceof AcceptanceDependencyExternalBuilderPackConflictError) {
+      return json({ error: "Dependency observation approval conflicts with existing Pack custody" }, 409);
+    }
     if (error instanceof AcceptancePrReviewEffortConflictError) {
       return json({ error: "Review effort conflicts with the existing exact-head receipt" }, 409);
     }

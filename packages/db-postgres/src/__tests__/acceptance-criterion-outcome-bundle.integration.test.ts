@@ -5,14 +5,17 @@ import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import {
   acceptanceContracts,
+  acceptanceGatedGithubIssuePublications,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import { workspaceMemberships } from "../schema/workspace_memberships.js";
 import {
   ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES,
   AcceptanceCriterionOutcomeBundleConflictError,
+  AcceptanceGatedGithubIssueConflictError,
   acceptanceCriterionOutcomeBundleId,
   advanceConfirmedAcceptanceRecordPullRequestHead,
   appendChangeRecordEvent,
@@ -22,8 +25,11 @@ import {
   readAcceptanceRecordDetail,
   readAcceptancePrReviewMetrics,
   readCurrentAcceptanceCriterionOutcomeBundle,
+  readCurrentAcceptanceGatedGithubIssue,
   readCurrentAcceptancePrDecision,
   recordPostedAcceptanceCriterionOutcomeBundle,
+  reportAcceptanceGatedGithubIssuePublication,
+  reserveCurrentAcceptanceGatedGithubIssue,
   reviewJobCorrectionPacketId,
   resolveAcceptanceCriterionArtifact,
 } from "../queries/change_records.js";
@@ -745,7 +751,10 @@ function writerInput(fixture: BundleFixture) {
   };
 }
 
-async function projectPostedJob(fixture: BundleFixture, verdict: "proven" | "not_testable" = "proven") {
+async function projectPostedJob(
+  fixture: BundleFixture,
+  verdict: "proven" | "not_testable" | "failed" | "not_proven" = "proven",
+) {
   await db.update(reviewJobs).set({
     state: "posted",
     verdict,
@@ -765,6 +774,501 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
 
   afterEach(async () => {
     await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+  });
+
+  it("requires the posted criterion bundle before deciding whether a gated issue applies", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-bundle-first",
+      prNumber: 230,
+      headSha: "a".repeat(40),
+    });
+
+    await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toEqual({ kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" });
+    await expect(readAcceptanceRecordDetail({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toMatchObject({
+        kind: "record",
+        detail: {
+          gatedIssue: { kind: "unavailable", reason: "criterion_outcome_bundle_not_recorded" },
+        },
+      });
+
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "proven");
+    await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toEqual({ kind: "not_ready", reason: "no_correction_packets" });
+    await expect(readAcceptanceRecordDetail({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toMatchObject({
+        kind: "record",
+        detail: { gatedIssue: { kind: "not_applicable", reason: "no_correction_packets" } },
+      });
+  });
+
+  it("reserves one no-label POST capability, withholds it on replay, and records an exact GitHub 201", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-published-failure",
+      prNumber: 231,
+      headSha: "b".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+
+    const current = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+    if (current.kind !== "current") throw new Error(`expected gated binding, got ${JSON.stringify(current)}`);
+    expect(current.issue).toBeNull();
+    await expect(readCurrentAcceptanceGatedGithubIssue({
+      workspaceId: randomUUID(),
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "not_found" });
+    const memberId = randomUUID();
+    await db.insert(workspaceMemberships).values({ workspaceId, userId: memberId, role: "member" });
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${memberId}`,
+    })).resolves.toEqual({ kind: "not_authorized" });
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.recordId,
+      fixture.recordId,
+    ))).toHaveLength(0);
+
+    const ownerId = randomUUID();
+    const adminId = randomUUID();
+    await db.insert(workspaceMemberships).values([
+      { workspaceId, userId: ownerId, role: "owner" },
+      { workspaceId, userId: adminId, role: "admin" },
+    ]);
+    await db.update(workspaceMemberships).set({ role: "member" }).where(and(
+      eq(workspaceMemberships.workspaceId, workspaceId),
+      eq(workspaceMemberships.userId, ownerId),
+    ));
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    })).resolves.toEqual({ kind: "not_authorized" });
+    await db.update(workspaceMemberships).set({ role: "owner" }).where(and(
+      eq(workspaceMemberships.workspaceId, workspaceId),
+      eq(workspaceMemberships.userId, ownerId),
+    ));
+    const reserved = await reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    });
+    if (reserved.kind !== "reserved") throw new Error(`expected reservation, got ${JSON.stringify(reserved)}`);
+    expect(Object.keys(reserved.request).sort()).toEqual(["body", "title"]);
+    expect(reserved.request).not.toHaveProperty("labels");
+    expect(reserved.request.body).toContain("Required correction");
+    expect(reserved.request.body).toContain("Evidence reference");
+    expect(reserved.request.body).not.toContain("artifactKey");
+    expect(reserved.request.body).not.toContain("executionId");
+    expect(reserved.request.body).not.toContain("@");
+    const packetEvent = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, fixture.recordId),
+      eq(changeRecordEvents.eventKey, `review:correction:${fixture.jobId}:AC-1`),
+    )))[0]!;
+    const packetEvidence = packetEvent.payloadRef["evidence"] as Record<string, unknown>;
+    const rawEvidenceRef = packetEvidence["evidenceRef"] as string;
+    expect(reserved.request.body).toContain(createHash("sha256").update(rawEvidenceRef).digest("hex"));
+    expect(reserved.request.body).not.toContain(rawEvidenceRef);
+    expect(reserved.request.body).not.toContain(fixture.artifactKey!);
+    expect(reserved.request.body).not.toContain(fixture.executionId!);
+    expect(reserved.request.body).not.toContain(packetEvidence["previewBootId"] as string);
+
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${adminId}`,
+    })).resolves.toMatchObject({ kind: "held", issue: { id: reserved.issue.id, status: "reserved" } });
+
+    const receipt = {
+      kind: "github_201" as const,
+      httpStatus: 201 as const,
+      githubIssueId: "9001",
+      githubIssueNumber: 77,
+      githubApiUrl: `${"https://api.github.com/repos"}/${REPO}/issues/77`,
+      githubIssueUrl: `${"https://github.com"}/${REPO}/issues/77`,
+      githubRequestId: "req:exact-77",
+      responseTitleSha256: createHash("sha256").update(reserved.request.title).digest("hex"),
+      responseBodySha256: createHash("sha256").update(reserved.request.body).digest("hex"),
+      state: "open" as const,
+    };
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId: randomUUID(),
+      publicationId: reserved.issue.id,
+      outcome: receipt,
+    })).resolves.toEqual({ kind: "not_found" });
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome: receipt,
+    })).resolves.toMatchObject({
+      kind: "reported",
+      current: true,
+      issue: { id: reserved.issue.id, status: "published", receipt },
+    });
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome: receipt,
+    })).resolves.toMatchObject({ kind: "replayed", current: true });
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome: { ...receipt, githubRequestId: "req:conflict" },
+    })).rejects.toBeInstanceOf(AcceptanceGatedGithubIssueConflictError);
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    })).resolves.toMatchObject({ kind: "terminal", issue: { status: "published" } });
+
+    const events = await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, fixture.recordId),
+      eq(changeRecordEvents.stage, "gated_issue"),
+    ));
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.actor).sort()).toEqual([
+      "server:github-gated-issue",
+      `user:${ownerId}`,
+    ].sort());
+    expect(JSON.stringify(events.map((event) => event.payloadRef))).not.toContain(reserved.request.title);
+    expect(JSON.stringify(events.map((event) => event.payloadRef))).not.toContain(reserved.request.body);
+  });
+
+  it("retains a post-advance 201 only as historical audit custody and never revives A1 after A→B→A", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-a-b-a",
+      prNumber: 232,
+      headSha: "c".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const ownerId = randomUUID();
+    await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+    const currentA1 = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+    if (currentA1.kind !== "current") throw new Error("expected A1 binding");
+    const reserved = await reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: currentA1.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    });
+    if (reserved.kind !== "reserved") throw new Error("expected A1 reservation");
+
+    const headB = "d".repeat(40);
+    const advancedB = await advanceConfirmedAcceptanceRecordPullRequestHead({
+      workspaceId,
+      recordId: fixture.recordId,
+      repo: REPO,
+      prNumber: fixture.prNumber,
+      headSha: headB,
+      event: "synchronize",
+      deliveryId: "gated-a-b-a:b",
+      admitReviewJob: true,
+      headTransition: { beforeHeadSha: fixture.headSha, afterHeadSha: headB },
+      source: "github_webhook",
+    });
+    if (advancedB.kind !== "advanced") throw new Error("expected B");
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: currentA1.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    })).resolves.toEqual({ kind: "not_current" });
+
+    const receipt = {
+      kind: "github_201" as const,
+      httpStatus: 201 as const,
+      githubIssueId: "9002",
+      githubIssueNumber: 78,
+      githubApiUrl: `${"https://api.github.com/repos"}/${REPO}/issues/78`,
+      githubIssueUrl: `${"https://github.com"}/${REPO}/issues/78`,
+      githubRequestId: "req:historical-78",
+      responseTitleSha256: createHash("sha256").update(reserved.request.title).digest("hex"),
+      responseBodySha256: createHash("sha256").update(reserved.request.body).digest("hex"),
+      state: "open" as const,
+    };
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome: receipt,
+    })).resolves.toMatchObject({ kind: "reported", current: false, issue: { status: "published" } });
+
+    const advancedA2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+      workspaceId,
+      recordId: fixture.recordId,
+      repo: REPO,
+      prNumber: fixture.prNumber,
+      headSha: fixture.headSha,
+      event: "synchronize",
+      deliveryId: "gated-a-b-a:a2",
+      admitReviewJob: true,
+      headTransition: { beforeHeadSha: headB, afterHeadSha: fixture.headSha },
+      source: "github_webhook",
+    });
+    if (advancedA2.kind !== "advanced") throw new Error("expected A2");
+    expect(advancedA2.jobId).not.toBe(fixture.jobId);
+    await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toEqual({ kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" });
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: currentA1.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    })).resolves.toEqual({ kind: "not_current" });
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.recordId,
+      fixture.recordId,
+    ))).toEqual([expect.objectContaining({
+      id: reserved.issue.id,
+      headCycleId: fixture.jobId,
+      status: "published",
+    })]);
+  });
+
+  it("terminalizes an ambiguous publication without exposing a second POST capability", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-ambiguous-hold",
+      prNumber: 233,
+      headSha: "e".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const ownerId = randomUUID();
+    await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+    const current = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+    if (current.kind !== "current") throw new Error("expected current gated issue binding");
+    const reserved = await reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    });
+    if (reserved.kind !== "reserved") throw new Error("expected reservation");
+    const outcome = { kind: "ambiguous_hold" as const, reason: "ambiguous_response" as const };
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome,
+    })).resolves.toMatchObject({ kind: "reported", issue: { status: "ambiguous_hold", receipt: outcome } });
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome,
+    })).resolves.toMatchObject({ kind: "replayed", issue: { status: "ambiguous_hold" } });
+    const terminal = await reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    });
+    expect(terminal).toMatchObject({ kind: "terminal", issue: { id: reserved.issue.id } });
+    expect(terminal).not.toHaveProperty("request");
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.recordId,
+      fixture.recordId,
+    ))).toHaveLength(1);
+  });
+
+  it("records one bounded GitHub rejection as terminal custody", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-bounded-failure",
+      prNumber: 238,
+      headSha: "9".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const ownerId = randomUUID();
+    await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+    const current = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+    if (current.kind !== "current") throw new Error("expected current binding");
+    const reserved = await reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    });
+    if (reserved.kind !== "reserved") throw new Error("expected reservation");
+    const outcome = { kind: "bounded_failed" as const, reason: "github_rejected" as const };
+    await expect(reportAcceptanceGatedGithubIssuePublication({
+      workspaceId,
+      publicationId: reserved.issue.id,
+      outcome,
+    })).resolves.toMatchObject({
+      kind: "reported",
+      current: true,
+      issue: { status: "bounded_failed", receipt: outcome },
+    });
+    await expect(reserveCurrentAcceptanceGatedGithubIssue({
+      workspaceId,
+      recordId: fixture.recordId,
+      bindingId: current.binding.bindingId,
+      reservedBy: `user:${ownerId}`,
+    })).resolves.toMatchObject({ kind: "terminal", issue: { id: reserved.issue.id } });
+  });
+
+  it("fails closed when immutable reservation or result events outlive a deleted publication row", async () => {
+    for (const [index, terminal] of [false, true].entries()) {
+      const fixture = await createBundleFixture({
+        workspaceId,
+        workKey: `gated-orphan-${terminal ? "result" : "reservation"}`,
+        prNumber: 239 + index,
+        headSha: (terminal ? "f" : "a").repeat(40),
+      });
+      await makeUiFailure(fixture);
+      await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+      await projectPostedJob(fixture, "failed");
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+      const current = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+      if (current.kind !== "current") throw new Error("expected current binding");
+      const reserved = await reserveCurrentAcceptanceGatedGithubIssue({
+        workspaceId,
+        recordId: fixture.recordId,
+        bindingId: current.binding.bindingId,
+        reservedBy: `user:${ownerId}`,
+      });
+      if (reserved.kind !== "reserved") throw new Error("expected reservation");
+      if (terminal) {
+        await reportAcceptanceGatedGithubIssuePublication({
+          workspaceId,
+          publicationId: reserved.issue.id,
+          outcome: { kind: "ambiguous_hold", reason: "github_unavailable" },
+        });
+      }
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.recordId),
+        eq(changeRecordEvents.stage, "gated_issue"),
+      ))).toHaveLength(terminal ? 2 : 1);
+      await db.delete(acceptanceGatedGithubIssuePublications).where(eq(
+        acceptanceGatedGithubIssuePublications.id,
+        reserved.issue.id,
+      ));
+      await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+        .resolves.toEqual({ kind: "not_ready", reason: "invalid_gated_issue_custody" });
+    }
+  });
+
+  it("fails closed before reservation when packet or bundle custody is deleted or changed", async () => {
+    for (const [index, corruption] of (["packet", "partial", "digest"] as const).entries()) {
+      const fixture = await createBundleFixture({
+        workspaceId,
+        workKey: `gated-corruption-${corruption}`,
+        prNumber: 234 + index,
+        headSha: String(index + 1).repeat(40),
+      });
+      await makeUiFailure(fixture);
+      await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+      await projectPostedJob(fixture, "failed");
+      const before = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+      if (before.kind !== "current") throw new Error(`expected binding before ${corruption}`);
+
+      if (corruption === "partial") {
+        await db.delete(changeRecordEvents).where(and(
+          eq(changeRecordEvents.recordId, fixture.recordId),
+          eq(changeRecordEvents.eventKey, `review:correction:${fixture.jobId}:AC-1`),
+        ));
+      } else {
+        const eventKey = corruption === "packet"
+          ? `review:correction:${fixture.jobId}:AC-1`
+          : `review:github-posted:${fixture.jobId}`;
+        const event = (await db.select().from(changeRecordEvents).where(and(
+          eq(changeRecordEvents.recordId, fixture.recordId),
+          eq(changeRecordEvents.eventKey, eventKey),
+        )))[0]!;
+        await db.update(changeRecordEvents).set({
+          payloadRef: corruption === "packet"
+            ? { ...event.payloadRef, observed: "Changed after immutable publication." }
+            : { ...event.payloadRef, criterionOutcomeBundleSha256: "f".repeat(64) },
+        }).where(eq(changeRecordEvents.id, event.id));
+      }
+
+      await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+        .resolves.toMatchObject({ kind: "not_ready" });
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+      await expect(reserveCurrentAcceptanceGatedGithubIssue({
+        workspaceId,
+        recordId: fixture.recordId,
+        bindingId: before.binding.bindingId,
+        reservedBy: `user:${ownerId}`,
+      })).resolves.toMatchObject({ kind: "not_ready" });
+      expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+        acceptanceGatedGithubIssuePublications.recordId,
+        fixture.recordId,
+      ))).toHaveLength(0);
+    }
+  });
+
+  it("linearizes reservation against head advance without binding A custody to B", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-head-race",
+      prNumber: 237,
+      headSha: "7".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const ownerId = randomUUID();
+    await db.insert(workspaceMemberships).values({ workspaceId, userId: ownerId, role: "owner" });
+    const current = await readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId });
+    if (current.kind !== "current") throw new Error("expected current binding");
+    const headB = "8".repeat(40);
+    const [reservation, advance] = await Promise.all([
+      reserveCurrentAcceptanceGatedGithubIssue({
+        workspaceId,
+        recordId: fixture.recordId,
+        bindingId: current.binding.bindingId,
+        reservedBy: `user:${ownerId}`,
+      }),
+      advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId,
+        recordId: fixture.recordId,
+        repo: REPO,
+        prNumber: fixture.prNumber,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "gated-head-race:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: fixture.headSha, afterHeadSha: headB },
+        source: "github_webhook",
+      }),
+    ]);
+    expect(advance).toMatchObject({ kind: "advanced" });
+    expect(["reserved", "not_current"]).toContain(reservation.kind);
+    const rows = await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.recordId,
+      fixture.recordId,
+    ));
+    if (reservation.kind === "reserved") {
+      expect(rows).toEqual([expect.objectContaining({
+        id: reservation.issue.id,
+        headSha: fixture.headSha,
+        headCycleId: fixture.jobId,
+      })]);
+    } else {
+      expect(rows).toHaveLength(0);
+    }
+    expect(rows.some((row) => row.headSha === headB)).toBe(false);
+    await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
+      .resolves.toEqual({ kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" });
   });
 
   it("atomically records, replays, and resolves one exact current bundle without exposing its object key", async () => {

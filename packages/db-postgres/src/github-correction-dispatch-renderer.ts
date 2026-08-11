@@ -253,6 +253,11 @@ function secretsClean(value: string): boolean {
   return SECRET_LIKE.every((pattern) => !pattern.test(value));
 }
 
+/** Shared secret-pattern guard for other server-owned human renderers. */
+export function isSecretFreeGitHubCorrectionText(value: string): boolean {
+  return secretsClean(value);
+}
+
 function safeOpaqueId(value: unknown): value is string {
   return typeof value === "string" && OPAQUE_ID.test(value) && safeText(value);
 }
@@ -333,55 +338,68 @@ function boundedSafeText(value: unknown, max: number): value is string {
     && value === value.trim() && safeText(value);
 }
 
+function boundedStoredPacketText(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !CONTROL_OR_BIDI.test(value) && secretsClean(value);
+}
+
 function validExpectedStatus(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599;
 }
 
-function validateDataRequest(value: unknown): value is SafeDataCorrectionRequestDescriptor {
+function validateDataRequest(
+  value: unknown,
+  boundedText: (value: unknown, max: number) => value is string = boundedSafeText,
+): value is SafeDataCorrectionRequestDescriptor {
   if (!isRecord(value) || !hasExactKeys(value, [
     "method", "path", "expectedStatus", "digestAlgorithm", "digestKeyId", "digestContext", "expectedJson",
-  ]) || value.method !== "GET" || !boundedSafeText(value.path, 2_048) || !validExpectedStatus(value.expectedStatus)
-    || value.digestAlgorithm !== "hmac-sha256-v1" || !boundedSafeText(value.digestKeyId, 64)
+  ]) || value.method !== "GET" || !boundedText(value.path, 2_048) || !validExpectedStatus(value.expectedStatus)
+    || value.digestAlgorithm !== "hmac-sha256-v1" || !boundedText(value.digestKeyId, 64)
     || !isSha256(value.digestContext) || !Array.isArray(value.expectedJson)
     || value.expectedJson.length === 0 || value.expectedJson.length > 12) return false;
   return value.expectedJson.every((assertion) => isRecord(assertion)
     && hasExactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])
-    && boundedSafeText(assertion.pointer, 1_024)
+    && boundedText(assertion.pointer, 1_024)
     && (assertion.equalsType === "null" || assertion.equalsType === "boolean"
       || assertion.equalsType === "number" || assertion.equalsType === "string")
     && isSha256(assertion.equalsHmacSha256));
 }
 
-function validateReproduction(value: unknown, modality: unknown): value is GitHubCorrectionReproduction {
+function validateReproduction(
+  value: unknown,
+  modality: unknown,
+  boundedText: (value: unknown, max: number) => value is string = boundedSafeText,
+): value is GitHubCorrectionReproduction {
   if (!isRecord(value) || value.modality !== modality) return false;
   if (modality === "api") {
     if (!hasExactKeys(value, ["modality", "request"]) || !isRecord(value.request)
       || !hasExactKeys(value.request, ["method", "path", "expectedStatus"])) return false;
-    return value.request.method === "GET" && boundedSafeText(value.request.path, 2_048)
+    return value.request.method === "GET" && boundedText(value.request.path, 2_048)
       && validExpectedStatus(value.request.expectedStatus);
   }
   if (modality === "data") {
-    return hasExactKeys(value, ["modality", "request"]) && validateDataRequest(value.request);
+    return hasExactKeys(value, ["modality", "request"]) && validateDataRequest(value.request, boundedText);
   }
   if (modality === "job") {
     if (!hasExactKeys(value, ["modality", "request"]) || !isRecord(value.request)
       || !hasExactKeys(value.request, ["trigger", "readback"]) || !isRecord(value.request.trigger)
       || !hasExactKeys(value.request.trigger, ["method", "path", "expectedStatus"])) return false;
-    return value.request.trigger.method === "POST" && boundedSafeText(value.request.trigger.path, 2_048)
-      && validExpectedStatus(value.request.trigger.expectedStatus) && validateDataRequest(value.request.readback);
+    return value.request.trigger.method === "POST" && boundedText(value.request.trigger.path, 2_048)
+      && validExpectedStatus(value.request.trigger.expectedStatus)
+      && validateDataRequest(value.request.readback, boundedText);
   }
   if (modality !== "ui" || !hasExactKeys(value, ["modality", "steps"])
     || !Array.isArray(value.steps) || value.steps.length === 0 || value.steps.length > 12) return false;
   return value.steps.every((step) => {
     if (!isRecord(step) || typeof step.action !== "string") return false;
     switch (step.action) {
-      case "open": return hasExactKeys(step, ["action", "path"]) && boundedSafeText(step.path, 2_048);
-      case "click": return hasExactKeys(step, ["action", "selector"]) && boundedSafeText(step.selector, 2_048);
+      case "open": return hasExactKeys(step, ["action", "path"]) && boundedText(step.path, 2_048);
+      case "click": return hasExactKeys(step, ["action", "selector"]) && boundedText(step.selector, 2_048);
       case "fill": return hasExactKeys(step, ["action", "selector", "value"])
-        && boundedSafeText(step.selector, 2_048) && step.value === "[REDACTED_FILL]";
-      case "press": return hasExactKeys(step, ["action", "key"]) && boundedSafeText(step.key, 128);
-      case "expect_text": return hasExactKeys(step, ["action", "text"]) && boundedSafeText(step.text, 2_048);
-      case "screenshot": return hasExactKeys(step, ["action", "label"]) && boundedSafeText(step.label, 512);
+        && boundedText(step.selector, 2_048) && step.value === "[REDACTED_FILL]";
+      case "press": return hasExactKeys(step, ["action", "key"]) && boundedText(step.key, 128);
+      case "expect_text": return hasExactKeys(step, ["action", "text"]) && boundedText(step.text, 2_048);
+      case "screenshot": return hasExactKeys(step, ["action", "label"]) && boundedText(step.label, 512);
       default: return false;
     }
   });
@@ -398,8 +416,10 @@ function expectedCorrectionPacketId(packet: GitHubCorrectionPacketPayload): stri
   })).slice(0, 48)}`;
 }
 
-/** Self-contained packet guard so renderer and DB query modules remain acyclic. */
-export function validateGitHubCorrectionPacketPayload(value: unknown): value is GitHubCorrectionPacketPayload {
+function validateCorrectionPacketPayload(
+  value: unknown,
+  boundedText: (value: unknown, max: number) => value is string,
+): value is GitHubCorrectionPacketPayload {
   if (!isRecord(value) || !hasExactKeys(value, [
     "kind", "version", "packetId", "workspaceId", "repo", "prNumber", "headSha", "recordId", "jobId",
     "acceptanceContract", "criterion", "basis", "state", "expected", "observed", "affectedContext", "evidence",
@@ -411,31 +431,43 @@ export function validateGitHubCorrectionPacketPayload(value: unknown): value is 
     || !isRecord(value.acceptanceContract) || !hasExactKeys(value.acceptanceContract, ["id", "version"])
     || !safeOpaqueId(value.acceptanceContract.id) || !isPositiveInteger(value.acceptanceContract.version)
     || !isRecord(value.criterion) || !hasExactKeys(value.criterion, ["id", "snapshot"])
-    || !safeOpaqueId(value.criterion.id) || !boundedSafeText(value.criterion.snapshot, 2_000)
+    || !safeOpaqueId(value.criterion.id) || !boundedText(value.criterion.snapshot, 2_000)
     || value.basis !== "acceptance_contract" || (value.state !== "failed" && value.state !== "not_proven")
-    || value.expected !== value.criterion.snapshot || !boundedSafeText(value.expected, 2_000)
-    || !boundedSafeText(value.observed, 2_000) || !isRecord(value.affectedContext)
+    || value.expected !== value.criterion.snapshot || !boundedText(value.expected, 2_000)
+    || !boundedText(value.observed, 2_000) || !isRecord(value.affectedContext)
     || !hasExactKeys(value.affectedContext, ["modality", "environmentKind", "flow", "reproduction"])
     || (value.affectedContext.modality !== "ui" && value.affectedContext.modality !== "api"
       && value.affectedContext.modality !== "data" && value.affectedContext.modality !== "job")
     || (value.affectedContext.environmentKind !== null && value.affectedContext.environmentKind !== "isolated_preview")
-    || !boundedSafeText(value.affectedContext.flow, 2_000)
-    || !validateReproduction(value.affectedContext.reproduction, value.affectedContext.modality)
+    || !boundedText(value.affectedContext.flow, 2_000)
+    || !validateReproduction(value.affectedContext.reproduction, value.affectedContext.modality, boundedText)
     || !isRecord(value.evidence) || !hasExactKeys(value.evidence, [
       "evidenceRef",
       ...(Object.hasOwn(value.evidence, "artifactKey") ? ["artifactKey"] : []),
       ...(Object.hasOwn(value.evidence, "executionId") ? ["executionId"] : []),
       "previewBootId",
     ])
-    || !boundedSafeText(value.evidence.evidenceRef, 2_000)
-    || !boundedSafeText(value.evidence.previewBootId, 512)
-    || (Object.hasOwn(value.evidence, "artifactKey") && !boundedSafeText(value.evidence.artifactKey, 2_000))
-    || (Object.hasOwn(value.evidence, "executionId") && !boundedSafeText(value.evidence.executionId, 512))
-    || !boundedSafeText(value.scopeBoundary, 2_000) || !boundedSafeText(value.impact, 2_000)
-    || !boundedSafeText(value.requiredCorrection, 2_000) || !boundedSafeText(value.reverification, 2_000)) {
+    || !boundedText(value.evidence.evidenceRef, 2_000)
+    || !boundedText(value.evidence.previewBootId, 512)
+    || (Object.hasOwn(value.evidence, "artifactKey") && !boundedText(value.evidence.artifactKey, 2_000))
+    || (Object.hasOwn(value.evidence, "executionId") && !boundedText(value.evidence.executionId, 512))
+    || !boundedText(value.scopeBoundary, 2_000) || !boundedText(value.impact, 2_000)
+    || !boundedText(value.requiredCorrection, 2_000) || !boundedText(value.reverification, 2_000)) {
     return false;
   }
   return value.packetId === expectedCorrectionPacketId(value as GitHubCorrectionPacketPayload);
+}
+
+/** Self-contained carrier guard that also rejects URL-like and raw-source-like text. */
+export function validateGitHubCorrectionPacketPayload(value: unknown): value is GitHubCorrectionPacketPayload {
+  return validateCorrectionPacketPayload(value, boundedSafeText);
+}
+
+/** Full immutable packet guard for DB-custodied human rendering; URLs remain inert after escaping. */
+export function validateStoredGitHubCorrectionPacketPayload(
+  value: unknown,
+): value is GitHubCorrectionPacketPayload {
+  return validateCorrectionPacketPayload(value, boundedStoredPacketText);
 }
 
 /** Canonical SHA-256 for one full validated R8.1 packet payload. */

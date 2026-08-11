@@ -635,6 +635,7 @@ export type ChangeRecordResponse = {
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
+  canCreateGatedGithubIssue: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -683,8 +684,10 @@ const SHA256 = /^[a-f0-9]{64}$/i;
 const LOWER_SHA256 = /^[a-f0-9]{64}$/;
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LOWER_UUID_V5 = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const GATED_ISSUE_USER_ACTOR = /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const CORRECTION_PACKET_ID = /^correction-[a-f0-9]{48}$/i;
 const SAFE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const GATED_ISSUE_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
 
 function isSafeText(value: unknown, max: number): value is string {
@@ -694,6 +697,11 @@ function isSafeText(value: unknown, max: number): value is string {
 
 function isSafeRepo(value: unknown): value is string {
   return typeof value === "string" && SAFE_REPO.test(value)
+    && value.split("/").every((segment) => segment !== "." && segment !== "..");
+}
+
+function isGatedIssueRepo(value: unknown): value is string {
+  return typeof value === "string" && GATED_ISSUE_REPO.test(value)
     && value.split("/").every((segment) => segment !== "." && segment !== "..");
 }
 
@@ -836,6 +844,12 @@ function isAcceptanceCorrectionPacket(value: unknown): value is AcceptanceCorrec
 
 type AcceptanceRecordDetailRecord = Extract<AcceptanceRecordDetailEnvelope, { kind: "record" }>["detail"];
 type AcceptanceRecordDetailOccurrence = SerializedDates<DbAcceptanceRecordDetailOccurrence>;
+type AcceptanceRecordDetailProofCycle = AcceptanceRecordDetailRecord["proofMatrix"][number];
+type AcceptanceGatedIssueCurrentProjection = Extract<
+  AcceptanceRecordDetailRecord["gatedIssue"],
+  { kind: "current" }
+>;
+type AcceptanceGatedIssue = NonNullable<AcceptanceGatedIssueCurrentProjection["issue"]>;
 type AcceptanceRecordDetailCorrectionProof = Extract<
   AcceptanceRecordDetailRecord["proofMatrix"][number]["criteria"][number]["proof"],
   { kind: "correction_packet" }
@@ -1624,7 +1638,7 @@ function isDetailProofCycle(
   contract: Record<string, unknown>,
   workspaceId: string,
   recordId: string,
-): boolean {
+): value is AcceptanceRecordDetailProofCycle {
   if (!isObject(value) || !hasExactKeys(value, ["occurrence", "review", "criteria"])
     || !occurrenceCoreMatches(value.occurrence, occurrence)
     || !isDetailReview(value.review, occurrence) || !Array.isArray(value.criteria)
@@ -1663,6 +1677,158 @@ function isDetailProofCycle(
   });
 }
 
+const GATED_ISSUE_NOT_READY_REASONS = new Set([
+  "review_job_unavailable",
+  "confirmed_contract_unavailable",
+  "no_correction_packets",
+  "invalid_packet_custody",
+  "verification_plan_unavailable",
+  "posted_attempt_unavailable",
+  "criterion_evidence_unavailable",
+  "correction_packet_unavailable",
+  "posted_attestation_unavailable",
+  "criterion_outcome_bundle_not_recorded",
+  "invalid_criterion_outcome_custody",
+  "invalid_gated_issue_rendering",
+  "gated_issue_body_too_large",
+  "invalid_gated_issue_custody",
+]);
+
+function isGatedIssueBinding(value: unknown): value is Extract<
+  AcceptanceRecordDetailRecord["gatedIssue"],
+  { kind: "current" }
+>["binding"] {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId", "reviewJobId",
+    "authorityGeneration", "acceptanceContract", "criterionOutcomeBundle", "packets", "packetSetSha256",
+    "correctionPacketPayloadSetSha256", "bindingId",
+  ]) || !LOWER_UUID_V5.test(String(value.bindingId)) || !isUuid(value.workspaceId)
+    || !isUuid(value.recordId) || !isGatedIssueRepo(value.repo) || !isPositiveInteger(value.prNumber)
+    || !isSha1(value.headSha) || !isUuid(value.headCycleId) || !isUuid(value.reviewJobId)
+    || value.reviewJobId !== value.headCycleId || !isNonNegativeInteger(value.authorityGeneration)
+    || !isContractIdentity(value.acceptanceContract) || !isObject(value.criterionOutcomeBundle)
+    || !hasExactKeys(value.criterionOutcomeBundle, [
+      "id", "eventId", "sha256", "postedAttestationEventId",
+    ]) || !isUuid(value.criterionOutcomeBundle.id) || !isUuid(value.criterionOutcomeBundle.eventId)
+    || value.criterionOutcomeBundle.id !== value.criterionOutcomeBundle.eventId
+    || !isSha256(value.criterionOutcomeBundle.sha256)
+    || !isUuid(value.criterionOutcomeBundle.postedAttestationEventId)
+    || !Array.isArray(value.packets) || value.packets.length === 0 || value.packets.length > 100
+    || !isSha256(value.packetSetSha256) || !isSha256(value.correctionPacketPayloadSetSha256)) return false;
+  return value.packets.every((packet, index, packets) => isObject(packet)
+    && hasExactKeys(packet, ["packetId", "sha256"])
+    && typeof packet.packetId === "string" && /^correction-[a-f0-9]{48}$/u.test(packet.packetId)
+    && isSha256(packet.sha256)
+    && (index === 0 || (isObject(packets[index - 1])
+      && String(packets[index - 1].packetId) < packet.packetId)));
+}
+
+function isGatedIssueReceipt(
+  value: unknown,
+  input: { repo: string; titleSha256: string; bodySha256: string },
+): boolean {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "github_201") {
+    if (!hasExactKeys(value, [
+      "kind", "httpStatus", "githubIssueId", "githubIssueNumber", "githubApiUrl", "githubIssueUrl",
+      "githubRequestId", "responseTitleSha256", "responseBodySha256", "state",
+    ]) || value.httpStatus !== 201 || typeof value.githubIssueId !== "string"
+      || !/^[1-9][0-9]{0,39}$/u.test(value.githubIssueId)
+      || !isPositiveInteger(value.githubIssueNumber) || value.state !== "open"
+      || typeof value.githubRequestId !== "string" || !/^[A-Za-z0-9:-]{1,128}$/u.test(value.githubRequestId)
+      || value.responseTitleSha256 !== input.titleSha256
+      || value.responseBodySha256 !== input.bodySha256) return false;
+    return value.githubApiUrl
+        === `https://api.github.com/repos/${input.repo}/issues/${value.githubIssueNumber}`
+      && value.githubIssueUrl
+        === `https://github.com/${input.repo}/issues/${value.githubIssueNumber}`;
+  }
+  if (value.kind === "bounded_failed") {
+    return hasExactKeys(value, ["kind", "reason"])
+      && (value.reason === "github_rejected" || value.reason === "invalid_db_issued_request");
+  }
+  return value.kind === "ambiguous_hold" && hasExactKeys(value, ["kind", "reason"])
+    && (value.reason === "github_unavailable" || value.reason === "ambiguous_response");
+}
+
+function isGatedIssue(value: unknown, repo: string): value is AcceptanceGatedIssue {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "id", "status", "requestIdentitySha256", "titleSha256", "bodySha256", "reservedBy", "reservedRole",
+    "reservedAt", "receipt", "reportedAt",
+  ]) || !LOWER_UUID_V5.test(String(value.id)) || !isSha256(value.requestIdentitySha256)
+    || !isSha256(value.titleSha256) || !isSha256(value.bodySha256)
+    || typeof value.reservedBy !== "string" || !GATED_ISSUE_USER_ACTOR.test(value.reservedBy)
+    || (value.reservedRole !== "owner" && value.reservedRole !== "admin")
+    || !isIsoTimestamp(value.reservedAt)) return false;
+  if (value.status === "reserved") return value.receipt === null && value.reportedAt === null;
+  if (value.status !== "published" && value.status !== "bounded_failed"
+    && value.status !== "ambiguous_hold") return false;
+  return isIsoTimestamp(value.reportedAt) && isGatedIssueReceipt(value.receipt, {
+    repo,
+    titleSha256: value.titleSha256,
+    bodySha256: value.bodySha256,
+  }) && isObject(value.receipt) && (
+    (value.status === "published" && value.receipt.kind === "github_201")
+    || (value.status === "bounded_failed" && value.receipt.kind === "bounded_failed")
+    || (value.status === "ambiguous_hold" && value.receipt.kind === "ambiguous_hold")
+  );
+}
+
+type GatedGithubIssueMutationResponse =
+  | { kind: "reported" | "replayed"; current: boolean; issue: AcceptanceGatedIssue }
+  | { kind: "held" | "terminal"; binding: AcceptanceGatedIssueCurrentProjection["binding"]; issue: AcceptanceGatedIssue }
+  | { kind: "held"; reason: "publication_outcome_not_persisted" };
+
+export function isGatedGithubIssueMutationResponse(
+  value: unknown,
+  expectedBinding: AcceptanceGatedIssueCurrentProjection["binding"],
+): value is GatedGithubIssueMutationResponse {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "reported" || value.kind === "replayed") {
+    return hasExactKeys(value, ["kind", "current", "issue"])
+      && typeof value.current === "boolean"
+      && isGatedIssue(value.issue, expectedBinding.repo)
+      && value.issue.status !== "reserved";
+  }
+  if (value.kind === "held" && hasExactKeys(value, ["kind", "reason"])) {
+    return value.reason === "publication_outcome_not_persisted";
+  }
+  if ((value.kind !== "held" && value.kind !== "terminal")
+    || !hasExactKeys(value, ["kind", "binding", "issue"])
+    || !isGatedIssueBinding(value.binding)
+    || !exactJsonEqual(value.binding, expectedBinding)
+    || !isGatedIssue(value.issue, expectedBinding.repo)) return false;
+  return value.kind === "held"
+    ? value.issue.status === "reserved"
+    : value.issue.status !== "reserved";
+}
+
+export function gatedGithubIssueMutationStatusMatches(
+  status: number,
+  result: GatedGithubIssueMutationResponse,
+): boolean {
+  if (result.kind === "held" && "reason" in result) return status === 503;
+  if (result.kind === "held" || result.kind === "terminal" || result.kind === "replayed") {
+    return status === 200;
+  }
+  return status === (result.issue.status === "published" ? 201 : 200);
+}
+
+function isGatedIssueProjection(
+  value: unknown,
+): value is AcceptanceRecordDetailRecord["gatedIssue"] {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind", "reason"])
+    && value.reason === "gated_issue_custody_not_available";
+  if (value.kind === "not_applicable") return hasExactKeys(value, ["kind", "reason"])
+    && value.reason === "no_correction_packets";
+  if (value.kind === "unavailable") return hasExactKeys(value, ["kind", "reason"])
+    && typeof value.reason === "string" && GATED_ISSUE_NOT_READY_REASONS.has(value.reason);
+  return value.kind === "current" && hasExactKeys(value, ["kind", "binding", "issue"])
+    && isGatedIssueBinding(value.binding) && isObject(value.binding)
+    && (value.issue === null || isGatedIssue(value.issue, String(value.binding.repo)));
+}
+
 export function isAcceptanceRecordDetailEnvelope(
   value: unknown,
 ): value is AcceptanceRecordDetailEnvelope {
@@ -1689,10 +1855,7 @@ export function isAcceptanceRecordDetailEnvelope(
     || !hasExactKeys(value.detail.artifactCustody, ["kind", "reason"])
     || value.detail.artifactCustody.kind !== "unknown"
     || value.detail.artifactCustody.reason !== "artifact_custody_not_available"
-    || !isObject(value.detail.gatedIssue)
-    || !hasExactKeys(value.detail.gatedIssue, ["kind", "reason"])
-    || value.detail.gatedIssue.kind !== "unknown"
-    || value.detail.gatedIssue.reason !== "gated_issue_custody_not_available") return false;
+    || !isGatedIssueProjection(value.detail.gatedIssue)) return false;
 
   const { summary, contract, pullRequest, contextPacks, proofMatrix } = value.detail;
   if (!isObject(summary) || !isObject(contract) || !isObject(contract.identity)
@@ -1817,6 +1980,43 @@ export function isAcceptanceRecordDetailEnvelope(
       || pullRequest.merged.mergeEventId !== summary.outcome.mergeEventId
       || pullRequest.merged.mergeSha !== summary.outcome.mergeSha
       || pullRequest.merged.mergedAt !== summary.outcome.mergedAt) return false;
+  }
+  const gatedIssue = value.detail.gatedIssue;
+  if (isObject(gatedIssue) && gatedIssue.kind === "current") {
+    if (!isObject(gatedIssue.binding) || !isObject(pullRequest) || pullRequest.kind !== "attached"
+      || !isObject(pullRequest.current) || pullRequest.current.kind !== "current"
+      || gatedIssue.binding.workspaceId !== summary.workspaceId
+      || gatedIssue.binding.recordId !== summary.recordId
+      || gatedIssue.binding.repo !== summary.repo || gatedIssue.binding.prNumber !== pullRequest.prNumber
+      || gatedIssue.binding.headSha !== pullRequest.current.headSha
+      || gatedIssue.binding.headCycleId !== pullRequest.current.headCycleId
+      || gatedIssue.binding.authorityGeneration !== pullRequest.current.authorityGeneration
+      || !exactJsonEqual(gatedIssue.binding.acceptanceContract, contract.identity)) return false;
+    const proofCycleCandidate = proofMatrix.find((cycle) => isObject(cycle)
+      && isObject(cycle.occurrence)
+      && cycle.occurrence.headCycleId === gatedIssue.binding.headCycleId);
+    const gatedOccurrence = occurrenceByCycle.get(gatedIssue.binding.headCycleId);
+    if (!gatedOccurrence || !isDetailProofCycle(
+      proofCycleCandidate,
+      gatedOccurrence,
+      contract,
+      String(summary.workspaceId),
+      String(summary.recordId),
+    )) return false;
+    const proofCycle = proofCycleCandidate;
+    if (!isObject(proofCycle.review) || proofCycle.review.kind !== "posted"
+      || proofCycle.review.reviewJobId !== gatedIssue.binding.reviewJobId
+      || proofCycle.review.postedAttestationEventId
+        !== gatedIssue.binding.criterionOutcomeBundle.postedAttestationEventId) {
+      return false;
+    }
+    const correctionPacketIds = proofCycle.criteria.flatMap((item) => isObject(item)
+      && isObject(item.proof) && item.proof.kind === "correction_packet"
+      && isObject(item.proof.packet) && typeof item.proof.packet.packetId === "string"
+      ? [item.proof.packet.packetId] : []).sort();
+    const boundPacketIds = gatedIssue.binding.packets.map((packet) => packet.packetId);
+    if (correctionPacketIds.length !== boundPacketIds.length
+      || correctionPacketIds.some((packetId, index) => packetId !== boundPacketIds[index])) return false;
   }
   return true;
 }
@@ -3032,7 +3232,7 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
     "dependencyObservations", "acceptanceDetail", "dependencyDraftProposal",
     "criterionOutcomes", "canRecordFinalDecision", "canRecordReviewEffort",
-    "canApproveDependencyObservation",
+    "canApproveDependencyObservation", "canCreateGatedGithubIssue",
   ]) && isObject(value.record) && Array.isArray(value.events)
     && value.events.every(isSafeTimelineEvent)
     && isCorrectionPacketsEnvelope(value.correctionPackets)
@@ -3045,11 +3245,20 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
     && criterionOutcomesMatchDetail(value.criterionOutcomes, value.acceptanceDetail)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
-    && typeof value.canApproveDependencyObservation === "boolean";
+    && typeof value.canApproveDependencyObservation === "boolean"
+    && typeof value.canCreateGatedGithubIssue === "boolean";
 }
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
+}
+
+export function gatedGithubIssueApiPath(workspaceId: string, recordId: string): string {
+  return `${changeRecordApiPath(workspaceId, recordId)}/gated-issue`;
+}
+
+export function gatedGithubIssuePostBody(bindingId: string): { bindingId: string } {
+  return { bindingId };
 }
 
 export function dependencyObservationApprovalPatchBody(observationEventId: string): {
@@ -3392,11 +3601,19 @@ export function AcceptanceRecordDetailPanel({
   criterionOutcomes,
   workspaceId,
   recordId,
+  canCreateGatedGithubIssue,
+  onCreateGatedGithubIssue,
+  creatingGatedGithubIssue,
+  gatedGithubIssueError,
 }: {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   workspaceId: string;
   recordId: string;
+  canCreateGatedGithubIssue: boolean;
+  onCreateGatedGithubIssue: (bindingId: string) => void;
+  creatingGatedGithubIssue: boolean;
+  gatedGithubIssueError: string | null;
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
@@ -3419,6 +3636,10 @@ export function AcceptanceRecordDetailPanel({
   const currentArtifactCount = currentBundle?.outcomes.filter((outcome) =>
     outcome.evidence.kind === "execution_receipt" && outcome.evidence.artifact !== null
   ).length ?? 0;
+  const gatedIssueMatchesCurrentBundle = gatedIssueMatchesCriterionBundle(
+    detail.gatedIssue,
+    criterionOutcomes,
+  );
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -3696,13 +3917,119 @@ export function AcceptanceRecordDetailPanel({
                 : "Artifact access is unavailable; no artifact receipt is inferred."}
             </p>
           </div>
-          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
-            <p className="text-xs font-medium text-[var(--gray-12)]">Gated issue custody: Unknown</p>
-            <p className="mt-1 text-xs text-[var(--gray-09)]">No gated-issue custody is available; no issue state is inferred.</p>
-          </div>
+          <GatedGithubIssueCard
+            gatedIssue={detail.gatedIssue}
+            canCreate={canCreateGatedGithubIssue && gatedIssueMatchesCurrentBundle}
+            onCreate={onCreateGatedGithubIssue}
+            creating={creatingGatedGithubIssue}
+            error={gatedGithubIssueError}
+          />
         </div>
       </div>
     </section>
+  );
+}
+
+function gatedIssueMatchesCriterionBundle(
+  gatedIssue: AcceptanceRecordDetailRecord["gatedIssue"],
+  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope,
+): gatedIssue is Extract<AcceptanceRecordDetailRecord["gatedIssue"], { kind: "current" }> {
+  if (gatedIssue.kind !== "current" || criterionOutcomes.kind !== "current") return false;
+  const { binding } = gatedIssue;
+  const { bundle } = criterionOutcomes;
+  return binding.workspaceId === bundle.binding.workspaceId
+    && binding.recordId === bundle.binding.recordId
+    && binding.repo === bundle.binding.repo
+    && binding.prNumber === bundle.binding.prNumber
+    && binding.headSha === bundle.binding.headSha
+    && binding.headCycleId === bundle.binding.headCycleId
+    && binding.reviewJobId === bundle.binding.reviewJobId
+    && binding.criterionOutcomeBundle.id === bundle.id
+    && binding.criterionOutcomeBundle.eventId === bundle.eventId
+    && binding.criterionOutcomeBundle.sha256 === bundle.sha256
+    && binding.criterionOutcomeBundle.postedAttestationEventId
+      === bundle.binding.postedAttestationEventId;
+}
+
+export function GatedGithubIssueCard({
+  gatedIssue,
+  canCreate,
+  onCreate,
+  creating,
+  error,
+}: {
+  gatedIssue: AcceptanceRecordDetailRecord["gatedIssue"];
+  canCreate: boolean;
+  onCreate: (bindingId: string) => void;
+  creating: boolean;
+  error: string | null;
+}) {
+  let title = "Gated issue custody: Unknown";
+  let message = "No gated-issue custody is available; no issue state is inferred.";
+  if (gatedIssue.kind === "not_applicable") {
+    title = "Gated issue: Not applicable";
+    message = "The current exact review has no correction packets, so no gated issue is available.";
+  } else if (gatedIssue.kind === "unavailable") {
+    title = "Gated issue custody: Unavailable";
+    message = `Current gated-issue custody is unavailable: ${gatedIssue.reason.replaceAll("_", " ")}.`;
+  } else if (gatedIssue.kind === "current" && gatedIssue.issue === null) {
+    title = "Gated issue: Not recorded";
+    message = "The exact posted outcome bundle and correction packet set are eligible, but no issue publication is recorded.";
+  } else if (gatedIssue.kind === "current" && gatedIssue.issue?.status === "reserved") {
+    title = "Gated issue publication: Held";
+    message = "A one-shot reservation exists without a verified GitHub result. It will not be retried automatically.";
+  } else if (gatedIssue.kind === "current" && gatedIssue.issue?.status === "published"
+    && gatedIssue.issue.receipt?.kind === "github_201") {
+    title = "Gated issue custody: Created";
+    message = "GitHub accepted the exact DB-issued issue and its receipt is durably recorded.";
+  } else if (gatedIssue.kind === "current" && gatedIssue.issue?.status === "bounded_failed") {
+    title = "Gated issue publication: Failed";
+    message = `GitHub did not create a verified issue: ${gatedIssue.issue.receipt?.kind === "bounded_failed"
+      ? gatedIssue.issue.receipt.reason.replaceAll("_", " ") : "invalid receipt custody"}.`;
+  } else if (gatedIssue.kind === "current" && gatedIssue.issue?.status === "ambiguous_hold") {
+    title = "Gated issue publication: Held";
+    message = "The GitHub write outcome is ambiguous. It is held without retry to prevent a duplicate issue.";
+  }
+
+  const publishedReceipt = gatedIssue.kind === "current"
+    && gatedIssue.issue?.status === "published" && gatedIssue.issue.receipt?.kind === "github_201"
+    ? gatedIssue.issue.receipt : null;
+  return (
+    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+      <p className="text-xs font-medium text-[var(--gray-12)]">{title}</p>
+      <p className="mt-1 text-xs text-[var(--gray-09)]">{message}</p>
+      {publishedReceipt ? (
+        <a
+          href={publishedReceipt.githubIssueUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 inline-block text-xs underline underline-offset-2"
+        >
+          Open GitHub issue #{publishedReceipt.githubIssueNumber}
+        </a>
+      ) : null}
+      {gatedIssue.kind === "current" && gatedIssue.issue === null ? (
+        canCreate ? (
+          <button
+            type="button"
+            disabled={creating}
+            onClick={() => onCreate(gatedIssue.binding.bindingId)}
+            className="mt-3 rounded bg-[var(--gray-12)] px-3 py-1.5 text-xs font-medium text-[var(--gray-01)] disabled:opacity-50"
+          >
+            {creating ? "Creating gated issue…" : "Create unlabeled GitHub issue"}
+          </button>
+        ) : (
+          <p className="mt-2 text-xs text-[var(--gray-09)]">
+            Creation requires this exact current bundle and a current workspace owner or admin.
+          </p>
+        )
+      ) : null}
+      <p className="mt-2 text-xs text-[var(--gray-09)]">
+        This creation sends no trigger label and does not enqueue factory work, activate an agent,
+        merge, or prove delivery. A later label would be a separate human action.
+      </p>
+      {error ? <p className="mt-2 text-xs text-[var(--red-11)]">{error}</p> : null}
+    </div>
   );
 }
 
@@ -4456,6 +4783,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [effortMinutes, setEffortMinutes] = useState("");
   const [approvingObservationEventId, setApprovingObservationEventId] = useState<string | null>(null);
   const [dependencyApprovalError, setDependencyApprovalError] = useState<string | null>(null);
+  const [creatingGatedGithubIssue, setCreatingGatedGithubIssue] = useState(false);
+  const [gatedGithubIssueError, setGatedGithubIssueError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -4604,6 +4933,52 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
+  async function createGatedGithubIssue(bindingId: string) {
+    const gatedIssue = data?.acceptanceDetail.kind === "record"
+      ? data.acceptanceDetail.detail.gatedIssue : null;
+    if (!data || !gatedIssue
+      || !gatedIssueMatchesCriterionBundle(
+        gatedIssue,
+        data.criterionOutcomes,
+      )
+      || gatedIssue.issue !== null || gatedIssue.binding.bindingId !== bindingId) {
+      setGatedGithubIssueError("The current exact gated-issue binding is no longer available");
+      return;
+    }
+    const expectedBinding = gatedIssue.binding;
+    setCreatingGatedGithubIssue(true);
+    setGatedGithubIssueError(null);
+    try {
+      const response = await fetch(gatedGithubIssueApiPath(workspaceId, recordId), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(gatedGithubIssuePostBody(bindingId)),
+      });
+      const body = (await response.json().catch(() => null)) as unknown;
+      if (isGatedGithubIssueMutationResponse(body, expectedBinding)) {
+        if (!gatedGithubIssueMutationStatusMatches(response.status, body)) {
+          throw new Error("Gated issue publication returned an invalid status");
+        }
+        if (body.kind === "held" && "reason" in body) {
+          setGatedGithubIssueError(
+            "Issue publication is held because its terminal outcome was not durably recorded",
+          );
+        }
+        setReloadVersion((current) => current + 1);
+        return;
+      }
+      throw new Error("Gated issue publication was not accepted for the current binding");
+    } catch (caught) {
+      setGatedGithubIssueError(
+        caught instanceof Error
+          ? caught.message
+          : "Gated issue publication was unavailable",
+      );
+    } finally {
+      setCreatingGatedGithubIssue(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
@@ -4641,6 +5016,10 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         criterionOutcomes={data.criterionOutcomes}
         workspaceId={workspaceId}
         recordId={recordId}
+        canCreateGatedGithubIssue={data.canCreateGatedGithubIssue}
+        onCreateGatedGithubIssue={createGatedGithubIssue}
+        creatingGatedGithubIssue={creatingGatedGithubIssue}
+        gatedGithubIssueError={gatedGithubIssueError}
       />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel

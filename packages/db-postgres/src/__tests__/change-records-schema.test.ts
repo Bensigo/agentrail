@@ -12,12 +12,55 @@ import {
   acceptanceCorrectionDispatchGithubClaudeRepairObservations,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubPreflights,
+  acceptanceGatedGithubIssuePublications,
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
+
+describe("0096 Acceptance gated GitHub issue migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0096_acceptance_gated_github_issues.sql",
+  );
+
+  it("stores one exact-cycle request and terminal receipt with no label or retry capability", () => {
+    expect(acceptanceGatedGithubIssuePublications.recordId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssuePublications.headCycleId.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssuePublications.criterionOutcomeBundleSha256.notNull).toBe(true);
+    expect(acceptanceGatedGithubIssuePublications.packets.getSQLType()).toBe("jsonb");
+    const config = getTableConfig(acceptanceGatedGithubIssuePublications);
+    expect(config.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_gated_github_issues_github_id_key",
+      "acceptance_gated_github_issues_record_cycle_key",
+      "acceptance_gated_github_issues_repo_number_key",
+    ]);
+  });
+
+  it("keeps schema and migration bounds identical and excludes speculative outcomes", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('char_length("repo") BETWEEN 3 AND 201');
+    expect(sqlText).toContain(
+      "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+    );
+    expect(sqlText).toContain('octet_length("body") BETWEEN 1 AND 24576');
+    expect(sqlText).toContain("'github_rejected', 'invalid_db_issued_request'");
+    expect(sqlText).not.toContain("remote_not_current");
+    expect(sqlText).not.toContain('"labels"');
+    expect(sqlText).not.toContain("access_token");
+  });
+
+  it("is registered directly after the repair observation migration", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8",
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0096_acceptance_gated_github_issues",
+    )).toMatchObject({ idx: 101, version: "7", breakpoints: true });
+  });
+});
 
 describe("0095 GitHub Claude repair observation migration", () => {
   const MIGRATION = join(

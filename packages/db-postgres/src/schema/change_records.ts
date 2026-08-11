@@ -1250,6 +1250,135 @@ export const changeRecordEvents = pgTable(
   })
 );
 
+/**
+ * One human-gated GitHub issue publication for one exact reviewed PR-head
+ * occurrence. Identity and rendered request custody are immutable; only the
+ * closed external receipt columns transition once from `reserved`.
+ */
+export const acceptanceGatedGithubIssuePublications = pgTable(
+  "acceptance_gated_github_issue_publications",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    reviewJobId: uuid("review_job_id").notNull()
+      .references(() => reviewJobs.id, { onDelete: "restrict" }),
+    bindingId: uuid("binding_id").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    criterionOutcomeBundleId: uuid("criterion_outcome_bundle_id").notNull(),
+    criterionOutcomeBundleEventId: uuid("criterion_outcome_bundle_event_id").notNull(),
+    criterionOutcomeBundleSha256: text("criterion_outcome_bundle_sha256").notNull(),
+    postedAttestationEventId: uuid("posted_attestation_event_id").notNull(),
+    packets: jsonb("packets").$type<Array<{ packetId: string; sha256: string }>>().notNull(),
+    packetSetSha256: text("packet_set_sha256").notNull(),
+    correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256").notNull(),
+    requestProtocolVersion: integer("request_protocol_version").notNull().default(1),
+    requestIdentitySha256: text("request_identity_sha256").notNull(),
+    title: text("title").notNull(),
+    titleSha256: text("title_sha256").notNull(),
+    body: text("body").notNull(),
+    bodySha256: text("body_sha256").notNull(),
+    reservedBy: text("reserved_by").notNull(),
+    reservedRole: text("reserved_role").notNull(),
+    status: text("status").notNull().default("reserved"),
+    httpStatus: integer("http_status"),
+    githubIssueId: text("github_issue_id"),
+    githubIssueNumber: integer("github_issue_number"),
+    githubApiUrl: text("github_api_url"),
+    githubIssueUrl: text("github_issue_url"),
+    githubRequestId: text("github_request_id"),
+    responseTitleSha256: text("response_title_sha256"),
+    responseBodySha256: text("response_body_sha256"),
+    githubState: text("github_state"),
+    resultReason: text("result_reason"),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    recordCycle: uniqueIndex("acceptance_gated_github_issues_record_cycle_key")
+      .on(t.recordId, t.headCycleId),
+    githubIssueIdReceipt: uniqueIndex("acceptance_gated_github_issues_github_id_key")
+      .on(t.githubIssueId).where(sql`${t.githubIssueId} IS NOT NULL`),
+    githubIssueNumberReceipt: uniqueIndex("acceptance_gated_github_issues_repo_number_key")
+      .on(t.repo, t.githubIssueNumber).where(sql`${t.githubIssueNumber} IS NOT NULL`),
+    bindingCheck: check(
+      "acceptance_gated_github_issues_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 201
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[a-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.acceptanceContractVersion} > 0
+        AND ${t.acceptanceContractSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.criterionOutcomeBundleSha256} ~ '^[a-f0-9]{64}$'
+        AND jsonb_typeof(${t.packets}) = 'array'
+        AND jsonb_array_length(${t.packets}) BETWEEN 1 AND 100
+        AND ${t.packetSetSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.correctionPacketPayloadSetSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.requestProtocolVersion} = 1
+        AND ${t.requestIdentitySha256} ~ '^[a-f0-9]{64}$'
+        AND octet_length(${t.title}) BETWEEN 1 AND 256
+        AND octet_length(${t.body}) BETWEEN 1 AND 24576
+        AND ${t.titleSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.bodySha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.reservedBy} ~ '^user:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
+        AND ${t.reservedRole} IN ('owner', 'admin')`
+    ),
+    stateCheck: check(
+      "acceptance_gated_github_issues_state_check",
+      sql`${t.status} IN ('reserved', 'published', 'bounded_failed', 'ambiguous_hold')
+        AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
+        AND (${t.status} <> 'published' OR (
+          ${t.httpStatus} = 201
+          AND ${t.githubIssueId} ~ '^[1-9][0-9]{0,39}$'
+          AND ${t.githubIssueNumber} > 0
+          AND ${t.githubApiUrl} = 'https://api.github.com/repos/' || ${t.repo} || '/issues/' || (${t.githubIssueNumber})::text
+          AND ${t.githubIssueUrl} = 'https://github.com/' || ${t.repo} || '/issues/' || (${t.githubIssueNumber})::text
+          AND char_length(${t.githubRequestId}) BETWEEN 1 AND 128
+          AND ${t.githubRequestId} ~ '^[A-Za-z0-9:-]+$'
+          AND ${t.responseTitleSha256} = ${t.titleSha256}
+          AND ${t.responseBodySha256} = ${t.bodySha256}
+          AND ${t.githubState} = 'open'
+          AND ${t.resultReason} IS NULL
+        ))
+        AND (${t.status} <> 'bounded_failed' OR ${t.resultReason} IN (
+          'github_rejected', 'invalid_db_issued_request'
+        ))
+        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN (
+          'github_unavailable', 'ambiguous_response'
+        ))
+        AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
+        AND (${t.status} <> 'reserved' OR (
+          ${t.httpStatus} IS NULL AND ${t.githubIssueId} IS NULL AND ${t.githubIssueNumber} IS NULL
+          AND ${t.githubApiUrl} IS NULL AND ${t.githubIssueUrl} IS NULL AND ${t.githubRequestId} IS NULL
+          AND ${t.responseTitleSha256} IS NULL AND ${t.responseBodySha256} IS NULL
+          AND ${t.githubState} IS NULL AND ${t.resultReason} IS NULL
+        ))
+        AND (${t.status} IN ('reserved', 'published') OR (
+          ${t.httpStatus} IS NULL AND ${t.githubIssueId} IS NULL AND ${t.githubIssueNumber} IS NULL
+          AND ${t.githubApiUrl} IS NULL AND ${t.githubIssueUrl} IS NULL AND ${t.githubRequestId} IS NULL
+          AND ${t.responseTitleSha256} IS NULL AND ${t.responseBodySha256} IS NULL
+          AND ${t.githubState} IS NULL
+        ))`
+    ),
+  })
+);
+
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
@@ -1264,5 +1393,6 @@ export type AcceptanceCorrectionDispatchGithubFindingPublicationRow = typeof acc
 export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceCorrectionDispatchGithubActivations.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow = typeof acceptanceCorrectionDispatchGithubClaudeAckReceipts.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow = typeof acceptanceCorrectionDispatchGithubClaudeRepairObservations.$inferSelect;
+export type AcceptanceGatedGithubIssuePublicationRow = typeof acceptanceGatedGithubIssuePublications.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

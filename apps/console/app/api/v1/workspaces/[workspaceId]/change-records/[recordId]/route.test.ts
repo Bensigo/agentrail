@@ -948,7 +948,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     );
   });
 
-  it("returns owner/admin decision capability without widening member read access", async () => {
+  it("keeps owner/admin human-evidence capabilities separate from Jace-approved issue publication", async () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "admin" } as never);
 
     const res = await GET(req(), { params: params() });
@@ -958,7 +958,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canRecordFinalDecision).toBe(true);
     expect(body.canRecordReviewEffort).toBe(true);
     expect(body.canApproveDependencyObservation).toBe(true);
-    expect(body.canCreateGatedGithubIssue).toBe(true);
+    expect(body.canCreateGatedGithubIssue).toBe(false);
   });
 
   it("returns only the bounded draft dependency projection", async () => {

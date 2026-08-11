@@ -8201,20 +8201,47 @@ export class AcceptanceDependencyObservationConflictError extends Error {
   }
 }
 
+/** Stable bounded-input rejection; storage failures remain ordinary errors. */
+export class AcceptanceDependencyObservationInvalidEvidenceError extends Error {
+  readonly code = "ACCEPTANCE_DEPENDENCY_OBSERVATION_INVALID_EVIDENCE" as const;
+
+  constructor() {
+    super("Acceptance dependency observation requires exact bounded runner evidence");
+    this.name = "AcceptanceDependencyObservationInvalidEvidenceError";
+  }
+}
+
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND = "acceptance_dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION = 1;
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 2;
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE = "dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR = "server:dependency-observation";
 const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
+const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
+};
+const ACCEPTANCE_DEPENDENCY_NPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "node", manager: "npm", profile: ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
 };
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
+const NPM_ALIAS_SPECIFIER = /^npm:/i;
 const DEPENDENCY_EVIDENCE_BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+const ACCEPTANCE_DEPENDENCY_KINDS = [
+  "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+] as const;
+const ACCEPTANCE_DEPENDENCY_NPM_SAVE_FLAGS: Record<
+  (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number],
+  "--save-prod" | "--save-dev" | "--save-optional" | "--save-peer"
+> = {
+  dependencies: "--save-prod",
+  devDependencies: "--save-dev",
+  optionalDependencies: "--save-optional",
+  peerDependencies: "--save-peer",
+};
 
 function safeDependencyEvidenceText(value: unknown, max: number): value is string {
   return safeSnapshotText(value, max) && !DEPENDENCY_EVIDENCE_BIDI.test(value);
@@ -8266,7 +8293,9 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
     candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
       && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
       && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
-      && ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].includes(candidate.dependencyKind),
+      && ACCEPTANCE_DEPENDENCY_KINDS.includes(
+        candidate.dependencyKind as (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number],
+      ),
     runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
     packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
     manifestPathIsValid: (path) => path === "package.json" || path.endsWith("/package.json"),
@@ -8276,6 +8305,29 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
     expectedArgv: (candidate) => [
       "pnpm", "update", `${candidate.package}@${candidate.targetVersion}`,
       "--lockfile-only", "--ignore-scripts",
+    ],
+  }],
+  ["node:npm:npm_package_lock_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_NPM_IDENTITY,
+    candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
+      && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
+      && !NPM_ALIAS_SPECIFIER.test(candidate.specifier)
+      && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
+      && ACCEPTANCE_DEPENDENCY_KINDS.includes(
+        candidate.dependencyKind as (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number],
+      ),
+    runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    manifestPathIsValid: (path) => path === "package.json",
+    lockfilePathIsValid: (path) => path === "package-lock.json",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === acceptanceDependencySecurityReference(candidate),
+    expectedArgv: (candidate) => [
+      "npm", "install", `${candidate.package}@${candidate.targetVersion}`,
+      "--package-lock-only", "--ignore-scripts", "--no-audit",
+      ACCEPTANCE_DEPENDENCY_NPM_SAVE_FLAGS[
+        candidate.dependencyKind as (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number]
+      ],
     ],
   }],
 ]);
@@ -8288,7 +8340,8 @@ function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyPr
 }
 
 function parseRecordAcceptanceDependencyObservationInput(
-  input: unknown
+  input: unknown,
+  options: { freezeUnsupportedProfile?: boolean } = {},
 ): RecordAcceptanceDependencyObservationInput | null {
   if (!isRecord(input) || !hasExactKeys(input, [
     "workspaceId", "recordId", "compiledPackId", "candidate", "runtime",
@@ -8309,7 +8362,8 @@ function parseRecordAcceptanceDependencyObservationInput(
     || !safeDependencyEvidenceText(candidate["currentVersion"], 128)
     || !safeDependencyEvidenceText(candidate["targetVersion"], 128)
     || candidate["currentVersion"] === candidate["targetVersion"]
-    || (acceptanceDependencyObservationProfile(candidateIdentity) !== null
+    || (!options.freezeUnsupportedProfile
+      && acceptanceDependencyObservationProfile(candidateIdentity) !== null
       && !acceptanceDependencyObservationProfile(candidateIdentity)!.candidateIsValid(candidate as AcceptanceDependencyCandidate))) return null;
 
   const runtime = input["runtime"];
@@ -8371,6 +8425,23 @@ function parseRecordAcceptanceDependencyObservationInput(
     || !securityIdentity || !safeDependencyEvidenceText(security["provider"], 64)
     || !safeDependencyEvidenceText(security["reference"], 512)
     || !isSha256(security["reportSha256"])) return null;
+
+  const liveProfile = options.freezeUnsupportedProfile
+    ? null : acceptanceDependencyObservationProfile(candidateIdentity);
+  if (liveProfile
+    && sameAcceptanceDependencyProfile(liveProfile.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    && (
+      (runtime["disposition"] === "safe"
+        && !liveProfile.runtimeVersionIsValid(runtime["version"] as string))
+      || (packageManager["disposition"] === "safe"
+        && !liveProfile.packageManagerVersionIsValid(packageManager["version"] as string))
+      || !liveProfile.manifestPathIsValid(manifest["path"] as string)
+      || !liveProfile.lockfilePathIsValid(lockfile["path"] as string)
+      || !liveProfile.securityIsValid(
+        security as RecordAcceptanceDependencyObservationInput["security"],
+        candidate as RecordAcceptanceDependencyObservationInput["candidate"],
+      )
+    )) return null;
 
   return {
     workspaceId: (input["workspaceId"] as string).toLowerCase(),
@@ -8526,6 +8597,7 @@ function acceptanceDependencyObservationDisposition(input: {
   currentHeadSha: string;
   manifestSourceProven: boolean;
   lockfileSourceProven: boolean;
+  freezeUnsupportedProfile?: boolean;
 }): {
   status: AcceptanceDependencyObservationStatus;
   reasons: AcceptanceDependencyObservationReason[];
@@ -8536,7 +8608,9 @@ function acceptanceDependencyObservationDisposition(input: {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
 
-  const profile = acceptanceDependencyObservationProfile(evidence.candidate.identity);
+  const profile = input.freezeUnsupportedProfile
+    ? null
+    : acceptanceDependencyObservationProfile(evidence.candidate.identity);
   const supportedProfile = profile !== null
     && sameAcceptanceDependencyProfile(evidence.runtime.identity, evidence.candidate.identity)
     && sameAcceptanceDependencyProfile(evidence.security.identity, evidence.candidate.identity);
@@ -8711,9 +8785,19 @@ function acceptanceDependencyObservationFromEvent(input: {
 export async function recordAcceptanceDependencyObservation(
   input: RecordAcceptanceDependencyObservationInput
 ): Promise<RecordAcceptanceDependencyObservationResult> {
-  const parsed = parseRecordAcceptanceDependencyObservationInput(input);
+  const currentProfileParsed = parseRecordAcceptanceDependencyObservationInput(input);
+  const parsed = currentProfileParsed
+    ?? parseRecordAcceptanceDependencyObservationInput(input, { freezeUnsupportedProfile: true });
   if (!parsed) {
-    throw new Error("Acceptance dependency observation requires exact bounded runner evidence");
+    throw new AcceptanceDependencyObservationInvalidEvidenceError();
+  }
+  const frozenUnsupportedReplayOnly = currentProfileParsed === null;
+  if (frozenUnsupportedReplayOnly && (
+    !sameAcceptanceDependencyProfile(parsed.candidate.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    || !sameAcceptanceDependencyProfile(parsed.runtime.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    || !sameAcceptanceDependencyProfile(parsed.security.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+  )) {
+    throw new AcceptanceDependencyObservationInvalidEvidenceError();
   }
 
   const candidateRecord = (await db.select({
@@ -8723,8 +8807,12 @@ export async function recordAcceptanceDependencyObservation(
     eq(changeRecords.id, parsed.recordId),
     eq(changeRecords.workspaceId, parsed.workspaceId),
   )).limit(1))[0];
-  if (!candidateRecord) return { kind: "not_found" };
-  if (candidateRecord.prNumber == null) return { kind: "not_current" };
+  if (!candidateRecord || candidateRecord.prNumber == null) {
+    if (frozenUnsupportedReplayOnly) {
+      throw new AcceptanceDependencyObservationInvalidEvidenceError();
+    }
+    return candidateRecord ? { kind: "not_current" } : { kind: "not_found" };
+  }
 
   const lockKey = acceptanceRecordPullRequestLockKey({
     workspaceId: parsed.workspaceId,
@@ -8859,6 +8947,7 @@ export async function recordAcceptanceDependencyObservation(
       currentHeadSha: record.currentPrHeadSha,
       manifestSourceProven,
       lockfileSourceProven,
+      freezeUnsupportedProfile: frozenUnsupportedReplayOnly,
     });
     const candidateFingerprint = acceptanceDependencyCandidateFingerprint(
       parsed.candidate,
@@ -8933,17 +9022,28 @@ export async function recordAcceptanceDependencyObservation(
     )).limit(1))[0] as ChangeRecordEventRow | undefined : undefined;
     if (existing && legacyExisting) throw new AcceptanceDependencyObservationConflictError();
     if (existing) {
-      const observation = acceptanceDependencyObservationFromEvent({
-        event: existing,
-        eventKey,
-        payload,
-        evidence: parsed,
-        candidateFingerprint,
-        status: disposition.status,
-        reasons: disposition.reasons,
+      const stored = parseStoredAcceptanceDependencyObservationEvent(existing);
+      const frozenDisposition = stored && acceptanceDependencyObservationDisposition({
+        evidence: stored.evidence,
+        currentHeadSha: record.currentPrHeadSha,
+        manifestSourceProven,
+        lockfileSourceProven,
+        freezeUnsupportedProfile: stored.observation.reasons.includes(
+          "unsupported_manager_profile",
+        ),
       });
-      if (!observation) throw new AcceptanceDependencyObservationConflictError();
-      return { kind: "replayed" as const, binding, observation };
+      if (!stored || stored.payloadVersion !== ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION
+        || !isDeepStrictEqual(stored.binding, binding)
+        || !isDeepStrictEqual(stored.evidence, parsed)
+        || !frozenDisposition
+        || frozenDisposition.status !== stored.observation.status
+        || !isDeepStrictEqual(frozenDisposition.reasons, stored.observation.reasons)) {
+        throw new AcceptanceDependencyObservationConflictError();
+      }
+      return { kind: "replayed" as const, binding, observation: stored.observation };
+    }
+    if (frozenUnsupportedReplayOnly) {
+      throw new AcceptanceDependencyObservationInvalidEvidenceError();
     }
     if (legacyExisting && legacyEventKey && legacyPayload && legacyCandidateFingerprint) {
       const observation = acceptanceDependencyObservationFromEvent({
@@ -9271,6 +9371,7 @@ function parseStoredAcceptanceDependencyObservationEvent(
     reasons = payload["reasons"] as AcceptanceDependencyObservationReason[];
   }
 
+  const freezeUnsupportedProfile = reasons.includes("unsupported_manager_profile");
   const evidence = parseRecordAcceptanceDependencyObservationInput({
     workspaceId: binding.workspaceId,
     recordId: binding.recordId,
@@ -9282,7 +9383,7 @@ function parseStoredAcceptanceDependencyObservationEvent(
     lockfile: payload["lockfile"],
     baseline: payload["baseline"],
     security,
-  });
+  }, { freezeUnsupportedProfile });
   if (!evidence) return null;
   const candidateFingerprint = payloadVersion === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
     ? legacyAcceptanceDependencyCandidateFingerprint(evidence.candidate, evidence.manifest.path)
@@ -9515,6 +9616,9 @@ async function revalidateStoredAcceptanceDependencyObservationInTransaction(
     lockfileSourceProven: compiledPackLockfilePathCustodyMatches(
       reconstructed,
       stored.evidence.lockfile,
+    ),
+    freezeUnsupportedProfile: stored.observation.reasons.includes(
+      "unsupported_manager_profile",
     ),
   });
   if (disposition.status !== stored.observation.status

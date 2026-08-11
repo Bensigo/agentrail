@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
+  ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
   parseAcceptanceDependencyObservation,
+  parseAcceptanceDependencyObservationForStorage,
   readBoundedAcceptanceDependencyObservationJson,
 } from "./acceptance-dependency-observation";
 
@@ -63,6 +65,29 @@ function cloneValid(): Record<string, unknown> {
   return structuredClone(VALID) as unknown as Record<string, unknown>;
 }
 
+function validNpm(
+  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies" = "dependencies",
+  saveFlag = "--save-prod",
+): Record<string, unknown> {
+  const value = cloneValid();
+  const identity = { ecosystem: "node", manager: "npm", profile: ACCEPTANCE_DEPENDENCY_NPM_PROFILE };
+  (value.candidate as Record<string, unknown>).identity = identity;
+  (value.candidate as Record<string, unknown>).dependencyKind = dependencyKind;
+  (value.runtime as Record<string, unknown>).identity = identity;
+  Object.assign(value.packageManager as Record<string, unknown>, {
+    name: "npm",
+    profile: ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
+    updateArgv: [
+      "npm", "install", "@acme/widget@1.3.0", "--package-lock-only",
+      "--ignore-scripts", "--no-audit", saveFlag,
+    ],
+  });
+  (value.manifest as Record<string, unknown>).path = "package.json";
+  (value.lockfile as Record<string, unknown>).path = "package-lock.json";
+  (value.security as Record<string, unknown>).identity = identity;
+  return value;
+}
+
 describe("parseAcceptanceDependencyObservation", () => {
   it("normalizes the bounded fixed pnpm profile without claiming approval", () => {
     const raw = cloneValid();
@@ -78,6 +103,98 @@ describe("parseAcceptanceDependencyObservation", () => {
       boundaryAssessment: "candidate_for_server_verification",
     });
     expect(JSON.stringify(result)).not.toMatch(/approv/iu);
+  });
+
+  it.each([
+    ["dependencies", "--save-prod"],
+    ["devDependencies", "--save-dev"],
+    ["optionalDependencies", "--save-optional"],
+    ["peerDependencies", "--save-peer"],
+  ] as const)("normalizes the npm %s profile with its exact save flag", (kind, saveFlag) => {
+    const raw = validNpm(kind, saveFlag);
+    const result = parseAcceptanceDependencyObservation(raw);
+    expect(result?.boundaryAssessment).toBe("candidate_for_server_verification");
+    expect(result?.input).toEqual(raw);
+  });
+
+  it.each([
+    ["wrong save kind", validNpm("devDependencies", "--save-prod")],
+    ["missing no-audit", (() => {
+      const raw = validNpm();
+      (raw.packageManager as { updateArgv: string[] }).updateArgv.splice(5, 1);
+      return raw;
+    })()],
+    ["save-exact expansion", (() => {
+      const raw = validNpm();
+      (raw.packageManager as { updateArgv: string[] }).updateArgv.push("--save-exact");
+      return raw;
+    })()],
+    ["reordered flags", (() => {
+      const raw = validNpm();
+      (raw.packageManager as { updateArgv: string[] }).updateArgv = [
+        "npm", "install", "@acme/widget@1.3.0", "--ignore-scripts",
+        "--package-lock-only", "--no-audit", "--save-prod",
+      ];
+      return raw;
+    })()],
+  ])("records npm command drift as refused evidence: %s", (_label, raw) => {
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment).toBe("refused_unsafe_runtime");
+  });
+
+  it("keeps npm aliases valid for pnpm but rejects them for the npm profile", () => {
+    const pnpm = cloneValid();
+    (pnpm.candidate as { specifier: string }).specifier = "npm:@acme/real-widget@^1.2.0";
+    expect(parseAcceptanceDependencyObservation(pnpm)?.boundaryAssessment)
+      .toBe("candidate_for_server_verification");
+
+    const npm = validNpm();
+    (npm.candidate as { specifier: string }).specifier = "npm:@acme/real-widget@^1.2.0";
+    expect(parseAcceptanceDependencyObservation(npm)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(npm)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it("passes only a bounded former npm profile as a historical replay candidate", () => {
+    const historical = validNpm();
+    Object.assign(historical.candidate as Record<string, unknown>, {
+      specifier: "npm:@acme/real-widget@^1.2.0",
+      currentVersion: "release-1",
+      targetVersion: "release-2",
+    });
+    Object.assign(historical.runtime as Record<string, unknown>, {
+      version: "node-current",
+    });
+    Object.assign(historical.packageManager as Record<string, unknown>, {
+      version: "npm-current",
+      updateArgv: ["npm", "update", "@acme/widget"],
+    });
+    (historical.manifest as { path: string }).path = "legacy/package.json";
+    (historical.lockfile as { path: string }).path = "legacy/package-lock.json";
+    Object.assign(historical.security as Record<string, unknown>, {
+      provider: "legacy-provider",
+      reference: "opaque:historical-query",
+    });
+
+    expect(parseAcceptanceDependencyObservation(historical)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(historical)).toEqual({
+      kind: "historical_replay_candidate",
+      input: historical,
+    });
+
+    (historical.candidate as { specifier: string }).specifier =
+      "token=github_pat_abcdefghijklmnopqrstuvwxyz";
+    expect(parseAcceptanceDependencyObservationForStorage(historical)).toBeNull();
+  });
+
+  it.each([
+    ["nested manifest", "packages/widget/package.json", "package-lock.json"],
+    ["nested lockfile", "package.json", "packages/widget/package-lock.json"],
+    ["npm shrinkwrap", "package.json", "npm-shrinkwrap.json"],
+  ])("rejects npm v1 source scope drift: %s", (_label, manifestPath, lockfilePath) => {
+    const raw = validNpm();
+    (raw.manifest as { path: string }).path = manifestPath;
+    (raw.lockfile as { path: string }).path = lockfilePath;
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
   });
 
   it.each([

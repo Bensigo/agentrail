@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   AcceptanceDependencyObservationConflictError,
+  AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import {
-  parseAcceptanceDependencyObservation,
+  parseAcceptanceDependencyObservationForStorage,
   readBoundedAcceptanceDependencyObservationJson,
 } from "../../../../../lib/acceptance-dependency-observation";
 
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
   if (!json.ok) {
     return NextResponse.json({ error: "Invalid dependency observation" }, { status: 400 });
   }
-  const parsed = parseAcceptanceDependencyObservation(json.value);
+  const parsed = parseAcceptanceDependencyObservationForStorage(json.value);
   if (!parsed) {
     return NextResponse.json({ error: "Invalid dependency observation" }, { status: 400 });
   }
@@ -49,6 +50,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ kind: "not_ready", reason: result.reason }, { status: 409 });
     }
   } catch (error) {
+    if (error instanceof AcceptanceDependencyObservationInvalidEvidenceError) {
+      return NextResponse.json({ error: "Invalid dependency observation" }, { status: 400 });
+    }
     if (error instanceof AcceptanceDependencyObservationConflictError) {
       return NextResponse.json({ kind: "conflict" }, { status: 409 });
     }

@@ -511,6 +511,53 @@ function npmDependencyEnvelope(withPack = false): Extract<
   return envelope;
 }
 
+function yarnDependencyEnvelope(
+  withPack = false,
+  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies" = "dependencies",
+  dependencyFlag: "--dev" | "--optional" | "--peer" | null = null,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "node",
+    manager: "yarn",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    dependencyKind,
+  };
+  item.observation.runtime = { ...item.observation.runtime, identity };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "yarn",
+    version: "4.9.2",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+    updateArgv: [
+      "yarn", "add", "@acme/widget@1.3.0", "--mode=update-lockfile",
+      ...(dependencyFlag ? [dependencyFlag] : []),
+    ],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "package.json" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "yarn.lock" };
+  item.observation.security = { ...item.observation.security, identity };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
+
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -1561,6 +1608,83 @@ describe("Change Record detail view", () => {
     pnpmAlias.observations[0]!.observation.candidate.specifier =
       "npm:@acme/real-widget@^1.2.0";
     expect(isDependencyObservationsEnvelope(pnpmAlias)).toBe(true);
+  });
+
+  it("strictly validates Yarn 4 receipts and the immutable external-builder Pack", () => {
+    for (const [dependencyKind, dependencyFlag] of [
+      ["dependencies", null],
+      ["devDependencies", "--dev"],
+      ["optionalDependencies", "--optional"],
+      ["peerDependencies", "--peer"],
+    ] as const) {
+      expect(isDependencyObservationsEnvelope(
+        yarnDependencyEnvelope(false, dependencyKind, dependencyFlag)
+      )).toBe(true);
+    }
+
+    const yarnWithPack = yarnDependencyEnvelope(true);
+    expect(isDependencyObservationsEnvelope(yarnWithPack)).toBe(true);
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: yarnWithPack,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("safe · yarn 4.9.2 · yarn_berry_v4_root_lockfile_only_v1");
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain("External authority not_granted");
+    expect(content).not.toMatch(/\.yarnrc|delivery granted|managed-build/iu);
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    const wrongFlag = yarnDependencyEnvelope(false, "devDependencies", "--dev");
+    wrongFlag.observations[0]!.observation.packageManager.updateArgv[4] = "--optional";
+    expect(isDependencyObservationsEnvelope(wrongFlag)).toBe(false);
+
+    const expandedCommand = yarnDependencyEnvelope();
+    expandedCommand.observations[0]!.observation.packageManager.updateArgv.push("--immutable");
+    expect(isDependencyObservationsEnvelope(expandedCommand)).toBe(false);
+
+    const unsafeSpecifier = yarnDependencyEnvelope();
+    unsafeSpecifier.observations[0]!.observation.candidate.specifier = "workspace:^";
+    expect(isDependencyObservationsEnvelope(unsafeSpecifier)).toBe(false);
+
+    const oldNode = yarnDependencyEnvelope();
+    oldNode.observations[0]!.observation.runtime.version = "18.11.9";
+    expect(isDependencyObservationsEnvelope(oldNode)).toBe(false);
+
+    const oldYarn = yarnDependencyEnvelope();
+    oldYarn.observations[0]!.observation.packageManager.version = "3.8.7";
+    expect(isDependencyObservationsEnvelope(oldYarn)).toBe(false);
+
+    const nestedLockfile = yarnDependencyEnvelope();
+    nestedLockfile.observations[0]!.observation.lockfile.path = "packages/widget/yarn.lock";
+    expect(isDependencyObservationsEnvelope(nestedLockfile)).toBe(false);
+  });
+
+  it("renders DB-derived Yarn configuration refusal and unknown proof without exposing configuration", () => {
+    const present = yarnDependencyEnvelope();
+    present.observations[0]!.observation.status = "refused_unsafe_runtime";
+    present.observations[0]!.observation.reasons = ["unsafe_yarn_configuration_present"];
+    expect(isDependencyObservationsEnvelope(present)).toBe(true);
+
+    const absenceUnknown = yarnDependencyEnvelope();
+    absenceUnknown.observations[0]!.observation.status = "not_proven";
+    absenceUnknown.observations[0]!.observation.reasons = [
+      "yarn_configuration_absence_not_proven",
+    ];
+    expect(isDependencyObservationsEnvelope(absenceUnknown)).toBe(true);
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: absenceUnknown,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(textContent(rendered)).toContain("yarn_configuration_absence_not_proven");
+    expect(textContent(rendered)).not.toContain(".yarnrc.yml");
+    expect(buttonLabels(rendered)).toEqual([]);
   });
 
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {

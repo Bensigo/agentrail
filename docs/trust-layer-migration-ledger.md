@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `4adb6b2d`, after merged PRs
-#1677–#1683 and #1685–#1686. The current npm evidence-profile slice is
+Last reconciled: 2026-08-11 at main commit `55284831`, after merged PRs
+#1677–#1683 and #1685–#1691. The current Yarn evidence-profile slice is
 described below and remains narrower than canonical R10.1 closure.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
@@ -137,13 +137,27 @@ creates an issue, approval, queue entry, builder dispatch, pull request, or
 merge action. It does not extend the legacy dependency-watch or generic
 approval lanes.
 
+PR #1687 separately moved the authenticated legacy dependency heartbeat's
+pnpm proposal into one draft Acceptance Record and draft Contract. Its custody
+is explicitly watch-only and independently `not_proven`; it does not confirm
+criteria or grant approval, issue, queue, builder, delivery, install, PR, or
+merge authority. The former legacy approval path retains historical decisions
+but can no longer publish an issue or enqueue dependency work.
+
+PR #1691 closed a source-custody regression in that draft-only lane. The
+persisted watch configuration must now be either `auto` / `auto` or the exact
+root `package.json` / `pnpm-lock.yaml` pair before a draft can be created.
+Mixed or non-root paths fail before any Record write, and replay revalidates
+later watch-path drift. This does not upgrade watch evidence beyond
+`not_proven` or grant any downstream authority.
+
 The merged accepted-observation profile was pnpm-specific: it required a
 Node/npm package identity, `package.json`, `pnpm-lock.yaml`, an OSV npm
 reference, and `pnpm_lockfile_only_v1`. PR #1685 made the observation contract
 and fingerprint explicitly profile-bound, but it did not add another accepted
 manager.
 
-This slice adds the closed `node` / `npm` / `npm_package_lock_only_v1`
+PR #1688 added the closed `node` / `npm` / `npm_package_lock_only_v1`
 evidence profile. It accepts only root `package.json` and `package-lock.json`
 custody, exact Node and npm versions, an exact OSV package-and-target
 reference, and one dependency-kind-safe command plan:
@@ -161,8 +175,31 @@ malformed npm body cannot create an event, and the old refusal cannot be
 approved or minted into an external-builder Pack. Existing pnpm semantics,
 including pnpm-compatible npm aliases and legacy v1 replay, remain unchanged.
 
+This slice adds the closed `node` / `yarn` /
+`yarn_berry_v4_root_lockfile_only_v1` evidence profile. It accepts only stable
+Yarn 4 with stable Node 18.12 or newer, a root `package.json` and `yarn.lock`,
+an exact OSV npm package-and-target reference, and one dependency-kind-safe
+future-builder command plan: `yarn add <package>@<target>
+--mode=update-lockfile`, with the exact `--dev`, `--optional`, or `--peer`
+flag when the stored dependency kind requires it. It does not accept Yarn
+Classic, Yarn 2 or 3, workspace or nested manifests, protocol aliases, or
+`yarn up`'s project-wide update semantics.
+
+The compiled Context Pack compiler is versioned to v5 with policy v3 because
+Yarn safety adds immutable exact-head custody for root `.yarnrc.yml` absence.
+The probe runs only after dependency reads and never exceeds the existing
+16-read cap. A present configuration is retained only as exact metadata and
+refuses the profile; missing or ambiguous absence evidence remains
+`not_proven`. Configuration bytes are not selected, rendered, or persisted.
+Older Packs remain immutable and cannot prove this new absence condition.
+
+As with npm, a pre-support Yarn v2 refusal can replay only against the same
+immutable event, binding, source custody, and evidence. It cannot be promoted
+to `observed`, approved, or minted into an external-builder Pack. A changed
+same-cycle body conflicts, and a new malformed body creates no event.
+
 Canonical R10.1 therefore remains open. Subsequent versioned adapter slices
-must close the remaining v1 priority managers—Yarn; pip, Poetry, uv; Maven,
+must close the remaining v1 priority managers—pip, Poetry, uv; Maven,
 Gradle; dotnet/NuGet; Composer; Cargo; and Go Modules—before R10 source/test
 closure. Bun and the lower-priority detected managers may remain labelled
 extension points. Frameworks use their ecosystem package-manager adapter and
@@ -184,6 +221,17 @@ migrated PostgreSQL. Package typechecks/builds, scoped lint, diff checks, and
 independent adversarial review are also green. No deployed runner, live OSV
 evidence acquisition, npm execution, external-builder delivery, or customer
 dependency proposal has been observed.
+
+The post-rebase Yarn compatibility gate covers 211 focused Console tests,
+five DB boundary tests, and four focused fresh-migrated PostgreSQL cases
+covering exact profile admission,
+configuration custody, immutable historical replay, refusal truth, and R10.2
+Pack propagation. The complete 86-case Change Record integration file and the
+full 138-file / 1,750-test database suite pass on fresh migrated PostgreSQL.
+Package typechecks/builds, scoped lint, diff checks, and independent adversarial
+review are green. No Yarn command was executed, no live OSV evidence was
+acquired, no builder received the Pack, and no deployed, live, or customer path
+was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,
@@ -262,12 +310,34 @@ R11.2 remains open for the criterion-outcome and opaque artifact-custody path,
 then the packet-bound gated-issue path. R11 remains **FAIL / not
 release-ready**.
 
+## R12 progress
+
+PR #1690 closed the canonical R12.1 and R12.2 source/test slice. The public
+landing now tells the ordered planning, human-confirmed criteria, MCP handoff,
+selected external coding agent, intent review, evidence/refusal, and human
+decision flow without presenting Jace as a factory, code generator,
+auto-merge system, or live-outcome claim. Public pricing is consistently
+labelled a team commercial experiment rather than proof of product value,
+delivery capacity, or review savings.
+
+The technical README surfaces remain allowed implementation context for the
+optional CLI, runner, self-hosting, and MCP adapters. They do not give Jace
+merge authority or turn adapter mechanics into public-product or deployed
+proof. Focused marketing truth tests, Console typecheck, targeted lint, diff
+checks, independent review, and all PR CI checks are green.
+
+This is source/test proof only. No deployed landing render, payment
+availability, hosted external-builder flow, commercial conversion, or customer
+outcome was observed. R12 remains **FAIL / not release-ready** until its
+deployed/live and customer proof gates are satisfied.
+
 ## Remaining canonical order
 
-The remaining implementation order is the required R10.1 v1 profiles, then the
-remaining R11.2 criterion/artifact and gated-issue slices, followed by R12. The
-bounded R10.2 Pack slice is a merged foundation, and R11.2a must remain
-compatible with each admitted profile. The canonical requirements remain:
+The remaining source implementation order is the required R10.1 v1 profiles,
+then the remaining R11.2 criterion/artifact and gated-issue slices. R12
+source/test is closed. The bounded R10.2 Pack slice is a merged foundation, and
+R11.2a must remain compatible with each admitted profile. The canonical
+requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

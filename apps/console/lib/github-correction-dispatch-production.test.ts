@@ -61,8 +61,8 @@ vi.mock("@agentrail/db-postgres", () => ({
 }));
 
 vi.mock("./acceptance-context-pack-compiler", () => ({
-  ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION: "exact-head-correction-pack-v4",
-  ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION: "bounded-exact-ranges-v2",
+  ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION: "exact-head-correction-pack-v5",
+  ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION: "bounded-exact-ranges-v3",
   compileAndRecordAcceptanceContextPack: mocks.compileAndRecordAcceptanceContextPack,
 }));
 vi.mock("./github-exact-head-content", () => ({
@@ -457,8 +457,8 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
     expect(mocks.resolveAcceptanceCompiledContextPack).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       sourceSnapshotId: SNAPSHOT_ID,
-      compilerVersion: "exact-head-correction-pack-v4",
-      policyVersion: "bounded-exact-ranges-v2",
+      compilerVersion: "exact-head-correction-pack-v5",
+      policyVersion: "bounded-exact-ranges-v3",
     });
     expect(mocks.getRepositoryByName).not.toHaveBeenCalled();
     expect(mocks.getInstallationToken).not.toHaveBeenCalled();

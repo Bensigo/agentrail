@@ -3,6 +3,7 @@ import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
+  ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
   parseAcceptanceDependencyObservation,
   parseAcceptanceDependencyObservationForStorage,
   readBoundedAcceptanceDependencyObservationJson,
@@ -88,6 +89,30 @@ function validNpm(
   return value;
 }
 
+function validYarn(
+  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies" = "dependencies",
+  dependencyFlag: "--dev" | "--optional" | "--peer" | null = null,
+): Record<string, unknown> {
+  const value = cloneValid();
+  const identity = { ecosystem: "node", manager: "yarn", profile: ACCEPTANCE_DEPENDENCY_YARN_PROFILE };
+  (value.candidate as Record<string, unknown>).identity = identity;
+  (value.candidate as Record<string, unknown>).dependencyKind = dependencyKind;
+  (value.runtime as Record<string, unknown>).identity = identity;
+  Object.assign(value.packageManager as Record<string, unknown>, {
+    name: "yarn",
+    version: "4.9.2",
+    profile: ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
+    updateArgv: [
+      "yarn", "add", "@acme/widget@1.3.0", "--mode=update-lockfile",
+      ...(dependencyFlag ? [dependencyFlag] : []),
+    ],
+  });
+  (value.manifest as Record<string, unknown>).path = "package.json";
+  (value.lockfile as Record<string, unknown>).path = "yarn.lock";
+  (value.security as Record<string, unknown>).identity = identity;
+  return value;
+}
+
 describe("parseAcceptanceDependencyObservation", () => {
   it("normalizes the bounded fixed pnpm profile without claiming approval", () => {
     const raw = cloneValid();
@@ -115,6 +140,78 @@ describe("parseAcceptanceDependencyObservation", () => {
     const result = parseAcceptanceDependencyObservation(raw);
     expect(result?.boundaryAssessment).toBe("candidate_for_server_verification");
     expect(result?.input).toEqual(raw);
+  });
+
+  it.each([
+    ["dependencies", null],
+    ["devDependencies", "--dev"],
+    ["optionalDependencies", "--optional"],
+    ["peerDependencies", "--peer"],
+  ] as const)("normalizes the bounded Yarn 4 %s profile", (kind, dependencyFlag) => {
+    const raw = validYarn(kind, dependencyFlag);
+    const result = parseAcceptanceDependencyObservation(raw);
+    expect(result?.boundaryAssessment).toBe("candidate_for_server_verification");
+    expect(result?.input).toEqual(raw);
+    expect(result?.input).not.toHaveProperty("yarnConfiguration");
+  });
+
+  it.each(["1.2.3", "^1.2.3", "~1.2.3"])(
+    "accepts the Yarn registry semver specifier %s",
+    (specifier) => {
+      const raw = validYarn();
+      (raw.candidate as { specifier: string }).specifier = specifier;
+      expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+        .toBe("candidate_for_server_verification");
+    }
+  );
+
+  it.each([
+    ["npm alias", "npm:@acme/real-widget@1.2.3"],
+    ["workspace", "workspace:^"],
+    ["range", ">=1.2.3"],
+    ["tag", "latest"],
+    ["patch", "patch:@acme/widget@1.2.3#./widget.patch"],
+  ])("keeps a bounded invalid Yarn %s only on the historical replay seam", (_label, specifier) => {
+    const raw = validYarn();
+    (raw.candidate as { specifier: string }).specifier = specifier;
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it.each([
+    ["Node below the floor", "runtime", "18.11.9"],
+    ["prerelease Node", "runtime", "22.0.0-rc.1"],
+    ["Yarn 3", "packageManager", "3.8.7"],
+    ["Yarn 5", "packageManager", "5.0.0"],
+    ["prerelease Yarn", "packageManager", "4.0.0-rc.1"],
+  ] as const)("keeps %s only on the historical replay seam", (_label, field, version) => {
+    const raw = validYarn();
+    (raw[field] as { version: string | null }).version = version;
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it.each([
+    ["nested manifest", "packages/widget/package.json", "yarn.lock"],
+    ["nested lockfile", "package.json", "packages/widget/yarn.lock"],
+  ])("keeps Yarn source-scope drift only on the historical replay seam: %s", (_label, manifestPath, lockfilePath) => {
+    const raw = validYarn();
+    (raw.manifest as { path: string }).path = manifestPath;
+    (raw.lockfile as { path: string }).path = lockfilePath;
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it("records bounded Yarn command drift as refused unsafe runtime evidence", () => {
+    const raw = validYarn("devDependencies", "--dev");
+    (raw.packageManager as { updateArgv: string[] }).updateArgv = [
+      "yarn", "up", "@acme/widget@1.3.0", "--mode=update-lockfile",
+    ];
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+      .toBe("refused_unsafe_runtime");
   });
 
   it.each([

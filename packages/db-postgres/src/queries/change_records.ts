@@ -8061,6 +8061,8 @@ export type AcceptanceDependencyObservationReason =
   | "unsafe_package_manager"
   | "unsafe_package_manager_profile"
   | "unsafe_package_manager_argv"
+  | "unsafe_yarn_configuration_present"
+  | "yarn_configuration_absence_not_proven"
   | "runtime_evidence_unavailable"
   | "runtime_evidence_ambiguous"
   | "package_manager_evidence_unavailable"
@@ -8218,11 +8220,15 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE = "dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR = "server:dependency-observation";
 const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
+const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
 const ACCEPTANCE_DEPENDENCY_NPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "npm", profile: ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
+};
+const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "node", manager: "yarn", profile: ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
 };
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -8242,6 +8248,15 @@ const ACCEPTANCE_DEPENDENCY_NPM_SAVE_FLAGS: Record<
   optionalDependencies: "--save-optional",
   peerDependencies: "--save-peer",
 };
+const ACCEPTANCE_DEPENDENCY_YARN_KIND_FLAGS: Record<
+  (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number],
+  null | "--dev" | "--optional" | "--peer"
+> = {
+  dependencies: null,
+  devDependencies: "--dev",
+  optionalDependencies: "--optional",
+  peerDependencies: "--peer",
+};
 
 function safeDependencyEvidenceText(value: unknown, max: number): value is string {
   return safeSnapshotText(value, max) && !DEPENDENCY_EVIDENCE_BIDI.test(value);
@@ -8253,6 +8268,28 @@ function safeDependencyEvidencePath(value: unknown): value is string {
 
 function acceptanceDependencySecurityReference(candidate: AcceptanceDependencyCandidate): string {
   return `osv:npm:${candidate.package}@${candidate.targetVersion}`;
+}
+
+function stableSemverTuple(value: string): [number, number, number] | null {
+  const matched = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value);
+  if (!matched) return null;
+  const tuple = matched.slice(1).map(Number) as [number, number, number];
+  return tuple.every(Number.isSafeInteger) ? tuple : null;
+}
+
+function stableSemverAtLeast(value: string, minimum: [number, number, number]): boolean {
+  const tuple = stableSemverTuple(value);
+  if (!tuple) return false;
+  for (let index = 0; index < tuple.length; index += 1) {
+    if (tuple[index]! > minimum[index]!) return true;
+    if (tuple[index]! < minimum[index]!) return false;
+  }
+  return true;
+}
+
+function yarnCandidateSpecifierIsValid(value: string): boolean {
+  const exact = value.startsWith("^") || value.startsWith("~") ? value.slice(1) : value;
+  return EXACT_SEMVER.test(exact);
 }
 
 function parseAcceptanceDependencyProfileIdentity(value: unknown): AcceptanceDependencyProfileIdentity | null {
@@ -8330,7 +8367,46 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       ],
     ],
   }],
+  ["node:yarn:yarn_berry_v4_root_lockfile_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_YARN_IDENTITY,
+    candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
+      && yarnCandidateSpecifierIsValid(candidate.specifier)
+      && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
+      && ACCEPTANCE_DEPENDENCY_KINDS.includes(
+        candidate.dependencyKind as (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number],
+      ),
+    runtimeVersionIsValid: (version) => stableSemverAtLeast(version, [18, 12, 0]),
+    packageManagerVersionIsValid: (version) => stableSemverTuple(version)?.[0] === 4,
+    manifestPathIsValid: (path) => path === "package.json",
+    lockfilePathIsValid: (path) => path === "yarn.lock",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === acceptanceDependencySecurityReference(candidate),
+    expectedArgv: (candidate) => {
+      const argv = [
+        "yarn", "add", `${candidate.package}@${candidate.targetVersion}`,
+        "--mode=update-lockfile",
+      ];
+      const flag = ACCEPTANCE_DEPENDENCY_YARN_KIND_FLAGS[
+        candidate.dependencyKind as (typeof ACCEPTANCE_DEPENDENCY_KINDS)[number]
+      ];
+      return flag ? [...argv, flag] : argv;
+    },
+  }],
 ]);
+
+function isStrictCurrentAcceptanceDependencyProfile(
+  identity: AcceptanceDependencyProfileIdentity,
+): boolean {
+  return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY);
+}
+
+function isFrozenReplayEligibleAcceptanceDependencyProfile(
+  identity: AcceptanceDependencyProfileIdentity,
+): boolean {
+  return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY);
+}
 
 function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {
   const profile = ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES.get(
@@ -8429,7 +8505,7 @@ function parseRecordAcceptanceDependencyObservationInput(
   const liveProfile = options.freezeUnsupportedProfile
     ? null : acceptanceDependencyObservationProfile(candidateIdentity);
   if (liveProfile
-    && sameAcceptanceDependencyProfile(liveProfile.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    && isStrictCurrentAcceptanceDependencyProfile(liveProfile.identity)
     && (
       (runtime["disposition"] === "safe"
         && !liveProfile.runtimeVersionIsValid(runtime["version"] as string))
@@ -8592,11 +8668,48 @@ function compiledPackLockfilePathCustodyMatches(
     : true;
 }
 
+type AcceptanceDependencyYarnConfigurationCustody =
+  | "absent"
+  | "present"
+  | "not_proven";
+
+function compiledPackYarnConfigurationCustody(
+  pack: ParsedCompiledPack,
+): AcceptanceDependencyYarnConfigurationCustody {
+  const requestedPath = ".yarnrc.yml";
+  const exactOverlayRecord = (pack.sourceCustodyReceipt["records"] as Record<string, unknown>[])
+    .find((candidate) => candidate["path"] === requestedPath
+      && candidate["source"] === "exact_head_overlay"
+      && candidate["reason"] === "exact_base_to_head_compare");
+  if (exactOverlayRecord) return "present";
+  const read = (pack.sourceCustodyReceipt["directReadReceipts"] as Record<string, unknown>[])
+    .find((candidate) => candidate["requestedPath"] === requestedPath);
+  if (!read) return "not_proven";
+  if (read["outcome"] === "record") {
+    return isRecord(read["record"])
+      && read["record"]["path"] === requestedPath
+      ? "present"
+      : "not_proven";
+  }
+  if (read["outcome"] !== "not_proven") return "not_proven";
+  if (read["reason"] === "path_not_found") return "absent";
+  if (read["reason"] === "unsafe_content" && isRecord(read["exclusion"])
+    && read["exclusion"]["path"] === requestedPath
+    && read["exclusion"]["source"] === "exact_head_tree_fallback"
+    && read["exclusion"]["reason"] === "secret_content_policy"
+    && typeof read["exclusion"]["blobSha"] === "string"
+    && isSha1(read["exclusion"]["blobSha"])) {
+    return "present";
+  }
+  return "not_proven";
+}
+
 function acceptanceDependencyObservationDisposition(input: {
   evidence: RecordAcceptanceDependencyObservationInput;
   currentHeadSha: string;
   manifestSourceProven: boolean;
   lockfileSourceProven: boolean;
+  yarnConfigurationCustody?: AcceptanceDependencyYarnConfigurationCustody;
   freezeUnsupportedProfile?: boolean;
 }): {
   status: AcceptanceDependencyObservationStatus;
@@ -8654,6 +8767,15 @@ function acceptanceDependencyObservationDisposition(input: {
     || !profile.securityIsValid(evidence.security, evidence.candidate)
   )) add("unsafe_package_manager_profile");
 
+  if (supportedProfile
+    && sameAcceptanceDependencyProfile(profile.identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)) {
+    if (input.yarnConfigurationCustody === "present") {
+      add("unsafe_yarn_configuration_present");
+    } else if (input.yarnConfigurationCustody !== "absent") {
+      add("yarn_configuration_absence_not_proven");
+    }
+  }
+
   if (evidence.lockfile.disposition === "missing") add("lockfile_missing");
   if (evidence.lockfile.disposition === "uncommitted") add("lockfile_uncommitted");
   if (evidence.lockfile.disposition === "unavailable") add("lockfile_evidence_unavailable");
@@ -8670,13 +8792,15 @@ function acceptanceDependencyObservationDisposition(input: {
     return { status: "refused_unsupported_profile", reasons };
   }
   if (reasons.includes("manifest_source_not_proven")
-    || reasons.includes("lockfile_source_not_proven")) {
+    || reasons.includes("lockfile_source_not_proven")
+    || reasons.includes("yarn_configuration_absence_not_proven")) {
     return { status: "not_proven", reasons };
   }
   if (reasons.some((reason) => reason === "unsafe_runtime"
     || reason === "unsafe_package_manager"
     || reason === "unsafe_package_manager_profile"
-    || reason === "unsafe_package_manager_argv")) {
+    || reason === "unsafe_package_manager_argv"
+    || reason === "unsafe_yarn_configuration_present")) {
     return { status: "refused_unsafe_runtime", reasons };
   }
   if (evidence.lockfile.disposition !== "present") {
@@ -8793,9 +8917,9 @@ export async function recordAcceptanceDependencyObservation(
   }
   const frozenUnsupportedReplayOnly = currentProfileParsed === null;
   if (frozenUnsupportedReplayOnly && (
-    !sameAcceptanceDependencyProfile(parsed.candidate.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
-    || !sameAcceptanceDependencyProfile(parsed.runtime.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
-    || !sameAcceptanceDependencyProfile(parsed.security.identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
+    !isFrozenReplayEligibleAcceptanceDependencyProfile(parsed.candidate.identity)
+    || !sameAcceptanceDependencyProfile(parsed.runtime.identity, parsed.candidate.identity)
+    || !sameAcceptanceDependencyProfile(parsed.security.identity, parsed.candidate.identity)
   )) {
     throw new AcceptanceDependencyObservationInvalidEvidenceError();
   }
@@ -8947,6 +9071,7 @@ export async function recordAcceptanceDependencyObservation(
       currentHeadSha: record.currentPrHeadSha,
       manifestSourceProven,
       lockfileSourceProven,
+      yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
       freezeUnsupportedProfile: frozenUnsupportedReplayOnly,
     });
     const candidateFingerprint = acceptanceDependencyCandidateFingerprint(
@@ -9028,6 +9153,7 @@ export async function recordAcceptanceDependencyObservation(
         currentHeadSha: record.currentPrHeadSha,
         manifestSourceProven,
         lockfileSourceProven,
+        yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
         freezeUnsupportedProfile: stored.observation.reasons.includes(
           "unsupported_manager_profile",
         ),
@@ -9246,7 +9372,10 @@ function isAcceptanceDependencyObservationReason(
     || value === "manifest_source_not_proven"
     || value === "lockfile_source_not_proven" || value === "unsafe_runtime"
     || value === "unsafe_package_manager" || value === "unsafe_package_manager_profile"
-    || value === "unsafe_package_manager_argv" || value === "runtime_evidence_unavailable"
+    || value === "unsafe_package_manager_argv"
+    || value === "unsafe_yarn_configuration_present"
+    || value === "yarn_configuration_absence_not_proven"
+    || value === "runtime_evidence_unavailable"
     || value === "runtime_evidence_ambiguous"
     || value === "package_manager_evidence_unavailable"
     || value === "package_manager_evidence_ambiguous" || value === "lockfile_missing"
@@ -9334,7 +9463,7 @@ function parseStoredAcceptanceDependencyObservationEvent(
     || !isAcceptanceDependencyObservationStatus(payload["status"])
     || (payload["version"] === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
       && payload["status"] === "refused_unsupported_profile")
-    || !Array.isArray(payload["reasons"]) || payload["reasons"].length > 18
+    || !Array.isArray(payload["reasons"]) || payload["reasons"].length > 21
     || new Set(payload["reasons"]).size !== payload["reasons"].length) return null;
   const binding = parseAcceptanceDependencyObservationBinding(payload["binding"]);
   if (!binding || typeof payload["candidateFingerprint"] !== "string"
@@ -9617,6 +9746,7 @@ async function revalidateStoredAcceptanceDependencyObservationInTransaction(
       reconstructed,
       stored.evidence.lockfile,
     ),
+    yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
     freezeUnsupportedProfile: stored.observation.reasons.includes(
       "unsupported_manager_profile",
     ),

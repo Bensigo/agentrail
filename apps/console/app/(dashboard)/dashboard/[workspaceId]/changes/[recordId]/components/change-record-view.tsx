@@ -327,7 +327,9 @@ type AcceptanceDependencyObservationReason =
   | "lockfile_evidence_ambiguous"
   | "security_affected"
   | "security_evidence_unavailable"
-  | "security_evidence_ambiguous";
+  | "security_evidence_ambiguous"
+  | "unsafe_yarn_configuration_present"
+  | "yarn_configuration_absence_not_proven";
 
 type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 type AcceptanceDependencyCandidate = {
@@ -2088,6 +2090,12 @@ const NPM_SAVE_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string>> = {
   optionalDependencies: "--save-optional",
   peerDependencies: "--save-peer",
 };
+const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
+  dependencies: null,
+  devDependencies: "--dev",
+  optionalDependencies: "--optional",
+  peerDependencies: "--peer",
+};
 
 type AcceptanceDependencyReceiptProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
@@ -2144,6 +2152,33 @@ function npmDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate)
     && !NPM_ALIAS_SPECIFIER.test(candidate.specifier);
 }
 
+function yarnDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  const specifier = candidate.specifier.startsWith("^") || candidate.specifier.startsWith("~")
+    ? candidate.specifier.slice(1)
+    : candidate.specifier;
+  return nodeDependencyCandidateIsValid(candidate)
+    && !NPM_ALIAS_SPECIFIER.test(candidate.specifier)
+    && EXACT_SEMVER.test(specifier);
+}
+
+function stableSemverParts(value: string): [number, number, number] | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger)
+    ? [parts[0]!, parts[1]!, parts[2]!]
+    : null;
+}
+
+function stableNodeAtLeast1812(version: string): boolean {
+  const parts = stableSemverParts(version);
+  return parts !== null && (parts[0] > 18 || (parts[0] === 18 && parts[1] >= 12));
+}
+
+function stableYarn4(version: string): boolean {
+  return stableSemverParts(version)?.[0] === 4;
+}
+
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2179,6 +2214,27 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "--package-lock-only", "--ignore-scripts", "--no-audit",
       NPM_SAVE_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind] ?? "",
     ],
+  }],
+  ["node:yarn:yarn_berry_v4_root_lockfile_only_v1", {
+    identity: {
+      ecosystem: "node",
+      manager: "yarn",
+      profile: "yarn_berry_v4_root_lockfile_only_v1",
+    },
+    candidateIsValid: yarnDependencyCandidateIsValid,
+    runtimeVersionIsValid: stableNodeAtLeast1812,
+    packageManagerVersionIsValid: stableYarn4,
+    manifestPathIsValid: (path) => path === "package.json",
+    lockfilePathIsValid: (path) => path === "yarn.lock",
+    securityIsValid: osvNpmReceiptIsValid,
+    expectedArgv: (candidate) => {
+      const argv = [
+        "yarn", "add", `${candidate.package}@${candidate.targetVersion}`,
+        "--mode=update-lockfile",
+      ];
+      const dependencyFlag = YARN_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind];
+      return dependencyFlag ? [...argv, dependencyFlag] : argv;
+    },
   }],
 ]);
 
@@ -2315,7 +2371,9 @@ function isDependencyObservationReason(value: unknown): value is AcceptanceDepen
     || value === "package_manager_evidence_ambiguous" || value === "lockfile_missing"
     || value === "lockfile_uncommitted" || value === "lockfile_evidence_unavailable"
     || value === "lockfile_evidence_ambiguous" || value === "security_affected"
-    || value === "security_evidence_unavailable" || value === "security_evidence_ambiguous";
+    || value === "security_evidence_unavailable" || value === "security_evidence_ambiguous"
+    || value === "unsafe_yarn_configuration_present"
+    || value === "yarn_configuration_absence_not_proven";
 }
 
 function isDependencyObservation(

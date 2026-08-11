@@ -50,6 +50,28 @@ const valid = {
   },
 };
 
+const yarnIdentity = {
+  ecosystem: "node",
+  manager: "yarn",
+  profile: "yarn_berry_v4_root_lockfile_only_v1",
+};
+const validYarn = {
+  ...valid,
+  candidate: { ...valid.candidate, identity: yarnIdentity },
+  runtime: { ...valid.runtime, identity: yarnIdentity },
+  packageManager: {
+    ...valid.packageManager,
+    name: "yarn",
+    version: "4.18.0",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+    updateArgv: [
+      "yarn", "add", "@agentrail/example@1.3.0", "--mode=update-lockfile",
+    ],
+  },
+  lockfile: { ...valid.lockfile, path: "yarn.lock" },
+  security: { ...valid.security, identity: yarnIdentity },
+};
+
 describe("Acceptance dependency observation input boundary", () => {
   it("rejects caller-supplied authority, status, fingerprint, and execution side effects", async () => {
     for (const extra of [
@@ -100,6 +122,34 @@ describe("Acceptance dependency observation input boundary", () => {
       ...valid,
       lockfile: { ...valid.lockfile, disposition: "missing", blobSha: valid.lockfile.blobSha },
     } as never)).rejects.toThrow("exact bounded runner evidence");
+  });
+
+  it("rejects malformed Yarn evidence at the exact DB input boundary", async () => {
+    for (const malformed of [
+      { ...validYarn, yarnConfiguration: { present: false } },
+      {
+        ...validYarn,
+        candidate: { ...validYarn.candidate, specifier: `^1.2.3\u202e` },
+      },
+      {
+        ...validYarn,
+        runtime: { ...validYarn.runtime, disposition: "unavailable", version: "22.17.0" },
+      },
+      {
+        ...validYarn,
+        packageManager: { ...validYarn.packageManager, name: "Yarn" },
+      },
+      {
+        ...validYarn,
+        candidate: {
+          ...validYarn.candidate,
+          identity: { ...validYarn.candidate.identity, manager: "Yarn" },
+        },
+      },
+    ]) {
+      await expect(recordAcceptanceDependencyObservation(malformed as never))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+    }
   });
 
   it("rejects legacy v1 runner bodies while durable v1 events remain replay-compatible", async () => {

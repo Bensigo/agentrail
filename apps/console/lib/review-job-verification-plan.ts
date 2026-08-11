@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { scanForSecrets } from "./secret-scan";
+import { containsSecretShapedValue, scanForSecrets } from "./secret-scan";
 
 export const REVIEW_JOB_VERIFICATION_PLAN_KIND = "review_job_verification_plan";
 export const REVIEW_JOB_VERIFICATION_PLAN_STAGE = "verification";
@@ -809,7 +809,9 @@ export function confirmedVerificationContract(
   const version = row.version;
   const contract = object(row.contract) ? row.contract : null;
   const rawCriteria = contract?.acceptanceCriteria;
-  if (!id || !Number.isInteger(version) || (version as number) <= 0 || !Array.isArray(rawCriteria) || rawCriteria.length === 0) {
+  if (!id || !Number.isInteger(version) || (version as number) <= 0
+    || !Array.isArray(rawCriteria) || rawCriteria.length === 0
+    || containsSecretShapedValue(rawCriteria)) {
     return null;
   }
 
@@ -856,6 +858,9 @@ export function buildReviewJobVerificationPlan(input: {
 }): BuildPlanResult {
   if (!Array.isArray(input.plans) || input.plans.length !== input.contract.criteria.length) {
     return { ok: false, error: "every confirmed criterion needs one verification plan" };
+  }
+  if (containsSecretShapedValue(input.plans)) {
+    return { ok: false, error: "verification plans contain secret-shaped text" };
   }
 
   const submitted = new Map<string, Record<string, unknown>>();
@@ -1046,7 +1051,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
   contract: ConfirmedVerificationContract;
 }): StoredReviewJobVerificationPlan | null {
   const payload = input.payload;
-  if (!object(payload)) return null;
+  if (!object(payload) || containsSecretShapedValue(payload)) return null;
   if (
     payload.kind !== REVIEW_JOB_VERIFICATION_PLAN_KIND ||
     payload.jobId !== input.job.id ||

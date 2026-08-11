@@ -794,6 +794,107 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(JSON.stringify(body)).not.toContain("pnpm update secret-package");
   });
 
+  it("fails criterion and correction projections closed and withholds secret-shaped timeline text", async () => {
+    const secretText = "authorization: Bearer abcdefghijklmnopqrstuvwxyz";
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      events: [{
+        ...timeline.events[0],
+        eventKey: `review:criterion-outcomes:${CYCLE}`,
+        stage: "review",
+        payloadRef: {
+          kind: "acceptance_criterion_outcome_bundle",
+          outcomes: [{ observed: secretText }],
+        },
+      }],
+    } as never);
+    vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValue({
+      ...currentCriterionBundle,
+      bundle: {
+        ...currentCriterionBundle.bundle,
+        outcomes: [{ observed: "token=abcdefghijk12345" }],
+      },
+    } as never);
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({
+      ...currentCorrectionPackets,
+      packets: [{
+        ...currentCorrectionPackets.packets[0],
+        requiredCorrection: "Remove api_key=abcdefghijk12345 before retrying.",
+      }],
+    } as never);
+    const unsafeDetail = structuredClone(postedCriterionDetail);
+    unsafeDetail.detail.proofMatrix[0]!.criteria[0]!.proof = {
+      kind: "correction_packet",
+      packet: {
+        ...structuredClone(currentCorrectionPackets.packets[0]),
+        impact: "token=abcdefghijk12345",
+      },
+    } as never;
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(unsafeDetail as never);
+
+    const res = await GET(req(), { params: params() });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.events[0].payloadRef).toEqual({
+      kind: "redacted_criterion_custody_payload",
+      version: 1,
+      disclosure: "secret_shaped_text_withheld",
+    });
+    expect(body.correctionPackets).toEqual({
+      kind: "not_ready",
+      reason: "invalid_packet_custody",
+    });
+    expect(body.acceptanceDetail).toEqual({
+      kind: "unavailable",
+      reason: "invalid_review_custody",
+    });
+    expect(body.criterionOutcomes).toEqual({
+      kind: "not_ready",
+      reason: "invalid_criterion_outcome_custody",
+    });
+    expect(JSON.stringify(body)).not.toContain(secretText);
+    expect(JSON.stringify(body)).not.toContain("abcdefghijk12345");
+  });
+
+  it("fails an unattached Record detail with secret-shaped Contract text closed", async () => {
+    const secretText = "api_key=abcdefghijk12345";
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      record: {
+        ...timeline.record,
+        prNumber: null,
+        headShas: [],
+        currentPrHeadSha: null,
+        currentPrHeadCycleId: null,
+        currentPrHeadAuthoritative: false,
+        currentPrHeadAuthorityGeneration: 0,
+      },
+      events: [timeline.events[0]],
+    } as never);
+    const unattachedDetail = structuredClone(currentAcceptanceDetail);
+    unattachedDetail.detail.summary.requestedWork.originalRequest = secretText;
+    unattachedDetail.detail.summary.pullRequest = { kind: "not_attached" } as never;
+    unattachedDetail.detail.summary.neededDecision = {
+      kind: "not_required",
+      reason: "pr_not_attached",
+    } as never;
+    unattachedDetail.detail.contract.contract.originalRequest = secretText;
+    unattachedDetail.detail.pullRequest = { kind: "not_attached", occurrences: [] } as never;
+    unattachedDetail.detail.proofMatrix = [];
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(unattachedDetail as never);
+
+    const response = await GET(req(), { params: params() });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.acceptanceDetail).toEqual({
+      kind: "unavailable",
+      reason: "invalid_review_custody",
+    });
+    expect(JSON.stringify(body)).not.toContain(secretText);
+  });
+
   it("redacts every private storage coordinate from the member-facing Record projection", async () => {
     const privateKey = "review-evidence/private/exact.png";
     vi.mocked(readChangeRecordTimeline).mockResolvedValue({
@@ -915,6 +1016,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         packetId: nextPacketId,
         headSha: nextHead,
         jobId: nextCycle,
+        requiredCorrection: "Remove token=abcdefghijk12345 before retrying.",
       }],
     } as never);
 
@@ -983,6 +1085,20 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       ...currentAcceptanceDetail,
       detail: {
         ...currentAcceptanceDetail.detail,
+        summary: {
+          ...currentAcceptanceDetail.detail.summary,
+          requestedWork: {
+            ...currentAcceptanceDetail.detail.summary.requestedWork,
+            originalRequest: "token=abcdefghijk12345",
+          },
+        },
+        contract: {
+          ...currentAcceptanceDetail.detail.contract,
+          contract: {
+            ...currentAcceptanceDetail.detail.contract.contract,
+            originalRequest: "token=abcdefghijk12345",
+          },
+        },
         pullRequest: {
           ...currentAcceptanceDetail.detail.pullRequest,
           current: {
@@ -1018,6 +1134,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           headSha: "e".repeat(40),
           headCycleId: "00000000-0000-4000-8000-000000000100",
         },
+        outcomes: [{ observed: "api_key=abcdefghijk12345" }],
       },
     } as never);
 

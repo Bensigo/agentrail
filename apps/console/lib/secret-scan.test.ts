@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  containsSecretShapedValue,
   scanForSecrets,
   summarizeFindings,
   REDACTION_PLACEHOLDER,
@@ -93,6 +94,63 @@ describe("scanForSecrets", () => {
     expect(res.clean).toBe(false);
     expect(res.findings.map((f) => f.kind)).toContain("generic_assigned_secret");
     expect(res.redacted).not.toContain("s3cr3t-value-here-9x8y");
+  });
+
+  it.each([
+    "authorization: supersecret",
+    "authorization: \"supersecret\"",
+    "authorization: \"supersecret\" before retrying",
+    "Use authorization: \"supersecret\".",
+    "token: supersecret",
+    "api_key: supersecret",
+    "token=abcdefghijk12345",
+    "api_key=abcdefghijk12345",
+  ])("detects colon/equal credential assignments", (value) => {
+    const res = scanForSecrets(value);
+    expect(res.clean).toBe(false);
+    expect(res.findings.map((finding) => finding.kind)).toContain("generic_assigned_secret");
+  });
+
+  it.each([
+    "Bearer abcdefghijklmnopqrstuvwxyz",
+    "bearer abcdefghijklmnopqrstuvwxyz",
+    "BEARER abcdefghijklmnopqrstuvwxyz",
+  ])("detects standalone Bearer credentials without case drift", (value) => {
+    expect(scanForSecrets(value).findings.map((finding) => finding.kind))
+      .toContain("bearer_token");
+  });
+
+  it("detects additional common provider prefixes", () => {
+    const providerValues = [
+      ["sk", "live", "abcdefghijklmnopqrstuvwx"].join("_"),
+      ["glpat", "abcdefghijklmnopqrstuvwx"].join("-"),
+      ["npm", "abcdefghijklmnopqrstuvwx"].join("_"),
+    ];
+    expect(providerValues.map((value) => scanForSecrets(value).clean)).toEqual([false, false, false]);
+  });
+
+  it("keeps ordinary credential-related prose clean", () => {
+    expect(scanForSecrets("The authorization step requires an owner.").clean).toBe(true);
+    expect(scanForSecrets("Reset your password from the account settings page.").clean).toBe(true);
+    expect(scanForSecrets("The token count is displayed in the footer.").clean).toBe(true);
+    expect(scanForSecrets("authorization: required before continuing").clean).toBe(true);
+    expect(scanForSecrets("token: generation happens after approval").clean).toBe(true);
+    expect(scanForSecrets("api_key: required for local testing").clean).toBe(true);
+    expect(scanForSecrets("Authorization: \"required\" by the owner").clean).toBe(true);
+  });
+
+  it("scans nested envelope keys, credential pairs, and values and fails closed for cycles", () => {
+    expect(containsSecretShapedValue({ outcomes: [{ observed: "token=abcdefghijk12345" }] }))
+      .toBe(true);
+    expect(containsSecretShapedValue({ "api_key=abcdefghijk12345": "masked" })).toBe(true);
+    expect(containsSecretShapedValue({ token: "abcdefghijk12345" })).toBe(true);
+    expect(containsSecretShapedValue({ api_key: "The key is not available yet." })).toBe(false);
+    expect(containsSecretShapedValue({ token: null, token_count: 12 })).toBe(false);
+    expect(containsSecretShapedValue({ outcomes: [{ observed: "The expected text was absent." }] }))
+      .toBe(false);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(containsSecretShapedValue(cyclic)).toBe(true);
   });
 
   it("collects multiple findings from one blob", () => {

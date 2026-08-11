@@ -51,7 +51,7 @@ export type AcceptanceDependencyObservationInput = {
   baseline: { headSha: string };
   security: {
     disposition: SecurityDisposition;
-    provider: string;
+    provider: "osv";
     reference: string;
     reportSha256: string;
   };

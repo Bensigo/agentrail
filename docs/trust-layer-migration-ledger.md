@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `f1f9220d`, after merged PRs
-#1677–#1681. PR #1682 carries the bounded R10.2 external-builder Pack
+Last reconciled: 2026-08-11 at main commit `ff1a1eda`, after merged PRs
+#1677–#1682. PR #1683 carries the bounded R11.1 Acceptance-first Console
 slice described below.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
@@ -162,8 +162,36 @@ Local R10.2 proof includes focused DB and Console tests, five fresh migrated
 PostgreSQL transaction cases, the full 1,689-test database suite, package
 typechecks/builds, scoped lint, and independent adversarial review. No external
 builder received the Pack, no dependency was installed, and no deployed/live
-or customer path was observed. R10 remains **FAIL / not release-ready** until
-PR #1682 merges and the deployed/live and customer proof gates are satisfied.
+or customer path was observed. R10.1 and R10.2 are source/test complete. R10
+remains **FAIL / not release-ready** until the deployed/live and customer proof
+gates are satisfied.
+
+## R11 progress
+
+PR #1683 carries the bounded R11.1 source/test slice. One tenant-scoped,
+set-based reader answers the seven primary Acceptance Record questions from
+exact Contract, head occurrence, review, decision, signed-merge, post-merge,
+Context Pack snapshot, and compiled-Pack custody. It acquires attached-PR locks
+in deterministic order, distinguishes A→B→A cycles by occurrence identity, and
+turns malformed, ambiguous, missing, or over-limit evidence into explicit
+unknown or not-recorded states instead of synthesizing an answer from raw
+timeline JSON.
+
+The primary sidebar now starts with Changes. Workspace Home shows a bounded
+Acceptance summary before the legacy Digest, the Changes page and member API
+use the same server projection, and Record detail returns to Changes instead of
+factory Work. The surface is read-only: it creates no issue, queue entry,
+dispatch, delivery, pull-request mutation, or merge request, and it does not
+present missing deployment, incident, or revert receipts as known negatives.
+
+Local R11.1 proof includes focused DB and Console tests, eight fresh migrated
+PostgreSQL summary cases, the full 1,698-test database suite, package
+typechecks/builds, scoped lint, and independent adversarial review. This is
+source/test and local PostgreSQL/UI-component proof only. No authenticated
+browser-to-server, deployed/live, or customer path was observed. R11.2 remains
+open for the strict full Contract/Pack detail, criterion evidence and artifact
+access, and packet-bound gated-issue path. R11 remains **FAIL / not
+release-ready**.
 
 ## Remaining canonical order
 

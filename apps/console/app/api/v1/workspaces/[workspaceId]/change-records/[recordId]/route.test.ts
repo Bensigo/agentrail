@@ -13,6 +13,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   readAcceptancePrReviewMetrics: vi.fn(),
   readAcceptanceRecordDetail: vi.fn(),
+  readCurrentAcceptanceCriterionOutcomeBundle: vi.fn(),
   readCurrentAcceptanceDependencyObservations: vi.fn(),
   readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
@@ -31,6 +32,7 @@ import {
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
   readAcceptanceRecordDetail,
+  readCurrentAcceptanceCriterionOutcomeBundle,
   readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
@@ -474,6 +476,65 @@ const currentAcceptanceDetail = {
   },
 };
 
+const postedCriterionDetail = {
+  ...currentAcceptanceDetail,
+  detail: {
+    ...currentAcceptanceDetail.detail,
+    pullRequest: {
+      ...currentAcceptanceDetail.detail.pullRequest,
+      current: {
+        ...currentAcceptanceDetail.detail.pullRequest.current,
+        reviewJob: {
+          kind: "recorded" as const,
+          id: CYCLE,
+          state: "posted" as const,
+          createdAt: CREATED,
+          updatedAt: UPDATED,
+        },
+      },
+      occurrences: [{
+        ...currentAcceptanceDetail.detail.pullRequest.occurrences[0],
+        reviewJob: {
+          kind: "recorded" as const,
+          id: CYCLE,
+          state: "posted" as const,
+          createdAt: CREATED,
+          updatedAt: UPDATED,
+        },
+      }],
+    },
+    proofMatrix: [{
+      ...currentAcceptanceDetail.detail.proofMatrix[0],
+      review: {
+        kind: "posted" as const,
+        reviewJobId: CYCLE,
+        verdict: "failed" as const,
+        postedReviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-1",
+        postedAttestationEventId: "00000000-0000-4000-8000-000000000077",
+        reviewedAt: UPDATED,
+      },
+    }],
+  },
+};
+
+const currentCriterionBundle = {
+  kind: "current" as const,
+  bundle: {
+    binding: {
+      workspaceId: WS,
+      recordId: RECORD,
+      repo: "ada/widgets",
+      prNumber: 98,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      reviewJobId: CYCLE,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      postedAttestationEventId: "00000000-0000-4000-8000-000000000077",
+      reviewVerdict: "failed" as const,
+    },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
@@ -487,6 +548,10 @@ beforeEach(() => {
   );
   vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(currentAcceptanceDetail as never);
   vi.mocked(readDependencyDraftProposalDetail).mockResolvedValue({ kind: "not_draft_proposal" } as never);
+  vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValue({
+    kind: "not_ready",
+    reason: "criterion_outcome_bundle_not_recorded",
+  } as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
     kind: "recorded",
     binding: currentFinalDecision.binding,
@@ -537,6 +602,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
     expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
     expect(readDependencyDraftProposalDetail).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceCriterionOutcomeBundle).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -553,6 +619,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
     expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
     expect(readDependencyDraftProposalDetail).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceCriterionOutcomeBundle).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -653,6 +720,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       },
       acceptanceDetail: JSON.parse(JSON.stringify(currentAcceptanceDetail)),
       dependencyDraftProposal: { kind: "not_draft_proposal" },
+      criterionOutcomes: {
+        kind: "not_ready",
+        reason: "criterion_outcome_bundle_not_recorded",
+      },
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
@@ -678,6 +749,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       recordId: RECORD,
     });
     expect(readDependencyDraftProposalDetail).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+    expect(readCurrentAcceptanceCriterionOutcomeBundle).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
     });
@@ -716,6 +791,59 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(JSON.stringify(body)).not.toContain("manager_commands");
     expect(JSON.stringify(body)).not.toContain("verification_commands");
     expect(JSON.stringify(body)).not.toContain("pnpm update secret-package");
+  });
+
+  it("redacts every private storage coordinate from the member-facing Record projection", async () => {
+    const privateKey = "review-evidence/private/exact.png";
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      events: [{
+        ...timeline.events[0],
+        payloadRef: {
+          kind: "review_result",
+          artifactKey: privateKey,
+          evidenceKey: privateKey,
+          evidenceKeys: [privateKey],
+          bootLogKey: "review-evidence/private/boot.log",
+          nested: { artifactKey: privateKey },
+          evidenceRef: "criterion:criterion-1:ui-result",
+        },
+      }],
+    } as never);
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({
+      ...currentCorrectionPackets,
+      packets: [{
+        ...currentCorrectionPackets.packets[0],
+        evidence: {
+          ...currentCorrectionPackets.packets[0]!.evidence,
+          artifactKey: privateKey,
+        },
+      }],
+    } as never);
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue({
+      ...currentAcceptanceDetail,
+      detail: {
+        ...currentAcceptanceDetail.detail,
+        artifactCustody: {
+          ...currentAcceptanceDetail.detail.artifactCustody,
+          bootLogKey: "review-evidence/private/boot.log",
+        },
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+    const body = await response.json();
+    const serialized = JSON.stringify(body);
+
+    expect(response.status).toBe(200);
+    for (const privateField of ["artifactKey", "evidenceKey", "evidenceKeys", "bootLogKey"]) {
+      expect(serialized).not.toContain(privateField);
+    }
+    expect(serialized).not.toContain("review-evidence/");
+    expect(serialized).toContain("criterion:criterion-1:ui-result");
+    expect(body.correctionPackets.correctionPacketPayloadSetSha256).toBe(
+      currentCorrectionPackets.correctionPacketPayloadSetSha256,
+    );
   });
 
   it("returns owner/admin decision capability without widening member read access", async () => {
@@ -874,6 +1002,66 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       kind: "unavailable",
       reason: "invalid_record_custody",
     });
+  });
+
+  it("downgrades a separately read criterion bundle when its exact head cycle races the timeline", async () => {
+    vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValue({
+      kind: "current",
+      bundle: {
+        binding: {
+          workspaceId: WS,
+          recordId: RECORD,
+          repo: "ada/widgets",
+          prNumber: 98,
+          headSha: "e".repeat(40),
+          headCycleId: "00000000-0000-4000-8000-000000000100",
+        },
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).criterionOutcomes).toEqual({ kind: "not_current" });
+  });
+
+  it("keeps a criterion bundle only when the strict detail has the same posted receipt", async () => {
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(postedCriterionDetail as never);
+    vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValue(
+      currentCriterionBundle as never,
+    );
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).criterionOutcomes).toEqual(currentCriterionBundle);
+  });
+
+  it("downgrades a criterion bundle when detail has not durably reached posted state", async () => {
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue({
+      ...postedCriterionDetail,
+      detail: {
+        ...postedCriterionDetail.detail,
+        pullRequest: {
+          ...postedCriterionDetail.detail.pullRequest,
+          current: {
+            ...postedCriterionDetail.detail.pullRequest.current,
+            reviewJob: {
+              ...postedCriterionDetail.detail.pullRequest.current.reviewJob,
+              state: "running",
+            },
+          },
+        },
+      },
+    } as never);
+    vi.mocked(readCurrentAcceptanceCriterionOutcomeBundle).mockResolvedValue(
+      currentCriterionBundle as never,
+    );
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).criterionOutcomes).toEqual({ kind: "not_current" });
   });
 
   it("does not combine a non-authoritative timeline with a current detail occurrence", async () => {

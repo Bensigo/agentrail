@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `49d41722`, after merged PR
-#1700. The bounded dependency source/test foundations are recorded below;
+Last reconciled: 2026-08-11 at main commit `13a528ce`, after merged PR
+#1702. The bounded dependency source/test foundations are recorded below;
 canonical R10 completion and release proof remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
@@ -376,9 +376,38 @@ delivery, execution, issue, pull-request, or merge authority, and it does not
 turn a draft proposal into a Context Pack. It preserves the existing
 fail-closed detail boundary and does not close the remaining R11.2 work.
 
-R11.2 remains open for the criterion-outcome and opaque artifact-custody path,
-then the packet-bound gated-issue path. R11 remains **FAIL / not
-release-ready**.
+The current R11.2b slice adds one immutable, Contract-ordered criterion-outcome
+bundle for the exact posted review cycle. The database rederives every outcome
+from the stored verification plan, deterministic execution attempt,
+reservation, result, correction packet, preview, GitHub post attempt, and
+confirmed Contract under the existing PR lock. It atomically appends the
+extended posted-review attestation and bundle, preserves a known external-post
+head race as historical custody, and never revives an earlier A occurrence
+after A→B→A. Partial pairs, forged storage keys, malformed or late receipts,
+and incompatible replays fail closed.
+
+Member routes expose only current bundle metadata and opaque deterministic
+artifact IDs. The server resolves the private object key, signs and consumes
+it internally, enforces an eight-second and two-megabyte proxy bound, and
+verifies the returned bytes against the receipt SHA-256 before responding.
+The complete member Record response recursively removes private artifact,
+evidence, and boot-log storage coordinates; the raw audit timeline cannot
+bypass that boundary. Review requests with more than 100 inline comments are
+rejected before any proof lookup or GitHub side effect. The Record detail view
+renders the exact current outcomes and artifact receipts without adding an
+issue, queue, dispatch, delivery, pull-request mutation, or merge action.
+
+Local R11.2b proof includes three boundary tests, eight fresh migrated PostgreSQL
+criterion-custody cases, the 89-case Change Record integration suite, 178
+focused Console route/proxy/component tests, the full 140-file / 1,774-test
+fresh-migrated database suite, package typechecks/builds, scoped lint, diff
+checks, and independent adversarial review. This is source/test and local
+PostgreSQL/component proof only. No authenticated browser flow, real
+artifact-store object, live GitHub write, deployed/live path, or customer
+outcome was observed.
+
+R11.2 remains open only for the packet-bound gated-issue path. R11 remains
+**FAIL / not release-ready**.
 
 ## R12 progress
 
@@ -416,13 +445,13 @@ deployed/live and customer proof.
 ## Remaining canonical order
 
 The remaining source implementation follows a dependency DAG, not strict
-R-number order. The R11.2 criterion/artifact slice remains before its
-packet-bound gated-issue dependent. Independent R10.1 v1 manager profiles may
-proceed in parallel with nonconflicting R11 slices; each R10.2 expansion waits
-for its safe R10.1 profile. R12.1 remediation is held for the owner; R12.2
-source/test remains closed. R10 source/test remains open. Lower-priority
-manager adapters remain explicit fail-closed extensions and must preserve
-R11.2a compatibility. The canonical requirements remain:
+R-number order. The remaining R11.2 source work is its packet-bound gated-issue
+slice. Independent R10.1 v1 manager profiles may proceed in parallel with
+nonconflicting R11 slices; each R10.2 expansion waits for its safe R10.1
+profile. R12.1 remediation is held for the owner; R12.2 source/test remains
+closed. R10 source/test remains open. Lower-priority manager adapters remain
+explicit fail-closed extensions and must preserve R11.2a and R11.2b
+compatibility. The canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

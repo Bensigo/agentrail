@@ -3,18 +3,24 @@ import {
   decideDependencyUpgradeContract,
   denyAlignmentBrief,
   getDependencyUpgradeContractById,
-  recordDependencyUpgradeContractEvent,
-  setDependencyUpgradeContractState,
-  enqueueGithubIssue,
-  stampPublishedIssueUrl,
   type JaceApprovalRow,
 } from "@agentrail/db-postgres";
 import { extractConfirmedBudgetAndModel } from "./alignment-brief";
-import { publishDependencyUpgradeIssue } from "./dependency-upgrade-publisher";
 
 export type ApprovalActor = {
   actorType: string;
   actorId: string;
+};
+
+export type DependencyContractQuarantinedOutcome = {
+  kind: "dependency_contract_quarantined";
+  decision: "approved" | "denied";
+  contractId: string | null;
+  reason:
+    | "legacy_dependency_contract_requires_r10_2_pack"
+    | "legacy_dependency_contract_binding_is_invalid"
+    | "legacy_dependency_contract_is_unavailable";
+  resolution?: "approved" | "refused" | "stale" | "already_resolved";
 };
 
 function actorForApproval(approval: JaceApprovalRow, actor?: ApprovalActor): ApprovalActor {
@@ -30,7 +36,7 @@ async function applyDependencyUpgradeContractDecision(
   approval: JaceApprovalRow,
   decision: "approved" | "denied",
   actor?: ApprovalActor
-): Promise<void> {
+): Promise<DependencyContractQuarantinedOutcome> {
   const rawContractId = approval.dependencyContractId;
   const payloadContractId = approval.toolInput["contractId"];
   if (
@@ -39,12 +45,22 @@ async function applyDependencyUpgradeContractDecision(
     (payloadContractId !== undefined && payloadContractId !== rawContractId)
   ) {
     console.error(`[approval-decision] dependency contract approval ${approval.id} has no matching persisted contract binding`);
-    return;
+    return {
+      kind: "dependency_contract_quarantined",
+      decision,
+      contractId: typeof rawContractId === "string" && rawContractId ? rawContractId : null,
+      reason: "legacy_dependency_contract_binding_is_invalid",
+    };
   }
-  let contract = await getDependencyUpgradeContractById(rawContractId);
+  const contract = await getDependencyUpgradeContractById(rawContractId);
   if (!contract || contract.workspaceId !== approval.workspaceId) {
     console.error(`[approval-decision] dependency contract ${rawContractId} is missing or cross-workspace`);
-    return;
+    return {
+      kind: "dependency_contract_quarantined",
+      decision,
+      contractId: rawContractId,
+      reason: "legacy_dependency_contract_is_unavailable",
+    };
   }
   const resolvedActor = actorForApproval(approval, actor);
 
@@ -55,76 +71,13 @@ async function applyDependencyUpgradeContractDecision(
     decision,
     actor: resolvedActor,
   });
-  if (decision === "denied" || resolved.status !== "approved" || !resolved.contract) return;
-  contract = resolved.contract;
-
-  const candidate = {
-    package: contract.packageName,
-    dependency_kind: contract.dependencyKind,
-    specifier: contract.specifier,
-    current_version: contract.currentVersion,
-    target_version: contract.targetVersion,
-    manifest_path: contract.manifestPath,
-    lockfile_path: contract.lockfilePath,
-    baseline_sha: contract.baselineSha,
-    fingerprint: contract.candidateFingerprint,
+  return {
+    kind: "dependency_contract_quarantined",
+    decision,
+    contractId: contract.id,
+    reason: "legacy_dependency_contract_requires_r10_2_pack",
+    resolution: resolved.status,
   };
-  try {
-    const published = await publishDependencyUpgradeIssue({
-      workspaceId: contract.workspaceId,
-      repositoryId: contract.repositoryId,
-      approvalId: approval.id,
-      contractId: contract.id,
-      candidate,
-      proposal: contract.proposal as Parameters<typeof publishDependencyUpgradeIssue>[0]["proposal"],
-    });
-    const stamped = await stampPublishedIssueUrl(approval.id, published.url);
-    if (stamped === "conflict" || stamped === "not_approved") {
-      throw new Error(`approval URL stamp failed: ${stamped}`);
-    }
-    await enqueueGithubIssue({
-      workspaceId: contract.workspaceId,
-      repoFullName: published.repoFullName,
-      number: published.number,
-      title: (contract.proposal as Record<string, unknown>).title as string,
-      body: published.body,
-    });
-    await setDependencyUpgradeContractState({
-      workspaceId: contract.workspaceId,
-      contractId: contract.id,
-      state: "published",
-      issueUrl: published.url,
-      issueNumber: published.number,
-      lastError: null,
-    });
-    await recordDependencyUpgradeContractEvent({
-      workspaceId: contract.workspaceId,
-      contractId: contract.id,
-      candidateFingerprint: contract.candidateFingerprint,
-      actor: resolvedActor,
-      decision: "published",
-      approvalId: approval.id,
-      details: { issueUrl: published.url, issueNumber: published.number },
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "GitHub issue publication failed";
-    await setDependencyUpgradeContractState({
-      workspaceId: contract.workspaceId,
-      contractId: contract.id,
-      state: "needs-human-decision",
-      lastError: reason,
-    });
-    await recordDependencyUpgradeContractEvent({
-      workspaceId: contract.workspaceId,
-      contractId: contract.id,
-      candidateFingerprint: contract.candidateFingerprint,
-      actor: resolvedActor,
-      decision: "failed",
-      approvalId: approval.id,
-      details: { reason },
-    });
-    console.error(`[approval-decision] dependency contract ${contract.id} publication failed:`, error);
-  }
 }
 
 /**
@@ -167,17 +120,15 @@ export async function applyAlignmentDecision(
   approval: JaceApprovalRow,
   decision: "approved" | "denied",
   actor?: ApprovalActor
-): Promise<void> {
-  // The runner proposal boundary historically stored this as a `create_issue`
-  // approval with the server-owned dependencyContractId marker. Treat that
-  // marker as part of the dedicated dependency seam so an approved candidate
-  // cannot resolve successfully and then silently skip issue publication.
+): Promise<DependencyContractQuarantinedOutcome | void> {
+  // Legacy dependency approvals retain their immutable decision truth, but
+  // cannot publish an issue or enter the builder queue. A future R10.2 Pack
+  // must establish the dedicated builder handoff before any delivery occurs.
   if (
     approval.toolName === "dependency_upgrade_contract" ||
     typeof approval.dependencyContractId === "string"
   ) {
-    await applyDependencyUpgradeContractDecision(approval, decision, actor);
-    return;
+    return applyDependencyUpgradeContractDecision(approval, decision, actor);
   }
   if (!approval.queueEntryId) return;
 

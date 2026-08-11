@@ -147,6 +147,7 @@ jobs:
           app/api/v1/runner/pr-review/route.test.ts
           app/api/v1/runner/acceptance-dependency-observations/route.test.ts
           app/api/v1/runner/change-record/pr/route.test.ts
+          app/api/v1/runner/dependency-upgrade-proposals/route.test.ts
           app/api/v1/agent/acceptance-correction-packets/route.test.ts
           app/components/sidebar-nav.test.ts
           'app/(dashboard)/dashboard/[workspaceId]/page.test.ts'
@@ -170,6 +171,8 @@ jobs:
           lib/github-correction-carrier-comment.test.ts
           lib/github-correction-carrier.test.ts
           lib/github-correction-dispatch-production.test.ts
+          lib/dependency-observation-draft.test.ts
+          lib/approval-decision-dependency-upgrade.test.ts
           lib/acceptance-dependency-observation.test.ts
           lib/acceptance-context-pack-compiler.test.ts
           lib/acceptance-context-pack-source-custody.test.ts

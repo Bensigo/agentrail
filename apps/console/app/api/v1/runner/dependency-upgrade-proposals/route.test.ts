@@ -1,55 +1,52 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  attachDependencyUpgradeApproval: vi.fn(),
-  createOrGetDependencyUpgradeContract: vi.fn(),
-  findDependencyCandidate: vi.fn(),
-  getDependencyUpgradeContract: vi.fn(),
-  latestTelegramSessionForWorkspace: vi.fn(),
-  recordDependencyUpgradeContractEvent: vi.fn(),
-  refreshDependencyUpgradeContractProposal: vi.fn(),
-  recordApprovalRequest: vi.fn(),
-  validateAcceptanceCriteria: vi.fn(() => ({ ok: true, criteria: ["AC1"] })),
-}));
-vi.mock("../../../../../lib/approval-message", () => ({ renderApprovalMessage: vi.fn(() => "approval") }));
-vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
-  buildApprovalKeyboard: vi.fn(() => ({ inline_keyboard: [] })),
-  sendTelegramMessage: vi.fn(async () => ({ ok: true })),
+  createDraftAcceptanceRecordFromDependencyObservation: vi.fn(),
+  dependencyObservationDraftErrorCodes: [
+    "not_found",
+    "unsupported_manager",
+    "unsafe_custody",
+    "conflict",
+  ],
 }));
 
-import {
-  attachDependencyUpgradeApproval,
-  createOrGetDependencyUpgradeContract,
-  findDependencyCandidate,
-  getDependencyUpgradeContract,
-  latestTelegramSessionForWorkspace,
-  recordDependencyUpgradeContractEvent,
-  refreshDependencyUpgradeContractProposal,
-  recordApprovalRequest,
-} from "@agentrail/db-postgres";
+import { createDraftAcceptanceRecordFromDependencyObservation } from "@agentrail/db-postgres";
 import { POST } from "./route";
-import { computeDependencyCandidateFingerprint } from "../../../../../lib/dependency-upgrade-contract";
 
 const SECRET = "jace-secret";
-const candidate = {
-  package: "react",
-  dependency_kind: "dependencies",
-  specifier: "^18.0.0",
-  current_version: "18.2.0",
-  target_version: "18.3.0",
-  manifest_path: "package.json",
-  lockfile_path: "pnpm-lock.yaml",
-  baseline_sha: "a".repeat(40),
-  fingerprint: "",
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const WATCH_ID = "22222222-2222-4222-8222-222222222222";
+const FINGERPRINT = `sha256:${"a".repeat(64)}`;
+const locator = {
+  workspaceId: WORKSPACE_ID,
+  watchId: WATCH_ID,
+  candidateFingerprint: FINGERPRINT,
 };
-candidate.fingerprint = computeDependencyCandidateFingerprint(candidate);
-const contract = { id: "contract-1", state: "needs-human-decision", approvalId: null };
+const draftResult = {
+  record: { id: "record-1", repo: "acme/widgets" },
+  contract: { id: "contract-1", version: 1 },
+  event: { id: "event-1" },
+  observation: { id: "observation-1", key: "dependency-observation:one" },
+  profile: {
+    ecosystem: "node",
+    manager: "pnpm",
+    profile: "pnpm_lockfile_only_v1",
+    capability: "proposal_observation_only",
+  },
+};
 
-function request(body: unknown, auth = true) {
+function request(
+  body: unknown,
+  options: { auth?: boolean; contentType?: string } = {}
+) {
   return new NextRequest("http://localhost/api/v1/runner/dependency-upgrade-proposals", {
     method: "POST",
-    headers: { "content-type": "application/json", ...(auth ? { Authorization: `Bearer ${SECRET}` } : {}) },
+    headers: {
+      "content-type": options.contentType ?? "application/json",
+      ...(options.auth === false ? {} : { Authorization: `Bearer ${SECRET}` }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -57,125 +54,138 @@ function request(body: unknown, auth = true) {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
-  vi.mocked(findDependencyCandidate).mockResolvedValue({ observationId: "obs", watchId: "watch", repositoryId: "repo", observationKey: "key", baselineSha: candidate.baseline_sha, candidate } as never);
-  vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract, created: true } as never);
-  vi.mocked(getDependencyUpgradeContract).mockResolvedValue(contract as never);
-  vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null as never);
-  vi.mocked(recordDependencyUpgradeContractEvent).mockResolvedValue({} as never);
+  vi.mocked(createDraftAcceptanceRecordFromDependencyObservation).mockResolvedValue({
+    ...draftResult,
+    created: true,
+  } as never);
 });
 
-describe("dependency candidate proposal boundary", () => {
-  it("fails closed without the Jace secret", async () => {
-    const response = await POST(request({ workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint }, false));
+describe("dependency observation draft boundary", () => {
+  it("authenticates before reading or resolving the locator", async () => {
+    const response = await POST(request(locator, { auth: false }));
+
     expect(response.status).toBe(401);
-    expect(findDependencyCandidate).not.toHaveBeenCalled();
+    expect(createDraftAcceptanceRecordFromDependencyObservation).not.toHaveBeenCalled();
   });
 
-  it("never trusts a candidate supplied by the caller", async () => {
-    vi.mocked(findDependencyCandidate).mockResolvedValue(null);
-    const response = await POST(request({ workspaceId: "ws", watchId: "watch", candidateFingerprint: "sha256:forged" }));
-    expect(response.status).toBe(409);
-    expect(createOrGetDependencyUpgradeContract).not.toHaveBeenCalled();
+  it("accepts only the three opaque locator fields", async () => {
+    for (const extra of ["repo", "baseSha", "manifestPath", "candidate", "profile", "evidence"]) {
+      const response = await POST(request({ ...locator, [extra]: "caller-authority" }));
+      expect(response.status).toBe(400);
+    }
+    expect(createDraftAcceptanceRecordFromDependencyObservation).not.toHaveBeenCalled();
   });
 
-  it("persists an incomplete proposal as needs-human-decision and creates no approval", async () => {
-    const response = await POST(request({ workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint }));
-    expect(response.status).toBe(202);
-    expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
-      state: "needs-human-decision",
-      observationKey: "key",
+  it("rejects noncanonical digests and media types", async () => {
+    const uppercase = await POST(request({
+      ...locator,
+      candidateFingerprint: FINGERPRINT.toUpperCase(),
     }));
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
+    const wrongMedia = await POST(request(locator, { contentType: "text/plain" }));
+
+    expect(uppercase.status).toBe(400);
+    expect(wrongMedia.status).toBe(400);
+    expect(createDraftAcceptanceRecordFromDependencyObservation).not.toHaveBeenCalled();
   });
 
-  it("keeps unsupported evidence visible and routes the proposal to needs-human-decision", async () => {
-    const response = await POST(request({
-      workspaceId: "ws",
-      watchId: "watch",
-      candidateFingerprint: candidate.fingerprint,
-      evidence: {
-        releaseEvidence: [null, "https://github.com/facebook/react/releases/tag/v18.3.0"],
-        usageScope: ["Direct imports are limited to the web package."],
-        transitiveCompatibility: "The target lock resolution has no peer conflicts.",
-        security: "No known advisories after review.",
-        baselineTests: ["pnpm test -- --runInBand"],
-        targetTests: ["pnpm test -- --runInBand"],
-      },
-    }));
+  it("returns only the server-derived draft identity and unresolved evidence boundary", async () => {
+    const response = await POST(request(locator));
     const payload = await response.json();
 
-    expect(response.status).toBe(202);
-    expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
-      state: "needs-human-decision",
-      observationKey: "key",
-    }));
-    expect(payload.needsHumanDecision).toEqual(expect.arrayContaining([
-      expect.stringContaining("releaseEvidence contains unsupported evidence"),
-    ]));
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
-  });
-
-  it("creates one candidate-bound approval only after complete evidence is present", async () => {
-    const proposedContract = { id: "contract-1", state: "proposed", approvalId: null };
-    vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract: proposedContract, created: true } as never);
-    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue({
-      id: "session-1", eveSessionId: "eve-1", chatIdentityId: "chat-1", channel: "telegram", conversationKey: "chat",
-    } as never);
-    vi.mocked(recordApprovalRequest).mockResolvedValue({
-      created: true,
-      approval: { id: "approval-1", callbackToken: "callback", status: "pending" },
-    } as never);
-    vi.mocked(attachDependencyUpgradeApproval).mockResolvedValue({
-      ...proposedContract, approvalId: "approval-1",
-    } as never);
-    vi.mocked(getDependencyUpgradeContract).mockResolvedValue({
-      ...proposedContract, approvalId: "approval-1",
-    } as never);
-
-    const response = await POST(request({
-      workspaceId: "ws",
-      watchId: "watch",
-      candidateFingerprint: candidate.fingerprint,
-      evidence: {
-        releaseEvidence: ["https://github.com/facebook/react/releases/tag/v18.3.0"],
-        usageScope: ["Direct imports are limited to the web package."],
-        transitiveCompatibility: "The target lock resolution has no peer conflicts.",
-        security: "No known advisories after review.",
-        baselineTests: ["pnpm test -- --runInBand"],
-        targetTests: ["pnpm test -- --runInBand"],
-      },
-    }));
-
     expect(response.status).toBe(201);
-    expect(recordApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
-      toolName: "dependency_upgrade_contract",
-      dependencyContractId: "contract-1",
-      requestId: `dependency-upgrade:${candidate.fingerprint}`,
-      toolInput: expect.objectContaining({
-        candidateFingerprint: candidate.fingerprint,
-        observationKey: "key",
-        proposal: expect.objectContaining({ candidateFingerprint: candidate.fingerprint, observationKey: "key" }),
-      }),
-    }));
-    expect(refreshDependencyUpgradeContractProposal).not.toHaveBeenCalled();
+    expect(createDraftAcceptanceRecordFromDependencyObservation).toHaveBeenCalledWith(locator);
+    expect(payload).toEqual({
+      record: { id: "record-1", repo: "acme/widgets" },
+      contract: { id: "contract-1", version: 1, status: "draft" },
+      profile: {
+        ecosystem: "node",
+        manager: "pnpm",
+        profile: "pnpm_lockfile_only_v1",
+        capability: "proposal_observation_only",
+      },
+      evidence: {
+        status: "unresolved",
+        message:
+          "This draft records proposal custody only. Release, usage, runtime, target-lock, security, human confirmation, approval and builder handoff remain unproven.",
+      },
+    });
+    for (const forbiddenKey of [
+      "candidate",
+      "baseline",
+      "lockfile",
+      "commands",
+      "approvalId",
+      "token",
+    ]) {
+      expect(payload).not.toHaveProperty(forbiddenKey);
+    }
   });
 
-  it("reuses an existing approval on a duplicate proposal request", async () => {
-    const proposedContract = { id: "contract-1", state: "proposed", approvalId: "approval-1" };
-    vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract: proposedContract, created: false } as never);
-    const response = await POST(request({
-      workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint,
-      evidence: {
-        releaseEvidence: ["https://github.com/facebook/react/releases/tag/v18.3.0"],
-        usageScope: ["Direct imports are limited to the web package."],
-        transitiveCompatibility: "No peer conflicts.",
-        security: "No known advisories.",
-        baselineTests: ["pnpm test"],
-        targetTests: ["pnpm test"],
-      },
-    }));
+  it("returns 200 for an exact immutable replay", async () => {
+    vi.mocked(createDraftAcceptanceRecordFromDependencyObservation).mockResolvedValue({
+      ...draftResult,
+      created: false,
+    } as never);
+
+    const response = await POST(request(locator));
+
     expect(response.status).toBe(200);
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
-    expect(latestTelegramSessionForWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["not_found", 404, { error: "Dependency observation not found" }],
+    ["unsupported_manager", 409, {
+      error: "Dependency manager has no admitted proposal-observation profile",
+      reason: "unsupported_manager",
+      capability: "unavailable",
+    }],
+    ["unsafe_custody", 409, {
+      error: "Dependency observation custody is unsafe for drafting",
+      reason: "unsafe_custody",
+      capability: "unavailable",
+    }],
+    ["conflict", 409, {
+      error: "Dependency observation is already bound to a different draft",
+    }],
+  ] as const)("maps %s to a closed sanitized response", async (code, status, expected) => {
+    vi.mocked(createDraftAcceptanceRecordFromDependencyObservation).mockRejectedValue({ code });
+
+    const response = await POST(request(locator));
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(expected);
+  });
+
+  it("withholds unexpected storage errors", async () => {
+    vi.mocked(createDraftAcceptanceRecordFromDependencyObservation).mockRejectedValue(
+      new Error("postgres password=super-secret")
+    );
+
+    const response = await POST(request(locator));
+    const payload = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(payload).toEqual({
+      error: "Dependency observation draft storage is temporarily unavailable",
+    });
+    expect(JSON.stringify(payload)).not.toContain("super-secret");
+  });
+
+  it("has no legacy approval, publisher, queue, Pack, PR, or merge seam", () => {
+    const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+    for (const forbidden of [
+      "recordApprovalRequest",
+      "attachDependencyUpgradeApproval",
+      "latestTelegramSessionForWorkspace",
+      "sendTelegramMessage",
+      "publishDependencyUpgradeIssue",
+      "enqueueGithubIssue",
+      "createAcceptanceContextPack",
+      "createIssue(",
+      "createPullRequest",
+      "mergePullRequest",
+    ]) {
+      expect(source).not.toContain(forbidden);
+    }
   });
 });

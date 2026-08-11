@@ -3179,6 +3179,7 @@ export { countAccountRunsStartedInWindow } from "./capacity.js";
 
 export * from "./dependency_watches.js";
 export * from "./dependency_upgrade_contracts.js";
+export * from "./dependency_observation_acceptance_records.js";
 export {
   getRequirementDecisionReport,
   type RequirementDecisionReport,

@@ -20,13 +20,14 @@ const VALID = {
   recordId: "22222222-2222-4222-8222-222222222222",
   compiledPackId: "33333333-3333-4333-8333-333333333333",
   candidate: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     package: "@acme/widget",
     dependencyKind: "dependencies",
     specifier: "^1.2.0",
     currentVersion: "1.2.3",
     targetVersion: "1.3.0",
   },
-  runtime: { disposition: "safe", nodeVersion: "22.14.0", evidenceSha256: "a".repeat(64) },
+  runtime: { identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" }, disposition: "safe", version: "22.14.0", evidenceSha256: "a".repeat(64) },
   packageManager: {
     disposition: "safe",
     name: "pnpm",
@@ -44,6 +45,7 @@ const VALID = {
   },
   baseline: { headSha: "f".repeat(40) },
   security: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     disposition: "clear",
     provider: "osv",
     reference: "osv:npm:@acme/widget@1.3.0",
@@ -153,6 +155,39 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledTimes(1);
     expect((await response.json()).status).toBe("refused_unsafe_runtime");
+  });
+
+  it("passes a bounded unsupported Poetry identity to the DB without pnpm coercion", async () => {
+    const raw = structuredClone(VALID);
+    const identity = { ecosystem: "python", manager: "poetry", profile: "poetry_lock_v1" };
+    raw.candidate = { ...raw.candidate, identity, currentVersion: "1.0rc1", targetVersion: "1.0rc2" };
+    raw.runtime = { ...raw.runtime, identity, version: "cpython-3.13" };
+    raw.packageManager = {
+      ...raw.packageManager,
+      name: "poetry",
+      version: "2.1.4",
+      profile: "poetry_lock_v1",
+      updateArgv: ["poetry", "update", "@acme/widget", "--lock"],
+    };
+    raw.manifest = { ...raw.manifest, path: "pyproject.toml" };
+    raw.lockfile = { ...raw.lockfile, path: "poetry.lock" };
+    raw.security = { ...raw.security, identity, provider: "opaque", reference: "opaque:poetry-observation" };
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("recorded", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+    const response = await POST(request(raw));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(expect.objectContaining({
+      candidate: expect.objectContaining({ identity, currentVersion: "1.0rc1" }),
+      runtime: expect.objectContaining({ identity, version: "cpython-3.13" }),
+      packageManager: expect.objectContaining({ name: "poetry", profile: "poetry_lock_v1" }),
+      manifest: expect.objectContaining({ path: "pyproject.toml" }),
+      lockfile: expect.objectContaining({ path: "poetry.lock" }),
+      security: expect.objectContaining({ identity, provider: "opaque" }),
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      status: "refused_unsupported_profile", reasons: ["unsupported_manager_profile"],
+    });
   });
 
   it.each([

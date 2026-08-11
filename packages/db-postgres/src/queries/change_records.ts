@@ -7629,6 +7629,7 @@ export async function resolveAcceptanceCompiledContextPack(
 
 export type AcceptanceDependencyObservationStatus =
   | "observed"
+  | "refused_unsupported_profile"
   | "refused_unsafe_runtime"
   | "refused_lockfile"
   | "refused_baseline"
@@ -7636,10 +7637,11 @@ export type AcceptanceDependencyObservationStatus =
   | "not_proven";
 
 export type AcceptanceDependencyObservationReason =
+  | "unsupported_manager_profile"
   | "baseline_head_mismatch"
   | "manifest_source_not_proven"
   | "lockfile_source_not_proven"
-  | "unsafe_node_runtime"
+  | "unsafe_runtime"
   | "unsafe_package_manager"
   | "unsafe_package_manager_profile"
   | "unsafe_package_manager_argv"
@@ -7656,16 +7658,18 @@ export type AcceptanceDependencyObservationReason =
   | "security_evidence_ambiguous";
 
 export type AcceptanceDependencyCandidate = {
+  identity: AcceptanceDependencyProfileIdentity;
   package: string;
-  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+  dependencyKind: string;
   specifier: string;
   currentVersion: string;
   targetVersion: string;
 };
 
 export type AcceptanceDependencyRuntimeEvidence = {
+  identity: AcceptanceDependencyProfileIdentity;
   disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
-  nodeVersion: string | null;
+  version: string | null;
   evidenceSha256: string;
 };
 
@@ -7693,10 +7697,18 @@ export type AcceptanceDependencyLockfileEvidence = {
 export type AcceptanceDependencyBaselineEvidence = { headSha: string };
 
 export type AcceptanceDependencySecurityEvidence = {
+  identity: AcceptanceDependencyProfileIdentity;
   disposition: "clear" | "affected" | "unavailable" | "ambiguous";
-  provider: "osv";
+  provider: string;
   reference: string;
   reportSha256: string;
+};
+
+/** Explicit identity; the server never infers Node, npm, pnpm, or an OSV namespace. */
+export type AcceptanceDependencyProfileIdentity = {
+  ecosystem: string;
+  manager: string;
+  profile: string;
 };
 
 export type RecordAcceptanceDependencyObservationInput = {
@@ -7774,10 +7786,14 @@ export class AcceptanceDependencyObservationConflictError extends Error {
 }
 
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND = "acceptance_dependency_observation";
-const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 1;
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION = 1;
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 2;
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE = "dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR = "server:dependency-observation";
 const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
+const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
+};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -7796,6 +7812,65 @@ function acceptanceDependencySecurityReference(candidate: AcceptanceDependencyCa
   return `osv:npm:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function parseAcceptanceDependencyProfileIdentity(value: unknown): AcceptanceDependencyProfileIdentity | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["ecosystem", "manager", "profile"])
+    || !safeDependencyEvidenceText(value["ecosystem"], 64)
+    || !safeDependencyEvidenceText(value["manager"], 64)
+    || !safeDependencyEvidenceText(value["profile"], 64)
+    || !SAFE_PACKAGE_MANAGER_NAME.test(value["ecosystem"])
+    || !SAFE_PACKAGE_MANAGER_NAME.test(value["manager"])
+    || !SAFE_PACKAGE_MANAGER_NAME.test(value["profile"])) return null;
+  return {
+    ecosystem: value["ecosystem"], manager: value["manager"], profile: value["profile"],
+  };
+}
+
+function sameAcceptanceDependencyProfile(
+  left: AcceptanceDependencyProfileIdentity,
+  right: AcceptanceDependencyProfileIdentity,
+): boolean {
+  return left.ecosystem === right.ecosystem && left.manager === right.manager && left.profile === right.profile;
+}
+
+type AcceptanceDependencyObservationProfile = {
+  identity: AcceptanceDependencyProfileIdentity;
+  candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
+  runtimeVersionIsValid(version: string): boolean;
+  packageManagerVersionIsValid(version: string): boolean;
+  manifestPathIsValid(path: string): boolean;
+  lockfilePathIsValid(path: string): boolean;
+  securityIsValid(security: AcceptanceDependencySecurityEvidence, candidate: AcceptanceDependencyCandidate): boolean;
+  expectedArgv(candidate: AcceptanceDependencyCandidate): string[];
+};
+
+/** Closed server-owned capability registry. Adding a manager requires one new profile contract. */
+const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
+  ["node:pnpm:pnpm_lockfile_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
+    candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
+      && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
+      && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
+      && ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].includes(candidate.dependencyKind),
+    runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    manifestPathIsValid: (path) => path === "package.json" || path.endsWith("/package.json"),
+    lockfilePathIsValid: (path) => path === "pnpm-lock.yaml" || path.endsWith("/pnpm-lock.yaml"),
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === acceptanceDependencySecurityReference(candidate),
+    expectedArgv: (candidate) => [
+      "pnpm", "update", `${candidate.package}@${candidate.targetVersion}`,
+      "--lockfile-only", "--ignore-scripts",
+    ],
+  }],
+]);
+
+function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {
+  const profile = ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES.get(
+    `${identity.ecosystem}:${identity.manager}:${identity.profile}`
+  );
+  return profile && sameAcceptanceDependencyProfile(profile.identity, identity) ? profile : null;
+}
+
 function parseRecordAcceptanceDependencyObservationInput(
   input: unknown
 ): RecordAcceptanceDependencyObservationInput | null {
@@ -7809,25 +7884,28 @@ function parseRecordAcceptanceDependencyObservationInput(
     || !isRecord(input["baseline"]) || !isRecord(input["security"])) return null;
 
   const candidate = input["candidate"];
-  if (!hasExactKeys(candidate, ["package", "dependencyKind", "specifier", "currentVersion", "targetVersion"])
+  const candidateIdentity = parseAcceptanceDependencyProfileIdentity(candidate["identity"]);
+  if (!hasExactKeys(candidate, ["identity", "package", "dependencyKind", "specifier", "currentVersion", "targetVersion"])
     || typeof candidate["package"] !== "string" || candidate["package"].length > 214
-    || !NPM_PACKAGE_NAME.test(candidate["package"])
-    || (candidate["dependencyKind"] !== "dependencies" && candidate["dependencyKind"] !== "devDependencies"
-      && candidate["dependencyKind"] !== "optionalDependencies" && candidate["dependencyKind"] !== "peerDependencies")
-    || !safeDependencyEvidenceText(candidate["specifier"], 256) || UNSAFE_NPM_SPECIFIER.test(candidate["specifier"])
-    || !safeDependencyEvidenceText(candidate["currentVersion"], 128) || !EXACT_SEMVER.test(candidate["currentVersion"])
-    || !safeDependencyEvidenceText(candidate["targetVersion"], 128) || !EXACT_SEMVER.test(candidate["targetVersion"])
-    || candidate["currentVersion"] === candidate["targetVersion"]) return null;
+    || !candidateIdentity || !safeDependencyEvidenceText(candidate["package"], 214)
+    || !safeDependencyEvidenceText(candidate["dependencyKind"], 64)
+    || !safeDependencyEvidenceText(candidate["specifier"], 256)
+    || !safeDependencyEvidenceText(candidate["currentVersion"], 128)
+    || !safeDependencyEvidenceText(candidate["targetVersion"], 128)
+    || candidate["currentVersion"] === candidate["targetVersion"]
+    || (acceptanceDependencyObservationProfile(candidateIdentity) !== null
+      && !acceptanceDependencyObservationProfile(candidateIdentity)!.candidateIsValid(candidate as AcceptanceDependencyCandidate))) return null;
 
   const runtime = input["runtime"];
-  if (!hasExactKeys(runtime, ["disposition", "nodeVersion", "evidenceSha256"])
+  const runtimeIdentity = parseAcceptanceDependencyProfileIdentity(runtime["identity"]);
+  if (!hasExactKeys(runtime, ["identity", "disposition", "version", "evidenceSha256"])
     || (runtime["disposition"] !== "safe" && runtime["disposition"] !== "unsafe"
       && runtime["disposition"] !== "unavailable" && runtime["disposition"] !== "ambiguous")
-    || (runtime["nodeVersion"] !== null && !safeDependencyEvidenceText(runtime["nodeVersion"], 64))
+    || !runtimeIdentity || (runtime["version"] !== null && !safeDependencyEvidenceText(runtime["version"], 64))
     || (runtime["disposition"] === "safe"
-      ? typeof runtime["nodeVersion"] !== "string" || !EXACT_SEMVER.test(runtime["nodeVersion"])
+      ? typeof runtime["version"] !== "string"
       : (runtime["disposition"] === "unavailable" || runtime["disposition"] === "ambiguous")
-        && runtime["nodeVersion"] !== null)
+        && runtime["version"] !== null)
     || !isSha256(runtime["evidenceSha256"])) return null;
 
   const packageManager = input["packageManager"];
@@ -7841,7 +7919,7 @@ function parseRecordAcceptanceDependencyObservationInput(
     || !SAFE_PACKAGE_MANAGER_NAME.test(packageManager["name"])
     || (packageManager["version"] !== null && !safeDependencyEvidenceText(packageManager["version"], 64))
     || (packageManager["disposition"] === "safe"
-      ? typeof packageManager["version"] !== "string" || !EXACT_SEMVER.test(packageManager["version"])
+      ? typeof packageManager["version"] !== "string"
       : (packageManager["disposition"] === "unavailable" || packageManager["disposition"] === "ambiguous")
         && packageManager["version"] !== null)
     || !safeDependencyEvidenceText(packageManager["profile"], 64)
@@ -7853,7 +7931,6 @@ function parseRecordAcceptanceDependencyObservationInput(
   const manifest = input["manifest"];
   if (!hasExactKeys(manifest, ["path", "blobSha"])
     || !safeDependencyEvidencePath(manifest["path"])
-    || !(manifest["path"] === "package.json" || manifest["path"].endsWith("/package.json"))
     || !isSha1(manifest["blobSha"])) return null;
 
   const lockfile = input["lockfile"];
@@ -7862,7 +7939,6 @@ function parseRecordAcceptanceDependencyObservationInput(
       && lockfile["disposition"] !== "uncommitted" && lockfile["disposition"] !== "unavailable"
       && lockfile["disposition"] !== "ambiguous")
     || !safeDependencyEvidencePath(lockfile["path"])
-    || !(lockfile["path"] === "pnpm-lock.yaml" || lockfile["path"].endsWith("/pnpm-lock.yaml"))
     || !isSha256(lockfile["evidenceSha256"])
     || (lockfile["disposition"] === "present"
       ? !isSha1(lockfile["blobSha"])
@@ -7872,11 +7948,12 @@ function parseRecordAcceptanceDependencyObservationInput(
   if (!hasExactKeys(baseline, ["headSha"]) || !isSha1(baseline["headSha"])) return null;
 
   const security = input["security"];
-  if (!hasExactKeys(security, ["disposition", "provider", "reference", "reportSha256"])
+  const securityIdentity = parseAcceptanceDependencyProfileIdentity(security["identity"]);
+  if (!hasExactKeys(security, ["identity", "disposition", "provider", "reference", "reportSha256"])
     || (security["disposition"] !== "clear" && security["disposition"] !== "affected"
       && security["disposition"] !== "unavailable" && security["disposition"] !== "ambiguous")
-    || security["provider"] !== "osv"
-    || security["reference"] !== acceptanceDependencySecurityReference(candidate as AcceptanceDependencyCandidate)
+    || !securityIdentity || !safeDependencyEvidenceText(security["provider"], 64)
+    || !safeDependencyEvidenceText(security["reference"], 512)
     || !isSha256(security["reportSha256"])) return null;
 
   return {
@@ -7884,15 +7961,17 @@ function parseRecordAcceptanceDependencyObservationInput(
     recordId: (input["recordId"] as string).toLowerCase(),
     compiledPackId: (input["compiledPackId"] as string).toLowerCase(),
     candidate: {
+      identity: candidateIdentity,
       package: candidate["package"] as string,
-      dependencyKind: candidate["dependencyKind"] as AcceptanceDependencyCandidate["dependencyKind"],
+      dependencyKind: candidate["dependencyKind"] as string,
       specifier: candidate["specifier"] as string,
       currentVersion: candidate["currentVersion"] as string,
       targetVersion: candidate["targetVersion"] as string,
     },
     runtime: {
+      identity: runtimeIdentity,
       disposition: runtime["disposition"] as AcceptanceDependencyRuntimeEvidence["disposition"],
-      nodeVersion: runtime["nodeVersion"] as string | null,
+      version: runtime["version"] as string | null,
       evidenceSha256: (runtime["evidenceSha256"] as string).toLowerCase(),
     },
     packageManager: {
@@ -7916,8 +7995,9 @@ function parseRecordAcceptanceDependencyObservationInput(
     },
     baseline: { headSha: (baseline["headSha"] as string).toLowerCase() },
     security: {
+      identity: securityIdentity,
       disposition: security["disposition"] as AcceptanceDependencySecurityEvidence["disposition"],
-      provider: "osv",
+      provider: security["provider"] as string,
       reference: security["reference"] as string,
       reportSha256: (security["reportSha256"] as string).toLowerCase(),
     },
@@ -7925,6 +8005,21 @@ function parseRecordAcceptanceDependencyObservationInput(
 }
 
 function acceptanceDependencyCandidateFingerprint(
+  candidate: AcceptanceDependencyCandidate,
+  manifestPath: string,
+): string {
+  return `sha256:${acceptanceContextPackCanonicalSha256({
+    identity: candidate.identity,
+    manifestPath,
+    package: candidate.package,
+    dependencyKind: candidate.dependencyKind,
+    specifier: candidate.specifier,
+    currentVersion: candidate.currentVersion,
+    targetVersion: candidate.targetVersion,
+  })}`;
+}
+
+function legacyAcceptanceDependencyCandidateFingerprint(
   candidate: AcceptanceDependencyCandidate,
   manifestPath: string,
 ): string {
@@ -7943,14 +8038,14 @@ function acceptanceDependencyObservationEventKey(
   headCycleId: string,
   candidateFingerprint: string
 ): string {
-  return `acceptance-dependency-observation:${headCycleId}:${candidateFingerprint.slice("sha256:".length)}`;
+  return `acceptance-dependency-observation:v${ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION}:${headCycleId}:${candidateFingerprint.slice("sha256:".length)}`;
 }
 
-function expectedPnpmUpdateArgv(candidate: AcceptanceDependencyCandidate): string[] {
-  return [
-    "pnpm", "update", `${candidate.package}@${candidate.targetVersion}`,
-    "--lockfile-only", "--ignore-scripts",
-  ];
+function legacyAcceptanceDependencyObservationEventKey(
+  headCycleId: string,
+  candidateFingerprint: string,
+): string {
+  return `acceptance-dependency-observation:${headCycleId}:${candidateFingerprint.slice("sha256:".length)}`;
 }
 
 function compiledPackDependencyTreeMetadataMatches(pack: ParsedCompiledPack): boolean {
@@ -8025,13 +8120,19 @@ function acceptanceDependencyObservationDisposition(input: {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
 
+  const profile = acceptanceDependencyObservationProfile(evidence.candidate.identity);
+  const supportedProfile = profile !== null
+    && sameAcceptanceDependencyProfile(evidence.runtime.identity, evidence.candidate.identity)
+    && sameAcceptanceDependencyProfile(evidence.security.identity, evidence.candidate.identity);
+  if (!supportedProfile) add("unsupported_manager_profile");
+
   if (evidence.baseline.headSha !== input.currentHeadSha) add("baseline_head_mismatch");
   if (!input.manifestSourceProven) add("manifest_source_not_proven");
   if (!input.lockfileSourceProven) {
     add("lockfile_source_not_proven");
   }
 
-  if (evidence.runtime.disposition === "unsafe") add("unsafe_node_runtime");
+  if (evidence.runtime.disposition === "unsafe") add("unsafe_runtime");
   if (evidence.runtime.disposition === "unavailable") add("runtime_evidence_unavailable");
   if (evidence.runtime.disposition === "ambiguous") add("runtime_evidence_ambiguous");
 
@@ -8042,15 +8143,26 @@ function acceptanceDependencyObservationDisposition(input: {
   if (evidence.packageManager.disposition === "ambiguous") {
     add("package_manager_evidence_ambiguous");
   }
-  if (evidence.packageManager.disposition === "safe") {
-    if (evidence.packageManager.name !== "pnpm") add("unsafe_package_manager");
-    if (evidence.packageManager.profile !== ACCEPTANCE_DEPENDENCY_PNPM_PROFILE) {
+  if (supportedProfile && evidence.packageManager.disposition === "safe") {
+    if (evidence.packageManager.name !== profile.identity.manager) add("unsafe_package_manager");
+    if (evidence.packageManager.profile !== profile.identity.profile) {
       add("unsafe_package_manager_profile");
     }
-    if (!isDeepStrictEqual(evidence.packageManager.updateArgv, expectedPnpmUpdateArgv(evidence.candidate))) {
+    if (!isDeepStrictEqual(evidence.packageManager.updateArgv, profile.expectedArgv(evidence.candidate))) {
       add("unsafe_package_manager_argv");
     }
   }
+  if (supportedProfile && (
+    evidence.packageManager.name !== profile.identity.manager
+    || evidence.packageManager.profile !== profile.identity.profile
+    || (evidence.packageManager.disposition === "safe"
+      && (!evidence.packageManager.version
+        || !profile.packageManagerVersionIsValid(evidence.packageManager.version)))
+    || (evidence.runtime.disposition === "safe" && (!evidence.runtime.version || !profile.runtimeVersionIsValid(evidence.runtime.version)))
+    || !profile.manifestPathIsValid(evidence.manifest.path)
+    || !profile.lockfilePathIsValid(evidence.lockfile.path)
+    || !profile.securityIsValid(evidence.security, evidence.candidate)
+  )) add("unsafe_package_manager_profile");
 
   if (evidence.lockfile.disposition === "missing") add("lockfile_missing");
   if (evidence.lockfile.disposition === "uncommitted") add("lockfile_uncommitted");
@@ -8064,11 +8176,14 @@ function acceptanceDependencyObservationDisposition(input: {
   if (reasons.includes("baseline_head_mismatch")) {
     return { status: "refused_baseline", reasons };
   }
+  if (reasons.includes("unsupported_manager_profile")) {
+    return { status: "refused_unsupported_profile", reasons };
+  }
   if (reasons.includes("manifest_source_not_proven")
     || reasons.includes("lockfile_source_not_proven")) {
     return { status: "not_proven", reasons };
   }
-  if (reasons.some((reason) => reason === "unsafe_node_runtime"
+  if (reasons.some((reason) => reason === "unsafe_runtime"
     || reason === "unsafe_package_manager"
     || reason === "unsafe_package_manager_profile"
     || reason === "unsafe_package_manager_argv")) {
@@ -8108,6 +8223,33 @@ function acceptanceDependencyObservationPayload(input: {
     security: input.evidence.security,
     status: input.status,
     reasons: input.reasons,
+  };
+}
+
+function legacyAcceptanceDependencyObservationPayload(input: {
+  binding: AcceptanceDependencyObservationBinding;
+  evidence: RecordAcceptanceDependencyObservationInput;
+  candidateFingerprint: string;
+  status: AcceptanceDependencyObservationStatus;
+  reasons: AcceptanceDependencyObservationReason[];
+}): Record<string, unknown> {
+  const { identity: _candidateIdentity, ...candidate } = input.evidence.candidate;
+  const { identity: _runtimeIdentity, version, ...runtime } = input.evidence.runtime;
+  const { identity: _securityIdentity, ...security } = input.evidence.security;
+  return {
+    kind: ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND,
+    version: ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION,
+    binding: input.binding,
+    candidateFingerprint: input.candidateFingerprint,
+    candidate,
+    runtime: { ...runtime, nodeVersion: version },
+    packageManager: input.evidence.packageManager,
+    manifest: input.evidence.manifest,
+    lockfile: input.evidence.lockfile,
+    baseline: input.evidence.baseline,
+    security,
+    status: input.status,
+    reasons: input.reasons.map((reason) => reason === "unsafe_runtime" ? "unsafe_node_runtime" : reason),
   };
 }
 
@@ -8346,10 +8488,34 @@ export async function recordAcceptanceDependencyObservation(
       reasons: disposition.reasons,
     });
 
+    const legacyCompatible = sameAcceptanceDependencyProfile(
+      parsed.candidate.identity,
+      ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
+    ) && sameAcceptanceDependencyProfile(parsed.runtime.identity, ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY)
+      && sameAcceptanceDependencyProfile(parsed.security.identity, ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY);
+    const legacyCandidateFingerprint = legacyCompatible
+      ? legacyAcceptanceDependencyCandidateFingerprint(parsed.candidate, parsed.manifest.path)
+      : null;
+    const legacyEventKey = legacyCandidateFingerprint
+      ? legacyAcceptanceDependencyObservationEventKey(record.currentPrHeadCycleId, legacyCandidateFingerprint)
+      : null;
+    const legacyPayload = legacyCandidateFingerprint ? legacyAcceptanceDependencyObservationPayload({
+      binding,
+      evidence: parsed,
+      candidateFingerprint: legacyCandidateFingerprint,
+      status: disposition.status,
+      reasons: disposition.reasons,
+    }) : null;
+
     const existing = (await tx.select().from(changeRecordEvents).where(and(
       eq(changeRecordEvents.recordId, record.id),
       eq(changeRecordEvents.eventKey, eventKey),
     )).limit(1))[0] as ChangeRecordEventRow | undefined;
+    const legacyExisting = legacyEventKey ? (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, record.id),
+      eq(changeRecordEvents.eventKey, legacyEventKey),
+    )).limit(1))[0] as ChangeRecordEventRow | undefined : undefined;
+    if (existing && legacyExisting) throw new AcceptanceDependencyObservationConflictError();
     if (existing) {
       const observation = acceptanceDependencyObservationFromEvent({
         event: existing,
@@ -8357,6 +8523,19 @@ export async function recordAcceptanceDependencyObservation(
         payload,
         evidence: parsed,
         candidateFingerprint,
+        status: disposition.status,
+        reasons: disposition.reasons,
+      });
+      if (!observation) throw new AcceptanceDependencyObservationConflictError();
+      return { kind: "replayed" as const, binding, observation };
+    }
+    if (legacyExisting && legacyEventKey && legacyPayload && legacyCandidateFingerprint) {
+      const observation = acceptanceDependencyObservationFromEvent({
+        event: legacyExisting,
+        eventKey: legacyEventKey,
+        payload: legacyPayload,
+        evidence: parsed,
+        candidateFingerprint: legacyCandidateFingerprint,
         status: disposition.status,
         reasons: disposition.reasons,
       });
@@ -8450,6 +8629,7 @@ export type CurrentAcceptanceDependencyObservationsBinding = {
 };
 
 export type CurrentAcceptanceDependencyObservationItem = {
+  payloadVersion: 1 | 2;
   binding: AcceptanceDependencyObservationBinding;
   observation: AcceptanceDependencyObservation;
   approval: AcceptanceDependencyApproval | null;
@@ -8512,7 +8692,8 @@ const ACCEPTANCE_DEPENDENCY_APPROVAL_VERSION = 1;
 const ACCEPTANCE_DEPENDENCY_APPROVAL_STAGE = "human_dependency_approval";
 const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_KIND =
   "acceptance_dependency_external_builder_pack";
-const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_VERSION = 1;
+const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_LEGACY_VERSION = 1;
+const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_VERSION = 2;
 const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_STAGE = "external_builder_pack";
 const ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_ACTOR =
   "server:dependency-external-builder-pack";
@@ -8526,6 +8707,7 @@ type CurrentAcceptanceDependencyContext = {
 
 type StoredAcceptanceDependencyObservation = {
   event: ChangeRecordEventRow;
+  payloadVersion: 1 | 2;
   binding: AcceptanceDependencyObservationBinding;
   evidence: RecordAcceptanceDependencyObservationInput;
   observation: AcceptanceDependencyObservation;
@@ -8536,6 +8718,7 @@ function isAcceptanceDependencyObservationStatus(
   value: unknown,
 ): value is AcceptanceDependencyObservationStatus {
   return value === "observed" || value === "refused_unsafe_runtime"
+    || value === "refused_unsupported_profile"
     || value === "refused_lockfile" || value === "refused_baseline"
     || value === "refused_security" || value === "not_proven";
 }
@@ -8543,8 +8726,9 @@ function isAcceptanceDependencyObservationStatus(
 function isAcceptanceDependencyObservationReason(
   value: unknown,
 ): value is AcceptanceDependencyObservationReason {
-  return value === "baseline_head_mismatch" || value === "manifest_source_not_proven"
-    || value === "lockfile_source_not_proven" || value === "unsafe_node_runtime"
+  return value === "unsupported_manager_profile" || value === "baseline_head_mismatch"
+    || value === "manifest_source_not_proven"
+    || value === "lockfile_source_not_proven" || value === "unsafe_runtime"
     || value === "unsafe_package_manager" || value === "unsafe_package_manager_profile"
     || value === "unsafe_package_manager_argv" || value === "runtime_evidence_unavailable"
     || value === "runtime_evidence_ambiguous"
@@ -8553,6 +8737,14 @@ function isAcceptanceDependencyObservationReason(
     || value === "lockfile_uncommitted" || value === "lockfile_evidence_unavailable"
     || value === "lockfile_evidence_ambiguous" || value === "security_affected"
     || value === "security_evidence_unavailable" || value === "security_evidence_ambiguous";
+}
+
+function normalizeLegacyAcceptanceDependencyObservationReason(
+  value: unknown,
+): AcceptanceDependencyObservationReason | null {
+  if (value === "unsafe_node_runtime") return "unsafe_runtime";
+  if (value === "unsupported_manager_profile" || value === "unsafe_runtime") return null;
+  return isAcceptanceDependencyObservationReason(value) ? value : null;
 }
 
 function parseAcceptanceDependencyObservationBinding(
@@ -8621,43 +8813,83 @@ function parseStoredAcceptanceDependencyObservationEvent(
     "kind", "version", "binding", "candidateFingerprint", "candidate", "runtime",
     "packageManager", "manifest", "lockfile", "baseline", "security", "status", "reasons",
   ]) || payload["kind"] !== ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND
-    || payload["version"] !== ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION
+    || (payload["version"] !== ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
+      && payload["version"] !== ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION)
     || !isAcceptanceDependencyObservationStatus(payload["status"])
+    || (payload["version"] === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
+      && payload["status"] === "refused_unsupported_profile")
     || !Array.isArray(payload["reasons"]) || payload["reasons"].length > 18
-    || !payload["reasons"].every(isAcceptanceDependencyObservationReason)
     || new Set(payload["reasons"]).size !== payload["reasons"].length) return null;
   const binding = parseAcceptanceDependencyObservationBinding(payload["binding"]);
   if (!binding || typeof payload["candidateFingerprint"] !== "string"
     || !/^sha256:[a-f0-9]{64}$/.test(payload["candidateFingerprint"])) return null;
+
+  const payloadVersion = payload["version"] as 1 | 2;
+  let candidate: unknown = payload["candidate"];
+  let runtime: unknown = payload["runtime"];
+  let security: unknown = payload["security"];
+  let reasons: AcceptanceDependencyObservationReason[];
+  if (payloadVersion === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION) {
+    if (!isRecord(candidate) || !hasExactKeys(candidate, [
+      "package", "dependencyKind", "specifier", "currentVersion", "targetVersion",
+    ]) || !isRecord(runtime) || !hasExactKeys(runtime, [
+      "disposition", "nodeVersion", "evidenceSha256",
+    ]) || !isRecord(security) || !hasExactKeys(security, [
+      "disposition", "provider", "reference", "reportSha256",
+    ])) return null;
+    const normalizedReasons = payload["reasons"].map(
+      normalizeLegacyAcceptanceDependencyObservationReason,
+    );
+    if (normalizedReasons.some((reason) => reason === null)) return null;
+    reasons = normalizedReasons as AcceptanceDependencyObservationReason[];
+    candidate = { identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY, ...candidate };
+    runtime = {
+      identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
+      disposition: runtime["disposition"],
+      version: runtime["nodeVersion"],
+      evidenceSha256: runtime["evidenceSha256"],
+    };
+    security = { identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY, ...security };
+  } else {
+    if (!payload["reasons"].every(isAcceptanceDependencyObservationReason)) return null;
+    reasons = payload["reasons"] as AcceptanceDependencyObservationReason[];
+  }
+
   const evidence = parseRecordAcceptanceDependencyObservationInput({
     workspaceId: binding.workspaceId,
     recordId: binding.recordId,
     compiledPackId: binding.compiledPack.id,
-    candidate: payload["candidate"],
-    runtime: payload["runtime"],
+    candidate,
+    runtime,
     packageManager: payload["packageManager"],
     manifest: payload["manifest"],
     lockfile: payload["lockfile"],
     baseline: payload["baseline"],
-    security: payload["security"],
+    security,
   });
   if (!evidence) return null;
-  const candidateFingerprint = acceptanceDependencyCandidateFingerprint(
-    evidence.candidate,
-    evidence.manifest.path,
-  );
+  const candidateFingerprint = payloadVersion === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
+    ? legacyAcceptanceDependencyCandidateFingerprint(evidence.candidate, evidence.manifest.path)
+    : acceptanceDependencyCandidateFingerprint(evidence.candidate, evidence.manifest.path);
   if (candidateFingerprint !== payload["candidateFingerprint"]) return null;
-  const eventKey = acceptanceDependencyObservationEventKey(
-    binding.headCycleId,
-    candidateFingerprint,
-  );
-  const expectedPayload = acceptanceDependencyObservationPayload({
-    binding,
-    evidence,
-    candidateFingerprint,
-    status: payload["status"],
-    reasons: payload["reasons"] as AcceptanceDependencyObservationReason[],
-  });
+  const eventKey = payloadVersion === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
+    ? legacyAcceptanceDependencyObservationEventKey(binding.headCycleId, candidateFingerprint)
+    : acceptanceDependencyObservationEventKey(binding.headCycleId, candidateFingerprint);
+  const expectedPayload = payloadVersion === ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION
+    ? legacyAcceptanceDependencyObservationPayload({
+        binding,
+        evidence,
+        candidateFingerprint,
+        status: payload["status"],
+        reasons,
+      })
+    : acceptanceDependencyObservationPayload({
+        binding,
+        evidence,
+        candidateFingerprint,
+        status: payload["status"],
+        reasons,
+      });
   const observation = acceptanceDependencyObservationFromEvent({
     event,
     eventKey,
@@ -8665,10 +8897,11 @@ function parseStoredAcceptanceDependencyObservationEvent(
     evidence,
     candidateFingerprint,
     status: payload["status"],
-    reasons: payload["reasons"] as AcceptanceDependencyObservationReason[],
+    reasons,
   });
   return observation ? {
     event,
+    payloadVersion,
     binding,
     evidence,
     observation,
@@ -9036,6 +9269,26 @@ function acceptanceDependencyExternalBuilderPackPayload(input: {
   };
 }
 
+function legacyAcceptanceDependencyExternalBuilderPackPayload(input: {
+  packId: string;
+  stored: StoredAcceptanceDependencyObservation;
+  approval: AcceptanceDependencyApproval;
+  approvalIdentitySha256: string;
+  route: AcceptanceDependencyExternalBuilderRoute;
+}): Record<string, unknown> {
+  const current = acceptanceDependencyExternalBuilderPackPayload(input);
+  const { identity: _candidateIdentity, ...candidate } = input.stored.evidence.candidate;
+  const { identity: _runtimeIdentity, version, ...runtime } = input.stored.evidence.runtime;
+  const { identity: _securityIdentity, ...security } = input.stored.evidence.security;
+  return {
+    ...current,
+    version: ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_LEGACY_VERSION,
+    candidate,
+    runtime: { ...runtime, nodeVersion: version },
+    security,
+  };
+}
+
 async function parseAcceptanceDependencyExternalBuilderPackEventInTransaction(
   tx: DbTransaction,
   input: {
@@ -9061,7 +9314,10 @@ async function parseAcceptanceDependencyExternalBuilderPackEventInTransaction(
       "runtime", "packageManager", "manifest", "lockfile", "baseline", "security", "route",
       "deliveryAuthority", "scopeBoundary", "reviewRequirement",
     ]) || payload["kind"] !== ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_KIND
-    || payload["version"] !== ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_VERSION
+    || (payload["version"] !== ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_LEGACY_VERSION
+      && payload["version"] !== ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_VERSION)
+    || (payload["version"] === ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_LEGACY_VERSION
+      && stored.payloadVersion !== ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION)
     || !isUuid(payload["packId"]) || payload["packId"] !== payload["packId"].toLowerCase()
     || !isRecord(payload["route"]) || !hasExactKeys(payload["route"], [
       "selectionEventId", "id", "adapter", "configurationVersion", "snapshot", "snapshotSha256",
@@ -9111,13 +9367,16 @@ async function parseAcceptanceDependencyExternalBuilderPackEventInTransaction(
     routeConfigurationVersion: route.configurationVersion,
   });
   if (payload["packId"] !== packId) return null;
-  const expected = acceptanceDependencyExternalBuilderPackPayload({
+  const payloadInput = {
     packId,
     stored,
     approval,
     approvalIdentitySha256: acceptanceDependencyApprovalIdentitySha256(approvalEvent),
     route,
-  });
+  };
+  const expected = payload["version"] === ACCEPTANCE_DEPENDENCY_EXTERNAL_BUILDER_PACK_LEGACY_VERSION
+    ? legacyAcceptanceDependencyExternalBuilderPackPayload(payloadInput)
+    : acceptanceDependencyExternalBuilderPackPayload(payloadInput);
   if (!isDeepStrictEqual(payload, expected)
     || !(event.at instanceof Date) || Number.isNaN(event.at.valueOf())) return null;
   return {
@@ -9251,11 +9510,13 @@ export async function readCurrentAcceptanceDependencyObservations(
     );
     if (current.kind !== "current") return current;
     const { context } = current;
-    const eventPrefix = `acceptance-dependency-observation:${context.binding.headCycleId}:%`;
+    const legacyEventPrefix = `acceptance-dependency-observation:${context.binding.headCycleId}:%`;
+    const currentEventPrefix = `acceptance-dependency-observation:v${ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION}:${context.binding.headCycleId}:%`;
     const events = await tx.select().from(changeRecordEvents).where(and(
       eq(changeRecordEvents.recordId, context.binding.recordId),
       sql`(
-        ${changeRecordEvents.eventKey} LIKE ${eventPrefix}
+        ${changeRecordEvents.eventKey} LIKE ${legacyEventPrefix}
+        OR ${changeRecordEvents.eventKey} LIKE ${currentEventPrefix}
         OR (
           ${changeRecordEvents.stage} = ${ACCEPTANCE_DEPENDENCY_OBSERVATION_STAGE}
           AND ${changeRecordEvents.payloadRef}->'binding'->>'headCycleId'
@@ -9270,15 +9531,24 @@ export async function readCurrentAcceptanceDependencyObservations(
     }
     const observations: CurrentAcceptanceDependencyObservationItem[] = [];
     const fingerprints = new Set<string>();
+    const canonicalFingerprints = new Set<string>();
     for (const event of events) {
       const stored = parseStoredAcceptanceDependencyObservationEvent(event as ChangeRecordEventRow);
+      const canonicalFingerprint = stored
+        ? acceptanceDependencyCandidateFingerprint(
+            stored.evidence.candidate,
+            stored.evidence.manifest.path,
+          )
+        : null;
       if (!stored || !observationBindingMatchesCurrentContext({
         binding: stored.binding,
         context,
-      }) || fingerprints.has(stored.observation.candidateFingerprint)) {
+      }) || fingerprints.has(stored.observation.candidateFingerprint)
+        || canonicalFingerprint === null || canonicalFingerprints.has(canonicalFingerprint)) {
         return { kind: "not_ready" as const, reason: "invalid_observation_custody" as const };
       }
       fingerprints.add(stored.observation.candidateFingerprint);
+      canonicalFingerprints.add(canonicalFingerprint);
       const validated = await revalidateStoredAcceptanceDependencyObservationInTransaction(
         tx,
         { stored, context },
@@ -9295,6 +9565,7 @@ export async function readCurrentAcceptanceDependencyObservations(
         };
       }
       observations.push({
+        payloadVersion: stored.payloadVersion,
         binding: structuredClone(stored.binding),
         observation: stored.observation,
         approval: pair.kind === "present" ? pair.approval : null,

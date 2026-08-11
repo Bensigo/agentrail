@@ -2077,7 +2077,31 @@ const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
+const NPM_ALIAS_SPECIFIER = /^npm:/iu;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const NODE_DEPENDENCY_KINDS = [
+  "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+] as const;
+const NPM_SAVE_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string>> = {
+  dependencies: "--save-prod",
+  devDependencies: "--save-dev",
+  optionalDependencies: "--save-optional",
+  peerDependencies: "--save-peer",
+};
+
+type AcceptanceDependencyReceiptProfile = {
+  readonly identity: AcceptanceDependencyProfileIdentity;
+  candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
+  runtimeVersionIsValid(version: string): boolean;
+  packageManagerVersionIsValid(version: string): boolean;
+  manifestPathIsValid(path: string): boolean;
+  lockfilePathIsValid(path: string): boolean;
+  securityIsValid(
+    security: AcceptanceDependencySecurityEvidence,
+    candidate: AcceptanceDependencyCandidate,
+  ): boolean;
+  expectedArgv(candidate: AcceptanceDependencyCandidate): string[];
+};
 
 function isSafeRepoPath(value: unknown): value is string {
   return isSafeText(value, 1_024) && !value.startsWith("/") && !value.includes("\\")
@@ -2105,8 +2129,71 @@ function isDependencyIdentity(value: unknown): value is AcceptanceDependencyProf
     && typeof value.profile === "string" && SAFE_NAME.test(value.profile);
 }
 
-function isOperationalPnpmIdentity(value: AcceptanceDependencyProfileIdentity): boolean {
-  return value.ecosystem === "node" && value.manager === "pnpm" && value.profile === "pnpm_lockfile_only_v1";
+function nodeDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  return NPM_PACKAGE.test(candidate.package)
+    && NODE_DEPENDENCY_KINDS.includes(
+      candidate.dependencyKind as typeof NODE_DEPENDENCY_KINDS[number]
+    )
+    && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
+    && EXACT_SEMVER.test(candidate.currentVersion)
+    && EXACT_SEMVER.test(candidate.targetVersion);
+}
+
+function npmDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  return nodeDependencyCandidateIsValid(candidate)
+    && !NPM_ALIAS_SPECIFIER.test(candidate.specifier);
+}
+
+function osvNpmReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:npm:${candidate.package}@${candidate.targetVersion}`;
+}
+
+const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
+  ["node:pnpm:pnpm_lockfile_only_v1", {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
+    candidateIsValid: nodeDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    manifestPathIsValid: (path) => path === "package.json" || path.endsWith("/package.json"),
+    lockfilePathIsValid: (path) => path === "pnpm-lock.yaml" || path.endsWith("/pnpm-lock.yaml"),
+    securityIsValid: osvNpmReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "pnpm", "update", `${candidate.package}@${candidate.targetVersion}`,
+      "--lockfile-only", "--ignore-scripts",
+    ],
+  }],
+  ["node:npm:npm_package_lock_only_v1", {
+    identity: { ecosystem: "node", manager: "npm", profile: "npm_package_lock_only_v1" },
+    candidateIsValid: npmDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
+    manifestPathIsValid: (path) => path === "package.json",
+    lockfilePathIsValid: (path) => path === "package-lock.json",
+    securityIsValid: osvNpmReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "npm", "install", `${candidate.package}@${candidate.targetVersion}`,
+      "--package-lock-only", "--ignore-scripts", "--no-audit",
+      NPM_SAVE_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind] ?? "",
+    ],
+  }],
+]);
+
+function dependencyReceiptProfile(
+  identity: AcceptanceDependencyProfileIdentity
+): AcceptanceDependencyReceiptProfile | null {
+  const profile = ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES.get(
+    `${identity.ecosystem}:${identity.manager}:${identity.profile}`
+  );
+  return profile && exactJsonEqual(profile.identity, identity) ? profile : null;
+}
+
+function isLegacyPnpmIdentity(value: AcceptanceDependencyProfileIdentity): boolean {
+  return value.ecosystem === "node" && value.manager === "pnpm"
+    && value.profile === "pnpm_lockfile_only_v1";
 }
 
 function isDependencyCandidate(value: unknown): value is AcceptanceDependencyCandidate {
@@ -2260,37 +2347,33 @@ function isDependencyObservation(
     || !isDependencySecurity(value.security)
     || !isIsoTimestamp(value.observedAt)) return false;
   if (payloadVersion === 1 && (
-    !isOperationalPnpmIdentity(value.candidate.identity)
+    !isLegacyPnpmIdentity(value.candidate.identity)
     || !exactJsonEqual(value.runtime.identity, value.candidate.identity)
     || !exactJsonEqual(value.security.identity, value.candidate.identity)
     || value.status === "refused_unsupported_profile"
     || value.reasons.includes("unsupported_manager_profile")
   )) return false;
+  // Unsupported/refused observations are immutable historical facts. Validate
+  // their bounded shape above, but never reinterpret them through today's
+  // operational profile registry.
   if (value.status !== "observed") return true;
-  const expectedArgv = [
-    "pnpm", "update", `${value.candidate.package}@${value.candidate.targetVersion}`,
-    "--lockfile-only", "--ignore-scripts",
-  ];
-  return isOperationalPnpmIdentity(value.candidate.identity)
+  const profile = dependencyReceiptProfile(value.candidate.identity);
+  return profile !== null
     && exactJsonEqual(value.runtime.identity, value.candidate.identity)
     && exactJsonEqual(value.security.identity, value.candidate.identity)
-    && NPM_PACKAGE.test(value.candidate.package)
-    && ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
-      .includes(value.candidate.dependencyKind)
-    && !UNSAFE_NPM_SPECIFIER.test(value.candidate.specifier)
-    && EXACT_SEMVER.test(value.candidate.currentVersion)
-    && EXACT_SEMVER.test(value.candidate.targetVersion)
-    && value.runtime.disposition === "safe" && EXACT_SEMVER.test(value.runtime.version ?? "")
+    && profile.candidateIsValid(value.candidate)
+    && value.runtime.disposition === "safe"
+    && profile.runtimeVersionIsValid(value.runtime.version ?? "")
     && value.packageManager.disposition === "safe"
-    && value.packageManager.name === "pnpm"
-    && EXACT_SEMVER.test(value.packageManager.version ?? "")
-    && value.packageManager.profile === "pnpm_lockfile_only_v1"
-    && exactJsonEqual(value.packageManager.updateArgv, expectedArgv)
-    && (value.manifest.path === "package.json" || value.manifest.path.endsWith("/package.json"))
-    && (value.lockfile.path === "pnpm-lock.yaml" || value.lockfile.path.endsWith("/pnpm-lock.yaml"))
+    && value.packageManager.name === profile.identity.manager
+    && profile.packageManagerVersionIsValid(value.packageManager.version ?? "")
+    && value.packageManager.profile === profile.identity.profile
+    && exactJsonEqual(value.packageManager.updateArgv, profile.expectedArgv(value.candidate))
+    && profile.manifestPathIsValid(value.manifest.path)
+    && profile.lockfilePathIsValid(value.lockfile.path)
     && value.lockfile.disposition === "present"
-    && value.security.disposition === "clear" && value.security.provider === "osv"
-    && value.security.reference === `osv:npm:${value.candidate.package}@${value.candidate.targetVersion}`
+    && value.security.disposition === "clear"
+    && profile.securityIsValid(value.security, value.candidate)
     && value.baseline.headSha === binding.headSha;
 }
 
@@ -3554,6 +3637,7 @@ export function DependencyObservationsPanel({
                     <CorrectionDatum label="Package manager">
                       {observation.packageManager.disposition} · {observation.packageManager.name}
                       {observation.packageManager.version ? ` ${observation.packageManager.version}` : ""}
+                      {` · ${observation.packageManager.profile}`}
                     </CorrectionDatum>
                     <CorrectionDatum label="Security evidence">
                       {observation.security.identity.ecosystem}/{observation.security.identity.manager} · {observation.security.provider} · {observation.security.disposition}

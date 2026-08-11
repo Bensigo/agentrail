@@ -3352,6 +3352,7 @@ export {
   readCurrentAcceptanceDependencyObservations,
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   AcceptanceDependencyObservationConflictError,
+  AcceptanceDependencyObservationInvalidEvidenceError,
   AcceptanceDependencyExternalBuilderPackConflictError,
   recordAcceptancePostMergeOutcome,
   readAcceptanceOutcomeHistory,

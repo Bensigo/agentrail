@@ -504,6 +504,45 @@ type SerializedDates<T> = T extends Date
 
 export type AcceptanceRecordDetailEnvelope = SerializedDates<ReadAcceptanceRecordDetailResult>;
 
+export type AcceptanceDependencyDraftProposal =
+  | {
+      kind: "draft";
+      record: { id: string; repo: string; contractId: string; contractVersion: 1 };
+      proposal: {
+        custodyIdentity: string;
+        watch: { id: string; observationId: string; observationKey: string };
+        candidate: {
+          package: string;
+          currentVersion: string;
+          targetVersion: string;
+          dependencyKind: "dependencies" | "devDependencies";
+        };
+        files: {
+          manifest: { path: "package.json"; sha256: string };
+          lockfile: { path: "pnpm-lock.yaml"; sha256: string };
+        };
+        profile: {
+          ecosystem: "node";
+          manager: "pnpm";
+          profile: "pnpm_lockfile_only_v1";
+          capability: "proposal_observation_only";
+        };
+        repositorySourceVerification: "watch_observation_only";
+        independentSourceProof: "not_proven";
+        evidenceAdmission: "unresolved";
+        laterEvidence: {
+          confirmation: "not_recorded";
+          contextPack: "not_recorded";
+          builderHandoff: "not_recorded";
+          delivery: "not_recorded";
+          result: "not_recorded";
+        };
+      };
+    }
+  | { kind: "not_found" }
+  | { kind: "not_draft_proposal" }
+  | { kind: "invalid_custody" };
+
 export type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
@@ -512,6 +551,7 @@ export type ChangeRecordResponse = {
   reviewMetrics: AcceptancePrReviewMetricsEnvelope;
   dependencyObservations: AcceptanceDependencyObservationsEnvelope;
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
+  dependencyDraftProposal: AcceptanceDependencyDraftProposal;
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
@@ -524,6 +564,37 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function containsDependencyCommandFields(value: unknown, depth = 0): boolean {
+  if (depth > 12) return true;
+  if (Array.isArray(value)) {
+    return value.some((item) => containsDependencyCommandFields(item, depth + 1));
+  }
+  if (!isObject(value)) return false;
+  return Object.entries(value).some(([key, nested]) =>
+    key === "manager_commands" || key === "verification_commands"
+      || containsDependencyCommandFields(nested, depth + 1));
+}
+
+function isSafeTimelineEvent(value: unknown): value is ChangeRecordEvent {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "id", "recordId", "eventKey", "stage", "actor", "payloadRef", "at", "createdAt",
+  ]) || !isSafeText(value.id, 512) || typeof value.recordId !== "string" || !UUID.test(value.recordId)
+    || !isSafeText(value.eventKey, 1_024) || !isSafeText(value.stage, 256)
+    || !isSafeText(value.actor, 512) || !isObject(value.payloadRef)
+    || !isSafeText(value.at, 128) || !isSafeText(value.createdAt, 128)) return false;
+  const dependencyProposal = value.stage === "dependency_observation_proposal"
+    || value.eventKey.startsWith("dependency-observation-proposal:")
+    || (typeof value.payloadRef.kind === "string"
+      && value.payloadRef.kind.startsWith("dependency_observation_proposal"));
+  if (dependencyProposal || containsDependencyCommandFields(value.payloadRef)) {
+    return hasExactKeys(value.payloadRef, ["kind", "version", "disclosure"])
+      && value.payloadRef.kind === "redacted_dependency_observation_proposal"
+      && value.payloadRef.version === 1
+      && value.payloadRef.disclosure === "bounded_projection_only";
+  }
+  return true;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -2641,17 +2712,67 @@ export function isDependencyObservationsEnvelope(
   });
 }
 
+export function isDependencyDraftProposal(value: unknown): value is AcceptanceDependencyDraftProposal {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found" || value.kind === "not_draft_proposal" || value.kind === "invalid_custody") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind !== "draft" || !hasExactKeys(value, ["kind", "record", "proposal"])
+    || !isObject(value.record) || !hasExactKeys(value.record, ["id", "repo", "contractId", "contractVersion"])
+    || typeof value.record.id !== "string" || !UUID.test(value.record.id) || !isSafeRepo(value.record.repo)
+    || typeof value.record.contractId !== "string" || !UUID.test(value.record.contractId)
+    || value.record.contractVersion !== 1 || !isObject(value.proposal)
+    || !hasExactKeys(value.proposal, [
+      "custodyIdentity", "watch", "candidate", "files", "profile", "repositorySourceVerification",
+      "independentSourceProof", "evidenceAdmission", "laterEvidence",
+    ]) || typeof value.proposal.custodyIdentity !== "string" || !DEPENDENCY_FINGERPRINT.test(value.proposal.custodyIdentity)
+    || !isObject(value.proposal.watch) || !hasExactKeys(value.proposal.watch, ["id", "observationId", "observationKey"])
+    || typeof value.proposal.watch.id !== "string" || !UUID.test(value.proposal.watch.id)
+    || typeof value.proposal.watch.observationId !== "string" || !UUID.test(value.proposal.watch.observationId)
+    || !isSafeText(value.proposal.watch.observationKey, 512)
+    || !isObject(value.proposal.candidate) || !hasExactKeys(value.proposal.candidate, [
+      "package", "currentVersion", "targetVersion", "dependencyKind",
+    ]) || !isSafeText(value.proposal.candidate.package, 214)
+    || !isSafeText(value.proposal.candidate.currentVersion, 128)
+    || !isSafeText(value.proposal.candidate.targetVersion, 128)
+    || value.proposal.candidate.currentVersion === value.proposal.candidate.targetVersion
+    || (value.proposal.candidate.dependencyKind !== "dependencies" && value.proposal.candidate.dependencyKind !== "devDependencies")
+    || !isObject(value.proposal.files) || !hasExactKeys(value.proposal.files, ["manifest", "lockfile"])
+    || !isObject(value.proposal.files.manifest) || !hasExactKeys(value.proposal.files.manifest, ["path", "sha256"])
+    || value.proposal.files.manifest.path !== "package.json" || typeof value.proposal.files.manifest.sha256 !== "string"
+    || !SHA256.test(value.proposal.files.manifest.sha256)
+    || !isObject(value.proposal.files.lockfile) || !hasExactKeys(value.proposal.files.lockfile, ["path", "sha256"])
+    || value.proposal.files.lockfile.path !== "pnpm-lock.yaml" || typeof value.proposal.files.lockfile.sha256 !== "string"
+    || !SHA256.test(value.proposal.files.lockfile.sha256)
+    || !isObject(value.proposal.profile) || !hasExactKeys(value.proposal.profile, ["ecosystem", "manager", "profile", "capability"])
+    || value.proposal.profile.ecosystem !== "node" || value.proposal.profile.manager !== "pnpm"
+    || value.proposal.profile.profile !== "pnpm_lockfile_only_v1" || value.proposal.profile.capability !== "proposal_observation_only"
+    || value.proposal.repositorySourceVerification !== "watch_observation_only"
+    || value.proposal.independentSourceProof !== "not_proven" || value.proposal.evidenceAdmission !== "unresolved"
+    || !isObject(value.proposal.laterEvidence) || !hasExactKeys(value.proposal.laterEvidence, [
+      "confirmation", "contextPack", "builderHandoff", "delivery", "result",
+    ])) return false;
+  return value.proposal.laterEvidence.confirmation === "not_recorded"
+    && value.proposal.laterEvidence.contextPack === "not_recorded"
+    && value.proposal.laterEvidence.builderHandoff === "not_recorded"
+    && value.proposal.laterEvidence.delivery === "not_recorded"
+    && value.proposal.laterEvidence.result === "not_recorded";
+}
+
 export function isChangeRecordResponse(value: unknown): value is ChangeRecordResponse {
   return isObject(value) && hasExactKeys(value, [
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
-    "dependencyObservations", "acceptanceDetail", "canRecordFinalDecision", "canRecordReviewEffort",
+    "dependencyObservations", "acceptanceDetail", "dependencyDraftProposal",
+    "canRecordFinalDecision", "canRecordReviewEffort",
     "canApproveDependencyObservation",
   ]) && isObject(value.record) && Array.isArray(value.events)
+    && value.events.every(isSafeTimelineEvent)
     && isCorrectionPacketsEnvelope(value.correctionPackets)
     && isFinalDecisionEnvelope(value.finalDecision)
     && isReviewMetricsEnvelope(value.reviewMetrics)
     && isDependencyObservationsEnvelope(value.dependencyObservations)
     && isAcceptanceRecordDetailEnvelope(value.acceptanceDetail)
+    && isDependencyDraftProposal(value.dependencyDraftProposal)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
     && typeof value.canApproveDependencyObservation === "boolean";
@@ -3668,6 +3789,72 @@ function dependencyObservationStatusLabel(status: AcceptanceDependencyObservatio
   }
 }
 
+export function DependencyDraftProposalPanel({
+  dependencyDraftProposal,
+}: {
+  dependencyDraftProposal: AcceptanceDependencyDraftProposal;
+}) {
+  if (dependencyDraftProposal.kind === "not_found" || dependencyDraftProposal.kind === "not_draft_proposal") {
+    return null;
+  }
+  if (dependencyDraftProposal.kind === "invalid_custody") {
+    return (
+      <section className="rounded border border-[var(--red-06)] bg-[var(--red-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--red-11)]">Dependency proposal</h2>
+        <p className="mt-2 text-sm text-[var(--red-11)]">
+          Draft dependency proposal custody is malformed or incomplete. Nothing is admitted or authorized.
+        </p>
+      </section>
+    );
+  }
+  const { proposal, record } = dependencyDraftProposal;
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Draft dependency proposal</h2>
+          <p className="mt-2 text-sm text-[var(--gray-11)]">
+            Observation custody only. It has not confirmed work, admitted evidence, created a Context Pack, handed off to an agent, or delivered a result.
+          </p>
+        </div>
+        <span className="rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-2 py-1 font-mono text-xs text-[var(--gray-11)]">
+          delivery authority: not granted
+        </span>
+      </div>
+      <dl className="mt-4 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+        <CorrectionDatum label="Package" mono>{proposal.candidate.package}</CorrectionDatum>
+        <CorrectionDatum label="Observed change" mono>
+          {proposal.candidate.currentVersion} → {proposal.candidate.targetVersion} ({proposal.candidate.dependencyKind})
+        </CorrectionDatum>
+        <CorrectionDatum label="Profile" mono>
+          {proposal.profile.ecosystem}/{proposal.profile.manager}/{proposal.profile.profile} · {proposal.profile.capability}
+        </CorrectionDatum>
+        <CorrectionDatum label="Evidence admission" mono>{proposal.evidenceAdmission}</CorrectionDatum>
+        <CorrectionDatum label="Manifest custody" mono>
+          {proposal.files.manifest.path} · {proposal.files.manifest.sha256}
+        </CorrectionDatum>
+        <CorrectionDatum label="Lockfile custody" mono>
+          {proposal.files.lockfile.path} · {proposal.files.lockfile.sha256}
+        </CorrectionDatum>
+        <CorrectionDatum label="Repository source" mono>{proposal.repositorySourceVerification}</CorrectionDatum>
+        <CorrectionDatum label="Independent source proof" mono>{proposal.independentSourceProof}</CorrectionDatum>
+      </dl>
+      <p className="mt-4 border-t border-[var(--gray-05)] pt-4 text-xs text-[var(--gray-09)]">
+        Confirmation, Context Pack, builder handoff, delivery, and result are not recorded.
+      </p>
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">Draft identities</summary>
+        <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Record" mono>{record.id}</CorrectionDatum>
+          <CorrectionDatum label="Draft Contract" mono>{record.contractId} v{record.contractVersion}</CorrectionDatum>
+          <CorrectionDatum label="Proposal custody" mono>{proposal.custodyIdentity}</CorrectionDatum>
+          <CorrectionDatum label="Watch / observation" mono>{proposal.watch.id} / {proposal.watch.observationId}</CorrectionDatum>
+        </dl>
+      </details>
+    </section>
+  );
+}
+
 export function DependencyObservationsPanel({
   dependencyObservations,
   canApproveDependencyObservation,
@@ -4095,6 +4282,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         effortMinutes={effortMinutes}
         onEffortMinutesChange={setEffortMinutes}
       />
+      <DependencyDraftProposalPanel dependencyDraftProposal={data.dependencyDraftProposal} />
       <DependencyObservationsPanel
         dependencyObservations={data.dependencyObservations}
         canApproveDependencyObservation={data.canApproveDependencyObservation}

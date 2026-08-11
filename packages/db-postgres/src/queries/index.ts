@@ -3262,6 +3262,12 @@ export {
 // events, and a scoped timeline read. Routes, UI, and producer adapters land
 // in later slices.
 export {
+  readDependencyDraftProposalDetail,
+  type DependencyDraftProposalDetail,
+  type ReadDependencyDraftProposalDetailResult,
+} from "./dependency_draft_proposal_detail.js";
+
+export {
   changeRecordId,
   changeRecordEventId,
   acceptanceRecordPullRequestHeadCycleId,

@@ -1,0 +1,5 @@
+certifi==2025.8.3 --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+charset-normalizer==3.4.3 --hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+idna==3.10 --hash=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+requests==2.32.3 --hash=sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+urllib3==2.5.0 --hash=sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff

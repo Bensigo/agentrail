@@ -1,0 +1,2 @@
+requests==2.32.3 --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+urllib3==2.5.0

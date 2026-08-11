@@ -9,6 +9,8 @@ import {
 /**
  * Records human-authorized post-merge provenance only. This endpoint cannot
  * merge, deploy, alter an external builder, or replace the evidence verdict.
+ * The DB revalidates every retained outcome against canonical signed-merge
+ * lineage; a caller can never create the merge fact through this route.
  */
 export async function POST(
   request: NextRequest,
@@ -29,7 +31,9 @@ export async function POST(
   const outcome = body != null && typeof body === "object" && !Array.isArray(body)
     ? (body as Record<string, unknown>).outcome
     : null;
-  if (!validateAcceptancePostMergeOutcome(outcome)) {
+  if ((outcome != null && typeof outcome === "object" && !Array.isArray(outcome)
+      && (outcome as Record<string, unknown>).kind === "merged")
+    || !validateAcceptancePostMergeOutcome(outcome)) {
     return NextResponse.json({ error: "Invalid post-merge outcome" }, { status: 400 });
   }
 

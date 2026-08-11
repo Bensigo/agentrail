@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `95388f60`, after merged PR
-#1676.
+Last reconciled: 2026-08-11 at main commit `60715aac`, after merged PR
+#1677 and the following signed-merge convergence slice.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -79,9 +79,26 @@ typechecks, builds, lint, independent review, and green CI. These are
 source/test and local-runtime facts. No deployed GitHub carrier, live vendor
 workflow, or customer run has been claimed.
 
+## R9 progress
+
+R9.1 is source/test complete. PR #1677 added one owner/admin decision bound
+to the current posted, attested review cycle without giving Jace merge
+authority. The signed-merge convergence slice makes the authenticated GitHub
+webhook the sole writer of merge state, records the factual merge separately
+from whether the exact decision aligned, and retains deploy, incident, and
+revert observations only against that immutable merge custody. It makes no
+GitHub merge request.
+
+The local proof includes focused route/query tests and a migrated PostgreSQL
+run covering approval, exception, conflicting or absent decisions, immutable
+replay, A→B→A isolation, transaction rollback, and decision/head races. This
+is source/test and local-runtime proof only. No deployed GitHub delivery, live
+human decision, or customer outcome has been observed. R9 remains **FAIL / not
+release-ready** because R9.2 and deployed/live/customer proof are still open.
+
 ## Remaining canonical order
 
-The next implementation work is R9, then R10, R11, and R12. Their canonical
+The next implementation work is R9.2, then R10, R11, and R12. Their canonical
 requirements remain:
 
 | AC | Required behavior |
@@ -97,9 +114,8 @@ requirements remain:
 
 Each following slice must name the AC it closes and preserve the proof
 boundaries above. There is no remaining canonical R8 source blocker; deployed,
-live-provider, and customer proof remain separate release gates. The first R9.1
-slice adds the missing current-head human decision seam without giving Jace
-merge authority. A later R9.1 slice must converge the current signed-GitHub
-merge event and the separate post-merge outcome route onto one exact
-decided-head lineage. None of these slices may reopen the bounded R8
+live-provider, and customer proof remain separate release gates. R9.1 now
+records the current-head human decision and converges signed GitHub merge plus
+post-merge facts onto the same exact lineage without giving Jace merge
+authority. None of the remaining slices may reopen the bounded R8
 implementation merely because deployed, live, or customer proof is missing.

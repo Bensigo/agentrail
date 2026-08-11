@@ -6,12 +6,12 @@ import {
   getWorkspaceByGithubInstallationId,
   getInstallationToken,
   getRepositoryByName,
-  appendChangeRecordEvent,
-  findOrCreateChangeRecord,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
   readChangeRecordByPr,
+  recordSignedAcceptanceRecordMerge,
   triggerDependencyWatchesForPush,
   recordReviewEvent,
+  SignedAcceptanceRecordMergeConflictError,
 } from "@agentrail/db-postgres";
 import { readCurrentGithubPullRequest } from "../../../../../lib/github-current-pr";
 
@@ -80,6 +80,8 @@ const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 const ACCEPTANCE_RECORD_MARKER = /<!--\s*jace-acceptance-record\s*:\s*([\s\S]*?)\s*-->/gi;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GIT_SHA = /^[0-9a-f]{40}$/i;
+const LOWER_GIT_SHA = /^[0-9a-f]{40}$/;
+const GITHUB_ACTOR_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*|[A-Za-z0-9-]*\[bot\])$/;
 
 // The four `pull_request` actions this intake handles (design spec §1). A
 // draft synchronize advances custody without queue admission; every `closed`
@@ -266,6 +268,107 @@ function actorTypeFromGitHubUserType(value: unknown): "human" | "agent" | "unkno
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+type SignedMergeMetadata = {
+  baseSha: string;
+  mergeSha: string;
+  mergedAt: Date;
+  prUrl: string;
+  githubActor: {
+    id: number;
+    login: string;
+    type: "User" | "Bot" | "Organization";
+  };
+};
+
+function signedMergeMetadata(
+  pr: JsonObject,
+  body: JsonObject,
+  expectedPrUrl: string,
+  headSha: string,
+): SignedMergeMetadata | null {
+  const baseSha = asObject(pr.base)?.sha;
+  const mergeSha = pr.merge_commit_sha;
+  const mergedAtRaw = pr.merged_at;
+  const prUrl = pr.html_url;
+  const actor = asObject(body.sender);
+  const actorId = actor?.id;
+  const actorLogin = actor?.login;
+  const actorType = actor?.type;
+  const mergedAt = typeof mergedAtRaw === "string" ? new Date(mergedAtRaw) : null;
+  if (!LOWER_GIT_SHA.test(headSha)
+    || typeof baseSha !== "string" || !LOWER_GIT_SHA.test(baseSha)
+    || typeof mergeSha !== "string" || !LOWER_GIT_SHA.test(mergeSha)
+    || !mergedAt || Number.isNaN(mergedAt.valueOf())
+    || prUrl !== expectedPrUrl
+    || !Number.isSafeInteger(actorId) || (actorId as number) <= 0
+    || typeof actorLogin !== "string" || actorLogin.length > 100
+    || !GITHUB_ACTOR_LOGIN.test(actorLogin)
+    || (actorType !== "User" && actorType !== "Bot" && actorType !== "Organization")) {
+    return null;
+  }
+  return {
+    baseSha,
+    mergeSha,
+    mergedAt,
+    prUrl,
+    githubActor: { id: actorId as number, login: actorLogin, type: actorType },
+  };
+}
+
+async function terminalizeUnrecordedSignedMerge(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  deliveryId: string;
+  reason: string;
+}): Promise<NextResponse> {
+  try {
+    const invalidation =
+      await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent({
+        workspaceId: input.workspaceId,
+        recordId: input.recordId,
+        repo: input.repo,
+        prNumber: input.prNumber,
+        headSha: input.headSha,
+        event: "merged",
+        deliveryId: input.deliveryId,
+        source: "github_webhook",
+      });
+    if (invalidation.kind !== "invalidated") {
+      return NextResponse.json({
+        ok: true,
+        ignored: true,
+        merged: true,
+        recorded: false,
+        invalidated: false,
+        reason: `${input.reason}; acceptance record ${invalidation.kind}`,
+      });
+    }
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      invalidated: !invalidation.currentAuthoritative,
+      reason: input.reason,
+      superseded: invalidation.superseded,
+      previewBootsTornDown: invalidation.previewBootsTornDown,
+    });
+  } catch (error) {
+    console.error("[github-app/webhook] signed merge terminal invalidation failed:", error);
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      invalidated: false,
+      reason: `${input.reason}; terminal invalidation unavailable`,
+    });
+  }
 }
 
 type SignedHeadTransition = {
@@ -477,10 +580,10 @@ export async function POST(request: NextRequest) {
   if (typeof repoFullName !== "string") return ignored();
   const expectedPrUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
   const signedPrUrl = prObj.html_url;
-  if (signedPrUrl != null && signedPrUrl !== expectedPrUrl) {
+  if (!isMergedClose && signedPrUrl != null && signedPrUrl !== expectedPrUrl) {
     return ignored("invalid pull request URL");
   }
-  const prUrl = typeof signedPrUrl === "string" ? signedPrUrl : null;
+  const prUrl = signedPrUrl === expectedPrUrl ? signedPrUrl : null;
 
   const installation = body.installation;
   const installationId =
@@ -559,6 +662,108 @@ export async function POST(request: NextRequest) {
       })
     : null;
 
+  if (isMergedClose) {
+    const mergeMetadata = signedMergeMetadata(prObj, body, expectedPrUrl, headSha);
+    if (mergeMetadata) {
+      // Legacy R9.2 observation metric only. It is best-effort and never
+      // establishes canonical Change Record merge or decision custody;
+      // recordSignedAcceptanceRecordMerge is the sole authority for those facts.
+      await recordWebhookReviewEvent({
+        workspaceId: workspace.workspaceId,
+        repo: repoFullName,
+        prNumber,
+        taskFamily: null,
+        deliveryId,
+        eventType: "merged",
+        occurredAt: mergeMetadata.mergedAt,
+        headSha,
+        actorType: actorTypeFromGitHubUserType(mergeMetadata.githubActor.type),
+        additions: numberOrNull(prObj.additions),
+        deletions: numberOrNull(prObj.deletions),
+        changedFiles: numberOrNull(prObj.changed_files),
+      });
+    }
+    if (!attachedRecord) {
+      return NextResponse.json({
+        ok: true,
+        ignored: true,
+        merged: true,
+        recorded: false,
+        reason: "acceptance record missing",
+      });
+    }
+
+    if (!mergeMetadata) {
+      return terminalizeUnrecordedSignedMerge({
+        workspaceId: workspace.workspaceId,
+        recordId: attachedRecord.id,
+        repo: repoFullName,
+        prNumber,
+        headSha,
+        deliveryId,
+        reason: "invalid signed merge metadata",
+      });
+    }
+
+    try {
+      const result = await recordSignedAcceptanceRecordMerge({
+        workspaceId: workspace.workspaceId,
+        recordId: attachedRecord.id,
+        repo: repoFullName,
+        prNumber,
+        deliveryId,
+        headSha,
+        baseSha: mergeMetadata.baseSha,
+        mergeSha: mergeMetadata.mergeSha,
+        mergedAt: mergeMetadata.mergedAt,
+        prUrl: mergeMetadata.prUrl,
+        githubActor: mergeMetadata.githubActor,
+        source: "github_webhook",
+      });
+      if (!("decisionAlignment" in result)) {
+        return NextResponse.json({
+          ok: true,
+          ignored: true,
+          merged: true,
+          recorded: false,
+          reason: `acceptance record ${result.kind}`,
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        merged: true,
+        recorded: true,
+        acceptanceOutcomeRecorded: result.decisionAlignment.kind === "aligned",
+        kind: result.kind,
+        decisionAlignment: result.decisionAlignment.kind,
+        superseded: result.superseded,
+        previewBootsTornDown: result.previewBootsTornDown,
+      });
+    } catch (error) {
+      if (error instanceof SignedAcceptanceRecordMergeConflictError) {
+        return terminalizeUnrecordedSignedMerge({
+          workspaceId: workspace.workspaceId,
+          recordId: attachedRecord.id,
+          repo: repoFullName,
+          prNumber,
+          headSha,
+          deliveryId,
+          reason: "signed merge conflicts with acceptance record custody",
+        });
+      }
+      console.error("[github-app/webhook] signed merge record failed:", error);
+      return terminalizeUnrecordedSignedMerge({
+        workspaceId: workspace.workspaceId,
+        recordId: attachedRecord.id,
+        repo: repoFullName,
+        prNumber,
+        headSha,
+        deliveryId,
+        reason: "signed merge custody unavailable",
+      });
+    }
+  }
+
   let terminalInvalidation: Awaited<
     ReturnType<typeof invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent>
   > | null = null;
@@ -570,74 +775,13 @@ export async function POST(request: NextRequest) {
         repo: repoFullName,
         prNumber,
         headSha,
-        event: isMergedClose ? "merged" : "closed",
+        event: "closed",
         deliveryId,
         source: "github_webhook",
       });
     if (terminalInvalidation.kind !== "invalidated") {
       return ignored(`acceptance record ${terminalInvalidation.kind}`);
     }
-  }
-
-  if (isMergedClose) {
-    const mergeCommitSha =
-      typeof prObj.merge_commit_sha === "string" ? prObj.merge_commit_sha : null;
-    await recordWebhookReviewEvent({
-      workspaceId: workspace.workspaceId,
-      repo: repoFullName,
-      prNumber,
-      taskFamily: null,
-      deliveryId,
-      eventType: "merged",
-      occurredAt,
-      headSha,
-      actorType: actorTypeFromGitHubUserType(asObject(body.sender)?.type),
-      additions: numberOrNull(prObj.additions),
-      deletions: numberOrNull(prObj.deletions),
-      changedFiles: numberOrNull(prObj.changed_files),
-    });
-    try {
-      const record = await findOrCreateChangeRecord({
-        workspaceId: workspace.workspaceId,
-        repo: repoFullName,
-        prNumber,
-        headShas: [headSha],
-        mergedSha: mergeCommitSha,
-        state: "merged",
-      });
-      await appendChangeRecordEvent({
-        recordId: record.id,
-        eventKey: `merge:pr:${prNumber}:merged`,
-        stage: "merge",
-        actor: "github-webhook",
-        payloadRef: {
-          kind: "merge",
-          repo: repoFullName,
-          prNumber,
-          url: prUrl,
-          mergeCommitSha,
-          outcome: "merged",
-        },
-      });
-    } catch (error) {
-      // A signed webhook is acknowledged even when the durable attachment is
-      // temporarily unavailable; GitHub may redeliver, and the event key is
-      // idempotent when it does.
-      console.error("[github-app/webhook] merge change-record attach failed:", error);
-    }
-    return NextResponse.json({
-      ok: true,
-      merged: true,
-      invalidated: terminalInvalidation?.kind === "invalidated",
-      superseded:
-        terminalInvalidation?.kind === "invalidated"
-          ? terminalInvalidation.superseded
-          : 0,
-      previewBootsTornDown:
-        terminalInvalidation?.kind === "invalidated"
-          ? terminalInvalidation.previewBootsTornDown
-          : 0,
-    });
   }
 
   if (isTerminalClose) {

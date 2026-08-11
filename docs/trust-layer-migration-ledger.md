@@ -347,13 +347,13 @@ ingestion route, no external builder received the Pack, and no deployed, live,
 or customer path was observed.
 
 The rebased Cargo compatibility gate covers 110 focused Python
-manager/observer tests, 242 focused Console compiler, parser, route,
+manager/observer tests, 241 focused Console compiler, parser, route,
 dispatch-consumer, and Record-detail tests, seven DB boundary tests, and three
 focused fresh-migrated PostgreSQL cases covering exact profile admission,
 dual-config and root-source refusal truth, immutable historical replay, and
 R10.2 Pack propagation. The complete 94-case Change Record file and full
-143-file / 1,898-test database suite pass on fresh migrated PostgreSQL. The
-broader local non-integration Python lane passed 5,715 tests plus 101 subtests.
+143-file / 1,911-test database suite pass on fresh migrated PostgreSQL. The
+broader local non-integration Python lane passed 5,718 tests plus 101 subtests.
 Package typechecks/builds, scoped lint, and diff checks are green. The slice
 also carries a
 [browser-rendered component screenshot](screenshots/r101-cargo-receipt.png) of

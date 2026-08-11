@@ -8872,6 +8872,10 @@ function compiledPackCargoConfigurationCustody(
   const paths = [".cargo/config.toml", ".cargo/config"] as const;
   const custody = paths.map((path) => compiledPackConfigurationPathCustody(pack, path));
   if (custody.includes("present")) return "present";
+  if (pack.compiler["version"] !== "exact-head-correction-pack-v6"
+    || pack.compiler["policyVersion"] !== "bounded-exact-ranges-v4") {
+    return "not_proven";
+  }
   return custody.every((value) => value === "absent") ? "absent" : "not_proven";
 }
 

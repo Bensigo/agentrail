@@ -7327,6 +7327,72 @@ describe.skipIf(!DB_AVAILABLE)(
         });
       }
 
+      const oldPackHeadSha = "a".repeat(40);
+      const oldPack = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-cargo-old-pack",
+        prNumber: 569,
+        headSha: oldPackHeadSha,
+        manifestPath: "Cargo.toml",
+        manifestContent,
+        lockfilePath: "Cargo.lock",
+        lockfileContent,
+        cargoConfigurationReads: {
+          ".cargo/config.toml": "path_not_found",
+          ".cargo/config": "path_not_found",
+        },
+        compiledPackCompilerVersion: "exact-head-correction-pack-v5",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v3",
+      });
+      if (oldPack.lockfileBlobSha === null) throw new Error("expected old Cargo Pack lock custody");
+      const oldPackRecorded = await recordAcceptanceDependencyObservation(
+        cargoAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: oldPack.draft.record.id,
+          compiledPackId: oldPack.pack.id,
+          headSha: oldPackHeadSha,
+          manifestBlobSha: oldPack.manifestBlobSha,
+          lockfileBlobSha: oldPack.lockfileBlobSha,
+        }),
+      );
+      expect(oldPackRecorded).toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "not_proven",
+          reasons: ["cargo_configuration_absence_not_proven"],
+        },
+      });
+      if (oldPackRecorded.kind !== "recorded") throw new Error("expected old Cargo Pack observation");
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: oldPack.draft.record.id,
+        repo: oldPack.repo,
+        adapter: "github_codex",
+      });
+      const oldPackOwnerId = randomUUID();
+      await db.insert(workspaceMemberships).values({
+        workspaceId: wsId,
+        userId: oldPackOwnerId,
+        role: "owner",
+      });
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: oldPack.draft.record.id,
+        observationEventId: oldPackRecorded.observation.eventId,
+        approvedBy: `user:${oldPackOwnerId}`,
+      })).resolves.toEqual({
+        kind: "observation_not_eligible",
+        reason: "observation_not_observed",
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, oldPack.draft.record.id),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ))).toHaveLength(1);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, oldPack.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+
       const headSha = "6".repeat(40);
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
@@ -7341,6 +7407,8 @@ describe.skipIf(!DB_AVAILABLE)(
           ".cargo/config.toml": "path_not_found",
           ".cargo/config": "path_not_found",
         },
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
       });
       if (fixture.lockfileBlobSha === null) throw new Error("expected Cargo refusal lock custody");
       const base = (targetVersion: string) => cargoAcceptanceDependencyObservationInput({
@@ -7436,6 +7504,8 @@ describe.skipIf(!DB_AVAILABLE)(
           ".cargo/config.toml": "path_not_found",
           ".cargo/config": "path_not_found",
         },
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
       });
       await expect(recordAcceptanceDependencyObservation({
         ...cargoAcceptanceDependencyObservationInput({

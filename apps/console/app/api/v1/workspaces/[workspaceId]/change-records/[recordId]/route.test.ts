@@ -17,6 +17,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
+  readDependencyDraftProposalDetail: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
   recordAcceptancePrReviewEffort: vi.fn(),
 }));
@@ -34,6 +35,7 @@ import {
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
+  readDependencyDraftProposalDetail,
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
 } from "@agentrail/db-postgres";
@@ -484,6 +486,7 @@ beforeEach(() => {
     currentDependencyObservations as never,
   );
   vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(currentAcceptanceDetail as never);
+  vi.mocked(readDependencyDraftProposalDetail).mockResolvedValue({ kind: "not_draft_proposal" } as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
     kind: "recorded",
     binding: currentFinalDecision.binding,
@@ -533,6 +536,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
     expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
+    expect(readDependencyDraftProposalDetail).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -548,6 +552,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
     expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
+    expect(readDependencyDraftProposalDetail).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -565,6 +570,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
     expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
+    expect(readDependencyDraftProposalDetail).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -646,6 +652,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         }],
       },
       acceptanceDetail: JSON.parse(JSON.stringify(currentAcceptanceDetail)),
+      dependencyDraftProposal: { kind: "not_draft_proposal" },
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
@@ -670,6 +677,45 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(readDependencyDraftProposalDetail).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+  });
+
+  it("redacts dependency proposal commands from the raw audit timeline", async () => {
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      events: [{
+        id: "event-dependency-proposal",
+        recordId: RECORD,
+        eventKey: `dependency-observation-proposal:draft:sha256:${"d".repeat(64)}`,
+        stage: "dependency_observation_proposal",
+        actor: "server:dependency-observation-proposal",
+        payloadRef: {
+          kind: "dependency_observation_proposal_draft",
+          candidate: {
+            manager_commands: { update: "pnpm update secret-package" },
+            verification_commands: ["pnpm test"],
+          },
+        },
+        at: CREATED,
+        createdAt: CREATED,
+      }],
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.events[0].payloadRef).toEqual({
+      kind: "redacted_dependency_observation_proposal",
+      version: 1,
+      disclosure: "bounded_projection_only",
+    });
+    expect(JSON.stringify(body)).not.toContain("manager_commands");
+    expect(JSON.stringify(body)).not.toContain("verification_commands");
+    expect(JSON.stringify(body)).not.toContain("pnpm update secret-package");
   });
 
   it("returns owner/admin decision capability without widening member read access", async () => {
@@ -682,6 +728,42 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canRecordFinalDecision).toBe(true);
     expect(body.canRecordReviewEffort).toBe(true);
     expect(body.canApproveDependencyObservation).toBe(true);
+  });
+
+  it("returns only the bounded draft dependency projection", async () => {
+    vi.mocked(readDependencyDraftProposalDetail).mockResolvedValue({
+      kind: "draft",
+      record: { id: RECORD, repo: "ada/widgets", contractId: CONTRACT, contractVersion: 1 },
+      proposal: {
+        custodyIdentity: `sha256:${"a".repeat(64)}`,
+        watch: { id: CYCLE, observationId: DECISION_BINDING_ID, observationKey: "candidate:bounded" },
+        candidate: { package: "react", currentVersion: "18.2.0", targetVersion: "18.3.0", dependencyKind: "dependencies" },
+        files: {
+          manifest: { path: "package.json", sha256: "b".repeat(64) },
+          lockfile: { path: "pnpm-lock.yaml", sha256: "c".repeat(64) },
+        },
+        profile: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1", capability: "proposal_observation_only" },
+        repositorySourceVerification: "watch_observation_only",
+        independentSourceProof: "not_proven",
+        evidenceAdmission: "unresolved",
+        laterEvidence: {
+          confirmation: "not_recorded", contextPack: "not_recorded", builderHandoff: "not_recorded",
+          delivery: "not_recorded", result: "not_recorded",
+        },
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+    const proposal = (await response.json()).dependencyDraftProposal;
+
+    expect(response.status).toBe(200);
+    expect(proposal.proposal).toMatchObject({
+      candidate: { package: "react", targetVersion: "18.3.0" },
+      evidenceAdmission: "unresolved",
+      laterEvidence: { delivery: "not_recorded", result: "not_recorded" },
+    });
+    expect(JSON.stringify(proposal)).not.toContain("manager_commands");
+    expect(JSON.stringify(proposal)).not.toContain("verification_commands");
   });
 
   it("downgrades a current packet set when the separately read Record head cycle changed", async () => {

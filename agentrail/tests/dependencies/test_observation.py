@@ -247,7 +247,11 @@ def test_cargo_registry_lock_profile_detects_a_profile_bound_candidate() -> None
     assert candidate.adapter_identity_fingerprint is not None
     assert candidate.manifest_path == "Cargo.toml"
     assert candidate.lockfile_path == "Cargo.lock"
-    assert candidate.manager_commands["update"] == "cargo update -p serde --precise 1.0.204"
+    assert candidate.manager_commands["update"] == (
+        "cargo update --manifest-path Cargo.toml "
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203 "
+        "--precise 1.0.204"
+    )
 
 
 @pytest.mark.parametrize(
@@ -347,6 +351,34 @@ def test_cargo_registry_must_contain_exact_locked_release_before_yanked_or_targe
     assert "does not contain the exact locked Cargo version" in result.reasons[0]
 
 
+def test_cargo_registry_rejects_unbounded_version_components_without_conversion() -> None:
+    result = observe_dependencies(
+        _snapshot(**_cargo_files()),
+        registry=Registry({"serde": ("1.0.203", f"1.0.{'9' * 5000}")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "unparseable" in result.reasons[0]
+
+
+def test_cargo_caret_rejects_a_max_safe_controlling_component_before_registry() -> None:
+    maximum = "9007199254740991"
+    files = _cargo_files(
+        serde_requirement=f"^{maximum}.0.0",
+        serde_version=f"{maximum}.0.0",
+    )
+    registry = Registry({"serde": (f"{maximum}.0.0", f"{maximum}.0.1")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "does not satisfy" in result.reasons[0]
+    assert registry.calls == []
+
+
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [
@@ -358,10 +390,85 @@ def test_cargo_registry_must_contain_exact_locked_release_before_yanked_or_targe
         (lambda files: files.update({"Cargo.toml": files["Cargo.toml"].replace('serde = "^1.0.203"', 'serde = { version = "^1.0.203", git = "https://example.invalid/serde" }')}), "stable caret"),
         (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('checksum = "' + "a" * 64 + '"\n', "")}), "checksum"),
         (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('dependencies = ["serde"]', 'dependencies = ["missing"]')}), "unresolved"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('dependencies = ["serde"]', 'dependencies = ["serde 1.0.203 (registry+https://github.com/rust-lang/crates.io-index)"]')}), "unsupported edge"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('checksum = "' + "a" * 64 + '"\n', 'checksum = "' + "a" * 64 + '"\nreplace = "serde 1.0.202"\n')}), "unsupported fields"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace("version = 3\n", "version = 3\nmetadata = {}\n", 1)}), "top-level"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"] + '\n[[package]]\nname = "helper-crate"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "' + "b" * 64 + '"\n\n[[package]]\nname = "helper_crate"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "' + "c" * 64 + '"\n'}), "multiple resolutions"),
         (lambda files: files.update({"Cargo.lock": files["Cargo.lock"] + '\n[[package]]\nname = "serde"\nversion = "1.0.202"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "' + "c" * 64 + '"\n'}), "multiple resolutions"),
     ],
 )
 def test_cargo_registry_lock_profile_refuses_unmodelled_manifest_and_graph_semantics(mutate, reason) -> None:
+    files = _cargo_files()
+    mutate(files)
+    registry = Registry({"serde": ("1.0.203", "1.0.204")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert reason in result.reasons[0]
+    assert registry.calls == []
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace(
+                    'edition = "2021"', 'edition = "2021"\npublish = false'
+                )
+            }),
+            "stable root package",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace('edition = "2021"', 'edition = "2027"')
+            }),
+            "stable root package",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace("serde =", "Serde ="),
+                "Cargo.lock": files["Cargo.lock"].replace('name = "serde"', 'name = "Serde"').replace(
+                    'dependencies = ["serde"]', 'dependencies = ["Serde"]'
+                ),
+            }),
+            "stable caret requirement",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace("serde =", "con ="),
+                "Cargo.lock": files["Cargo.lock"].replace('name = "serde"', 'name = "con"').replace(
+                    'dependencies = ["serde"]', 'dependencies = ["con"]'
+                ),
+            }),
+            "stable caret requirement",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace(
+                    'serde = "^1.0.203"', 'serde = "^1.0.203"\nserde_test = "^1.0.203"\nserde-test = "^1.0.203"'
+                )
+            }),
+            "collide",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.toml": files["Cargo.toml"].replace("^1.0.203", "^9007199254740992.0.0")
+            }),
+            "stable caret requirement",
+        ),
+        (
+            lambda files: files.update({
+                "Cargo.lock": files["Cargo.lock"].replace("1.0.203", "9" * 5000 + ".0.0")
+            }),
+            "unsupported",
+        ),
+    ],
+)
+def test_cargo_profile_rejects_noncanonical_manifest_names_and_versions(mutate, reason) -> None:
     files = _cargo_files()
     mutate(files)
     registry = Registry({"serde": ("1.0.203", "1.0.204")})

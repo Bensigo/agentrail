@@ -625,6 +625,69 @@ function uvDependencyEnvelope(
   return envelope;
 }
 
+function cargoDependencyEnvelope(
+  withPack = false,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "rust",
+    manager: "cargo",
+    profile: "cargo_lock_registry_only_v1",
+  };
+  item.binding.compiledPack = {
+    ...item.binding.compiledPack,
+    compilerVersion: "exact-head-correction-pack-v6",
+    policyVersion: "bounded-exact-ranges-v4",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    package: "serde",
+    dependencyKind: "dependencies",
+    specifier: "^1.0.203",
+    currentVersion: "1.0.203",
+    targetVersion: "1.0.204",
+  };
+  item.observation.runtime = {
+    ...item.observation.runtime,
+    identity,
+    version: "1.97.1",
+  };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "cargo",
+    version: "1.97.1",
+    profile: "cargo_lock_registry_only_v1",
+    updateArgv: [
+      "cargo", "update", "--manifest-path", "Cargo.toml",
+      "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
+      "--precise", "1.0.204",
+    ],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "Cargo.toml" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "Cargo.lock" };
+  item.observation.security = {
+    ...item.observation.security,
+    identity,
+    reference: "osv:crates.io:serde@1.0.204",
+  };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.binding = structuredClone(item.binding);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -2113,6 +2176,111 @@ describe("Change Record detail view", () => {
     expect(isDependencyObservationsEnvelope(historical)).toBe(false);
   });
 
+  it("strictly validates Cargo receipts and the immutable external-builder Pack", () => {
+    expect(isDependencyObservationsEnvelope(cargoDependencyEnvelope())).toBe(true);
+    expect(isDependencyObservationsEnvelope(cargoDependencyEnvelope(true))).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: cargoDependencyEnvelope(true),
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("serde 1.0.203 → 1.0.204");
+    expect(content).toContain("safe · rust / cargo · 1.97.1");
+    expect(content).toContain("safe · cargo 1.97.1 · cargo_lock_registry_only_v1");
+    expect(content).toContain(
+      "cargo update --manifest-path Cargo.toml registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203 --precise 1.0.204",
+    );
+    expect(content).toContain("exact-head-correction-pack-v6 · bounded-exact-ranges-v4");
+    expect(content).toContain("Cargo.toml");
+    expect(content).toContain("Cargo.lock");
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain("External authority not_granted");
+    expect(content).not.toMatch(/execute|delivery granted|managed-build|live caller/iu);
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    for (const mutate of [
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.package = "Serde";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.package = "com1";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.specifier = "1.0.203";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.targetVersion = "2.0.0";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.runtime.version = "1.97.0";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.version = "1.98.0";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.updateArgv = [
+          "cargo", "update", "--manifest-path", "Cargo.toml", "-p", "serde@1.0.203",
+          "--precise", "1.0.204",
+        ];
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.manifest.path = "crates/widget/Cargo.toml";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.lockfile.path = "crates/widget/Cargo.lock";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.observation.security.reference = "osv:npm:serde@1.0.204";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.binding.compiledPack.compilerVersion = "exact-head-correction-pack-v5";
+      },
+      (value: ReturnType<typeof cargoDependencyEnvelope>) => {
+        value.observations[0]!.binding.compiledPack.policyVersion = "bounded-exact-ranges-v3";
+      },
+    ]) {
+      const invalid = cargoDependencyEnvelope();
+      mutate(invalid);
+      expect(isDependencyObservationsEnvelope(invalid)).toBe(false);
+    }
+
+    const mismatchedPack = cargoDependencyEnvelope(true);
+    mismatchedPack.observations[0]!.externalBuilderPack!.packageManager.updateArgv.push("--offline");
+    expect(isDependencyObservationsEnvelope(mismatchedPack)).toBe(false);
+  });
+
+  it("keeps frozen and configuration-refused Cargo observations readable without promotion", () => {
+    for (const [status, reasons] of [
+      ["refused_unsupported_profile", ["unsupported_manager_profile"]],
+      ["refused_unsafe_runtime", ["unsafe_cargo_configuration_present"]],
+      ["not_proven", ["cargo_configuration_absence_not_proven"]],
+    ] as const) {
+      const historical = cargoDependencyEnvelope();
+      const observation = historical.observations[0]!.observation;
+      observation.runtime.version = "1.97.0";
+      observation.status = status;
+      observation.reasons = [...reasons];
+
+      expect(isDependencyObservationsEnvelope(historical)).toBe(true);
+      const rendered = DependencyObservationsPanel({
+        dependencyObservations: historical,
+        canApproveDependencyObservation: true,
+        onApprove: () => undefined,
+        approvingObservationEventId: null,
+        approvalError: null,
+      });
+      expect(textContent(rendered)).toContain(reasons[0]);
+      expect(buttonLabels(rendered)).toEqual([]);
+
+      observation.status = "observed";
+      observation.reasons = [];
+      expect(isDependencyObservationsEnvelope(historical)).toBe(false);
+    }
+  });
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {
     const historical = npmDependencyEnvelope();
     const observation = historical.observations[0]!.observation;
@@ -2168,6 +2336,7 @@ describe("Change Record detail view", () => {
     expect(content).toContain("grants no external authority");
     expect(content).toContain("@acme/widget 1.2.3 → 1.3.0");
     expect(content).toContain(dependencyBinding.compiledPack.id);
+    expect(content).not.toContain("Compiler / policy");
     expect(buttonLabels(rendered)).toEqual(["Approve & mint external-builder Pack"]);
     (buttons[0]!.props?.onClick as (() => void))();
     expect(approved).toBe(DEPENDENCY_OBSERVATION_EVENT);

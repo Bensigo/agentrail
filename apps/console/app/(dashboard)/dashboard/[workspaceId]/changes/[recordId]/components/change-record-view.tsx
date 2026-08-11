@@ -330,7 +330,9 @@ type AcceptanceDependencyObservationReason =
   | "security_evidence_unavailable"
   | "security_evidence_ambiguous"
   | "unsafe_yarn_configuration_present"
-  | "yarn_configuration_absence_not_proven";
+  | "yarn_configuration_absence_not_proven"
+  | "unsafe_cargo_configuration_present"
+  | "cargo_configuration_absence_not_proven";
 
 type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 type AcceptanceDependencyCandidate = {
@@ -2607,6 +2609,8 @@ export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrRe
 const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const CARGO_CRATE_NAME = /^[a-z][a-z0-9_-]{0,63}$/u;
+const CARGO_RESERVED_CRATE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
@@ -2629,6 +2633,8 @@ const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
 
 type AcceptanceDependencyReceiptProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
+  readonly compiledPackCompilerVersion?: string;
+  readonly compiledPackPolicyVersion?: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -2744,6 +2750,28 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
+function cargoDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !CARGO_CRATE_NAME.test(candidate.package)
+    || CARGO_RESERVED_CRATE_NAME.test(candidate.package)) return false;
+  const lowerMatch = /^\^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(candidate.specifier);
+  const current = stableSemverParts(candidate.currentVersion);
+  const target = stableSemverParts(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(1).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)) return false;
+  const upper: [number, number, number] = lower[0] > 0
+    ? [lower[0] + 1, 0, 0]
+    : lower[1] > 0
+      ? [0, lower[1] + 1, 0]
+      : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableSemver(current, lower) >= 0
+    && compareStableSemver(target, lower) >= 0
+    && compareStableSemver(current, upper) < 0
+    && compareStableSemver(target, upper) < 0
+    && compareStableSemver(target, current) > 0;
+}
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2760,6 +2788,13 @@ function osvPyPiReceiptIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function osvCargoReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:crates.io:${candidate.package}@${candidate.targetVersion}`;
+}
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
@@ -2825,6 +2860,26 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
+  ["rust:cargo:cargo_lock_registry_only_v1", {
+    identity: {
+      ecosystem: "rust",
+      manager: "cargo",
+      profile: "cargo_lock_registry_only_v1",
+    },
+    compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+    compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+    candidateIsValid: cargoDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "1.97.1",
+    packageManagerVersionIsValid: (version) => version === "1.97.1",
+    manifestPathIsValid: (path) => path === "Cargo.toml",
+    lockfilePathIsValid: (path) => path === "Cargo.lock",
+    securityIsValid: osvCargoReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "cargo", "update", "--manifest-path", "Cargo.toml",
+      `registry+https://github.com/rust-lang/crates.io-index#${candidate.package}@${candidate.currentVersion}`,
+      "--precise", candidate.targetVersion,
     ],
   }],
 ]);
@@ -2964,7 +3019,9 @@ function isDependencyObservationReason(value: unknown): value is AcceptanceDepen
     || value === "lockfile_evidence_ambiguous" || value === "security_affected"
     || value === "security_evidence_unavailable" || value === "security_evidence_ambiguous"
     || value === "unsafe_yarn_configuration_present"
-    || value === "yarn_configuration_absence_not_proven";
+    || value === "yarn_configuration_absence_not_proven"
+    || value === "unsafe_cargo_configuration_present"
+    || value === "cargo_configuration_absence_not_proven";
 }
 
 function isDependencyObservation(
@@ -3020,6 +3077,10 @@ function isDependencyObservation(
     && exactJsonEqual(value.packageManager.updateArgv, profile.expectedArgv(value.candidate))
     && profile.manifestPathIsValid(value.manifest.path)
     && profile.lockfilePathIsValid(value.lockfile.path)
+    && (profile.compiledPackCompilerVersion === undefined
+      || binding.compiledPack.compilerVersion === profile.compiledPackCompilerVersion)
+    && (profile.compiledPackPolicyVersion === undefined
+      || binding.compiledPack.policyVersion === profile.compiledPackPolicyVersion)
     && value.lockfile.disposition === "present"
     && value.security.disposition === "clear"
     && profile.securityIsValid(value.security, value.candidate)
@@ -4585,12 +4646,26 @@ export function DependencyObservationsPanel({
                       {observation.packageManager.version ? ` ${observation.packageManager.version}` : ""}
                       {` · ${observation.packageManager.profile}`}
                     </CorrectionDatum>
+                    {observation.candidate.identity.ecosystem === "rust"
+                      && observation.candidate.identity.manager === "cargo"
+                      && observation.candidate.identity.profile === "cargo_lock_registry_only_v1" ? (
+                        <CorrectionDatum label="Bounded update argv" mono>
+                          {observation.packageManager.updateArgv.join(" ")}
+                        </CorrectionDatum>
+                      ) : null}
                     <CorrectionDatum label="Security evidence">
                       {observation.security.identity.ecosystem}/{observation.security.identity.manager} · {observation.security.provider} · {observation.security.disposition}
                     </CorrectionDatum>
                     <CorrectionDatum label="Observed at">{formatChangeRecordDate(observation.observedAt)}</CorrectionDatum>
                     <CorrectionDatum label="Compiled Context Pack" mono>{itemBinding.compiledPack.id}</CorrectionDatum>
                     <CorrectionDatum label="Compiled Pack SHA-256" mono>{itemBinding.compiledPack.sha256}</CorrectionDatum>
+                    {observation.candidate.identity.ecosystem === "rust"
+                      && observation.candidate.identity.manager === "cargo"
+                      && observation.candidate.identity.profile === "cargo_lock_registry_only_v1" ? (
+                        <CorrectionDatum label="Compiler / policy" mono>
+                          {itemBinding.compiledPack.compilerVersion} · {itemBinding.compiledPack.policyVersion}
+                        </CorrectionDatum>
+                      ) : null}
                   </dl>
                   {observation.reasons.length > 0 ? (
                     <p className="mt-3 text-[var(--gray-09)]">

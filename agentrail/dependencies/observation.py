@@ -49,6 +49,9 @@ from agentrail.dependencies.manager import (
 )
 from agentrail.dependencies.cargo import (
     CARGO_MANIFEST_MAX_BYTES,
+    cargo_normalized_name,
+    cargo_registry_name,
+    cargo_root_package_name,
     cargo_constraint_matches,
     parse_cargo_lockfile,
     stable_version,
@@ -764,9 +767,10 @@ def _parse_python_requirement(value: Any) -> Optional[Tuple[str, str]]:
 def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
     """Parse supplied Cargo roots without claiming generic inventory completeness.
 
-    A supplied ``.cargo`` path is enough to refuse the profile. Only the GitHub
-    heartbeat provider currently proves its absence through a complete
-    exact-SHA root listing; injected providers do not gain that custody here.
+    A supplied ``.cargo`` path is enough to refuse this source-only observer.
+    Its absence here is not canonical proof: the Acceptance Record compiler
+    and DB independently require both exact-head Cargo config receipts before
+    an observation can become eligible.
     """
 
     if any(path == ".cargo" or path.startswith(".cargo/") for path in files):
@@ -781,20 +785,35 @@ def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[T
     manifest, error = _toml_mapping(manifest_text, "Cargo.toml")
     if error:
         return (), error
-    if any(key in manifest for key in ("workspace", "patch", "replace", "source", "target", "dev-dependencies", "build-dependencies")):
-        return (), "Cargo v1 rejects workspace, patch, replace, source, target, dev, and build dependency configuration"
+    if set(manifest) != {"package", "dependencies"}:
+        unexpected = sorted(set(manifest) - {"package", "dependencies"})
+        return (), (
+            "Cargo v1 rejects unsupported Cargo.toml root field: "
+            + (unexpected[0] if unexpected else "missing package or dependencies")
+        )
     project = manifest.get("package")
     dependencies = manifest.get("dependencies")
-    if not isinstance(project, dict) or not isinstance(project.get("name"), str) or stable_version(project.get("version")) is None:
+    if (
+        not isinstance(project, dict)
+        or set(project) != {"name", "version", "edition"}
+        or not cargo_root_package_name(project.get("name"))
+        or stable_version(project.get("version")) is None
+        or project.get("edition") not in {"2015", "2018", "2021", "2024"}
+    ):
         return (), "Cargo.toml must declare one stable root package"
     if not isinstance(dependencies, dict) or not dependencies:
         return (), "Cargo.toml dependencies must be a non-empty object"
     direct: Dict[str, str] = {}
+    normalized_direct: set[str] = set()
     for package, requirement in dependencies.items():
         matches, constraint_error = cargo_constraint_matches(requirement, "0.0.0")
         del matches
-        if not isinstance(package, str) or constraint_error is not None:
+        if not cargo_registry_name(package) or constraint_error is not None:
             return (), "Cargo.toml dependency must use a stable caret requirement"
+        normalized = cargo_normalized_name(package)
+        if normalized in normalized_direct:
+            return (), "Cargo.toml dependencies collide after Cargo name normalization"
+        normalized_direct.add(normalized)
         direct[package] = requirement
     try:
         graph = parse_cargo_lockfile(files.get("Cargo.lock", ""))
@@ -805,8 +824,8 @@ def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[T
     if set(graph.root.dependencies) != set(direct):
         return (), "Cargo.toml direct dependencies do not exactly match the Cargo.lock root graph"
     names = sorted(set(selected) if selected else direct)
-    if any(not isinstance(name, str) or not name for name in names):
-        return (), "selected dependency names must be non-empty strings"
+    if any(not cargo_registry_name(name) for name in names):
+        return (), "selected Cargo dependency names must be canonical crates.io names"
     entries: list[_Entry] = []
     for package in names:
         if package not in direct:
@@ -954,7 +973,11 @@ def _observe_entries(
                 )
         else:
             available = tuple(metadata.available_versions)
-            if any(_parse_version(version) is None for version in available):
+            if manager.name is ManagerName.CARGO:
+                versions_are_valid = all(stable_version(version) is not None for version in available)
+            else:
+                versions_are_valid = all(_parse_version(version) is not None for version in available)
+            if not versions_are_valid:
                 return _insufficient(f"registry versions for {entry.package} are unparseable")
             if manager.name is ManagerName.NPM:
                 compatible = tuple(
@@ -1065,6 +1088,7 @@ def _make_candidate(
     render = lambda command: (
         " ".join(command)
         .replace("{dependency}", entry.package)
+        .replace("{current_version}", entry.current_version)
         .replace("{version}", target)
         .replace("{save_flag}", save_flag or "")
     )

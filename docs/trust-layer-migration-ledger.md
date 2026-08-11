@@ -1,8 +1,8 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `bb5b9a3e`, after merged PRs
-#1677–#1683 and #1685–#1692. The current uv evidence-profile slice is
-described below and remains narrower than canonical R10.1 closure.
+Last reconciled: 2026-08-11 at main commit `48eec006`, after merged PR
+#1694. The bounded canonical R10 source/test spine is closed below; release
+proof remains open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -198,7 +198,7 @@ immutable event, binding, source custody, and evidence. It cannot be promoted
 to `observed`, approved, or minted into an external-builder Pack. A changed
 same-cycle body conflicts, and a new malformed body creates no event.
 
-The current slice adds the closed `python` / `uv` /
+PR #1694 added the closed `python` / `uv` /
 `uv_project_lockfile_only_v1` evidence profile. It accepts only stable uv
 0.12.x with a stable Python 3 runtime, a root `pyproject.toml` and `uv.lock`,
 one canonical PyPI package in direct project dependencies, a canonical
@@ -227,12 +227,23 @@ exact immutable event and evidence. It cannot become `observed`, approved, or
 minted into an external-builder Pack. Changed evidence conflicts; a new broad
 or malformed uv body creates no event. Legacy v1 replay remains pnpm-only.
 
-Canonical R10.1 therefore remains open. Subsequent versioned adapter slices
-must close the remaining v1 priority managers—pip, Poetry; Maven,
-Gradle; dotnet/NuGet; Composer; Cargo; and Go Modules—before R10 source/test
-closure. Bun and the lower-priority detected managers may remain labelled
-extension points. Frameworks use their ecosystem package-manager adapter and
-do not create separate capability claims.
+Canonical R10.1 source/test is closed. The canonical criterion is behavioral:
+dependency evidence uses the R1–R9 spine and refuses unsafe runtime,
+lockfile, baseline, or security conditions. It does not require every detected
+package manager to become an accepted profile. pnpm, npm, Yarn 4, and uv have
+bounded accepted profiles; Poetry and every other unprofiled manager remain
+explicitly `refused_unsupported_profile`. Such a refusal cannot become
+`observed`, receive approval, or mint an R10.2 Pack, and immutable historical
+replay cannot promote it.
+
+Poetry was audited rather than admitted. Its non-installing `update <package>
+--lock` command still has no exact-target argument and Poetry 2.4.1 can fall
+back from sdist metadata inspection to a PEP 517 isolated builder. There is no
+lock-time `--no-build` control. A Poetry profile therefore remains a future
+sandbox/metadata-custody extension, not missing canonical correctness. The
+same fail-closed rule applies to managers without a bounded safe profile. The
+audit is grounded in Poetry's [update command contract](https://python-poetry.org/docs/cli/#update)
+and pinned [sdist metadata fallback](https://github.com/python-poetry/poetry/blob/2.4.1/src/poetry/inspection/info.py#L446-L537).
 
 The corrective contract is versioned. New runner requests must carry the
 explicit ecosystem, manager, and profile identity; legacy v1 request bodies are
@@ -292,9 +303,10 @@ Local R10.2 proof includes focused DB and Console tests, five fresh migrated
 PostgreSQL transaction cases, the full 1,689-test database suite, package
 typechecks/builds, scoped lint, and independent adversarial review. No external
 builder received the Pack, no dependency was installed, and no deployed/live
-or customer path was observed. R10 remains **FAIL / not release-ready** until
-the manager-neutral R10.1 contract and required v1 adapter evidence profiles
-are closed and the deployed/live and customer proof gates are satisfied.
+or customer path was observed. R10.1 and R10.2 source/test are closed. R10
+remains **FAIL / not release-ready** until a canonical runner supplies real
+evidence, an approved Pack reaches an external builder and re-enters exact-head
+review, and deployed/live and customer proof gates are satisfied.
 
 ## R11 progress
 
@@ -373,11 +385,10 @@ deployed/live and customer proof gates are satisfied.
 
 ## Remaining canonical order
 
-The remaining source implementation order is the required R10.1 v1 profiles,
-then the remaining R11.2 criterion/artifact and gated-issue slices. R12
-source/test is closed. The bounded R10.2 Pack slice is a merged foundation, and
-R11.2a must remain compatible with each admitted profile. The canonical
-requirements remain:
+The remaining source implementation order is the R11.2 criterion/artifact
+slice, then the packet-bound gated-issue slice. R10 and R12 source/test are
+closed. Additional dependency-manager profiles remain bounded extensions and
+must preserve R11.2a compatibility. The canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

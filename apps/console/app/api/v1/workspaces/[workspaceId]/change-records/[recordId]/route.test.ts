@@ -5,23 +5,29 @@ vi.mock("@agentrail/auth", () => ({
   auth: vi.fn(),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
+  AcceptancePrDecisionConflictError: class AcceptancePrDecisionConflictError extends Error {},
   getWorkspaceMembership: vi.fn(),
+  readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
+  recordAcceptancePrDecision: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
+  AcceptancePrDecisionConflictError,
   getWorkspaceMembership,
+  readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
+  recordAcceptancePrDecision,
 } from "@agentrail/db-postgres";
-import { GET } from "./route";
+import { GET, PATCH } from "./route";
 
 const WS = "00000000-0000-4000-8000-000000000001";
 const OTHER_WS = "00000000-0000-4000-8000-000000000002";
 const RECORD = "00000000-0000-4000-8000-000000000111";
-const USER = "user-1";
+const USER = "00000000-0000-4000-8000-000000000777";
 const HEAD = "f".repeat(40);
 const PRIOR_HEAD = "d".repeat(40);
 const CYCLE = "00000000-0000-4000-8000-000000000099";
@@ -30,6 +36,10 @@ const PACKET_ID = `correction-${"c".repeat(48)}`;
 const CREATED = new Date("2026-08-03T12:00:00.000Z");
 const UPDATED = new Date("2026-08-03T12:05:00.000Z");
 const REVIEW_AT = new Date("2026-08-03T12:04:00.000Z");
+const DECIDED_AT = new Date("2026-08-03T12:06:00.000Z");
+const DECISION_EVENT_ID = "00000000-0000-4000-8000-000000000077";
+const POSTED_ATTESTATION_EVENT_ID = "00000000-0000-4000-8000-000000000066";
+const DECISION_BINDING_ID = "00000000-0000-4000-8000-000000000055";
 
 const currentCorrectionPackets = {
   kind: "current" as const,
@@ -81,10 +91,51 @@ const currentCorrectionPackets = {
   }],
 };
 
+const currentFinalDecision = {
+  kind: "current" as const,
+  binding: {
+    bindingId: DECISION_BINDING_ID,
+    workspaceId: WS,
+    recordId: RECORD,
+    repo: "ada/widgets",
+    prNumber: 98,
+    headSha: HEAD,
+    headCycleId: CYCLE,
+    authorityGeneration: 1,
+    reviewJobId: CYCLE,
+    reviewVerdict: "failed" as const,
+    postedReviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-5",
+    postedAttestationEventId: POSTED_ATTESTATION_EVENT_ID,
+    acceptanceContract: {
+      id: CONTRACT,
+      version: 1,
+      sha256: "a".repeat(64),
+    },
+  },
+  decision: null,
+};
+
 function req(workspaceId = WS, recordId = RECORD): NextRequest {
   return new NextRequest(
     `http://localhost/api/v1/workspaces/${workspaceId}/change-records/${recordId}`,
     { method: "GET" }
+  );
+}
+
+function patchReq(
+  body: unknown,
+  options: { contentType?: string; contentLength?: string } = {},
+): NextRequest {
+  return new NextRequest(
+    `http://localhost/api/v1/workspaces/${WS}/change-records/${RECORD}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": options.contentType ?? "application/json",
+        ...(options.contentLength ? { "Content-Length": options.contentLength } : {}),
+      },
+      body: JSON.stringify(body),
+    },
   );
 }
 
@@ -139,6 +190,20 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
   vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue(currentCorrectionPackets as never);
+  vi.mocked(readCurrentAcceptancePrDecision).mockResolvedValue(currentFinalDecision as never);
+  vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
+    kind: "recorded",
+    binding: currentFinalDecision.binding,
+    decision: {
+      eventId: DECISION_EVENT_ID,
+      eventKey: `acceptance-pr-decision:${CYCLE}`,
+      decision: "changes_requested",
+      rationale: "The failed criterion must be repaired.",
+      decidedBy: `user:${USER}`,
+      decidedRole: "owner",
+      decidedAt: DECIDED_AT,
+    },
+  } as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -151,6 +216,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+    expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -162,6 +228,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(getWorkspaceMembership).toHaveBeenCalledWith(USER, WS);
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+    expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -175,6 +242,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       recordId: RECORD,
     });
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+    expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -191,6 +259,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       recordId: RECORD,
     });
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+    expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
   });
 
   it("200 with deterministic record and ordered timeline event shape", async () => {
@@ -236,11 +305,26 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         },
       ],
       correctionPackets: currentCorrectionPackets,
+      finalDecision: currentFinalDecision,
+      canRecordFinalDecision: false,
     });
     expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(readCurrentAcceptancePrDecision).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+  });
+
+  it("returns owner/admin decision capability without widening member read access", async () => {
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "admin" } as never);
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).canRecordFinalDecision).toBe(true);
   });
 
   it("downgrades a current packet set when the separately read Record head cycle changed", async () => {
@@ -271,6 +355,53 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect((await res.json()).correctionPackets).toEqual({ kind: "not_current" });
   });
 
+  it("downgrades a separately read current final decision on an exact-head generation race", async () => {
+    vi.mocked(readCurrentAcceptancePrDecision).mockResolvedValue({
+      ...currentFinalDecision,
+      binding: {
+        ...currentFinalDecision.binding,
+        headSha: "e".repeat(40),
+        headCycleId: "00000000-0000-4000-8000-000000000100",
+        reviewJobId: "00000000-0000-4000-8000-000000000100",
+        authorityGeneration: 2,
+      },
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).finalDecision).toEqual({ kind: "not_current" });
+  });
+
+  it("serializes an immutable current decision timestamp and role", async () => {
+    vi.mocked(readCurrentAcceptancePrDecision).mockResolvedValue({
+      ...currentFinalDecision,
+      binding: { ...currentFinalDecision.binding, reviewVerdict: "proven" },
+      decision: {
+        eventId: DECISION_EVENT_ID,
+        eventKey: `acceptance-pr-decision:${CYCLE}`,
+        decision: "approved",
+        rationale: null,
+        decidedBy: `user:${USER}`,
+        decidedRole: "owner",
+        decidedAt: DECIDED_AT,
+      },
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).finalDecision.decision).toEqual({
+      eventId: DECISION_EVENT_ID,
+      eventKey: `acceptance-pr-decision:${CYCLE}`,
+      decision: "approved",
+      rationale: null,
+      decidedBy: `user:${USER}`,
+      decidedRole: "owner",
+      decidedAt: DECIDED_AT.toISOString(),
+    });
+  });
+
   it("returns invalid packet custody as a closed not-ready envelope", async () => {
     vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({
       kind: "not_ready",
@@ -296,6 +427,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       error: "Failed to load change record detail",
     });
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+    expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
   });
 
   it("500 when current correction packet storage fails", async () => {
@@ -307,5 +439,189 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(await res.json()).toEqual({
       error: "Failed to load change record detail",
     });
+  });
+
+  it("500 when current final-decision storage fails", async () => {
+    vi.mocked(readCurrentAcceptancePrDecision).mockRejectedValue(new Error("db down"));
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: "Failed to load change record detail",
+    });
+  });
+});
+
+describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
+  beforeEach(() => {
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+  });
+
+  it("authenticates and owner/admin-authorizes before parsing or writing", async () => {
+    vi.mocked(auth).mockResolvedValue(null as never);
+    const unauthenticated = await PATCH(patchReq({ nope: true }), { params: params() });
+    expect(unauthenticated.status).toBe(401);
+    expect(getWorkspaceMembership).not.toHaveBeenCalled();
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+
+    vi.mocked(auth).mockResolvedValue({ user: { id: "not-a-uuid" } } as never);
+    const invalidActor = await PATCH(patchReq({ nope: true }), { params: params() });
+    expect(invalidActor.status).toBe(401);
+    expect(getWorkspaceMembership).not.toHaveBeenCalled();
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
+    const forbidden = await PATCH(patchReq({ nope: true }), { params: params() });
+    expect(forbidden.status).toBe(403);
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-JSON, declared oversize, unknown decisions, and extra authority fields", async () => {
+    const bodies = [
+      patchReq({ action: "record_pr_decision", bindingId: DECISION_BINDING_ID, decision: "merge_now" }),
+      patchReq({
+        action: "record_pr_decision",
+        bindingId: DECISION_BINDING_ID,
+        decision: "approved",
+        headSha: HEAD,
+      }),
+      patchReq({ action: "record_pr_decision", bindingId: DECISION_BINDING_ID, decision: "approved_with_exception" }),
+      patchReq({ action: "record_pr_decision", bindingId: DECISION_BINDING_ID, decision: "approved" }, { contentType: "text/plain" }),
+      patchReq(
+        { action: "record_pr_decision", bindingId: DECISION_BINDING_ID, decision: "approved" },
+        { contentLength: String(20 * 1024 + 1) },
+      ),
+      patchReq({ action: "record_pr_decision", bindingId: "not-a-uuid", decision: "approved" }),
+      patchReq({ bindingId: DECISION_BINDING_ID, decision: "approved" }),
+    ];
+
+    for (const request of bodies) {
+      const response = await PATCH(request, { params: params() });
+      expect(response.status).toBe(400);
+    }
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+  });
+
+  it("derives workspace, Record, actor, and current proof while normalizing bounded rationale", async () => {
+    const response = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: DECISION_BINDING_ID,
+      decision: "changes_requested",
+      rationale: "  The failed criterion must be repaired.  ",
+    }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(recordAcceptancePrDecision).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      bindingId: DECISION_BINDING_ID,
+      decision: "changes_requested",
+      rationale: "The failed criterion must be repaired.",
+      decidedBy: `user:${USER}`,
+    });
+    expect(await response.json()).toEqual({
+      kind: "recorded",
+      binding: currentFinalDecision.binding,
+      decision: {
+        eventId: DECISION_EVENT_ID,
+        eventKey: `acceptance-pr-decision:${CYCLE}`,
+        decision: "changes_requested",
+        rationale: "The failed criterion must be repaired.",
+        decidedBy: `user:${USER}`,
+        decidedRole: "owner",
+        decidedAt: DECIDED_AT.toISOString(),
+      },
+    });
+  });
+
+  it("reports exact replay as 200 without claiming another recording", async () => {
+    vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
+      kind: "replayed",
+      binding: { ...currentFinalDecision.binding, reviewVerdict: "proven" },
+      decision: {
+        eventId: DECISION_EVENT_ID,
+        eventKey: `acceptance-pr-decision:${CYCLE}`,
+        decision: "approved",
+        rationale: null,
+        decidedBy: `user:${USER}`,
+        decidedRole: "admin",
+        decidedAt: DECIDED_AT,
+      },
+    } as never);
+
+    const response = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: DECISION_BINDING_ID,
+      decision: "approved",
+    }), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).kind).toBe("replayed");
+  });
+
+  it("returns not_current when the rendered binding is stale", async () => {
+    const staleBindingId = "00000000-0000-4000-8000-000000000044";
+    vi.mocked(recordAcceptancePrDecision).mockResolvedValue({ kind: "not_current" });
+
+    const response = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: staleBindingId,
+      decision: "rejected",
+    }), { params: params() });
+
+    expect(recordAcceptancePrDecision).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      bindingId: staleBindingId,
+      decision: "rejected",
+      decidedBy: `user:${USER}`,
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ kind: "not_current" });
+  });
+
+  it.each([
+    [{ kind: "not_found" }, 404],
+    [{ kind: "not_authorized" }, 403],
+    [{ kind: "not_current" }, 409],
+    [{ kind: "not_ready", reason: "review_job_unavailable" }, 409],
+    [{ kind: "decision_not_allowed", reason: "approval_requires_proven" }, 409],
+  ] as const)("maps the closed DB result %# without inventing success", async (result, status) => {
+    vi.mocked(recordAcceptancePrDecision).mockResolvedValue(result as never);
+
+    const response = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: DECISION_BINDING_ID,
+      decision: "approved",
+    }), { params: params() });
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(result);
+  });
+
+  it("maps an immutable decision conflict to 409 and sanitizes unexpected storage failures", async () => {
+    vi.mocked(recordAcceptancePrDecision).mockRejectedValueOnce(
+      new AcceptancePrDecisionConflictError(),
+    );
+    const conflict = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: DECISION_BINDING_ID,
+      decision: "rejected",
+    }), { params: params() });
+    expect(conflict.status).toBe(409);
+
+    vi.mocked(recordAcceptancePrDecision).mockRejectedValueOnce(
+      new Error("postgres://secret@db/internal"),
+    );
+    const unavailable = await PATCH(patchReq({
+      action: "record_pr_decision",
+      bindingId: DECISION_BINDING_ID,
+      decision: "rejected",
+    }), { params: params() });
+    expect(unavailable.status).toBe(503);
+    expect(JSON.stringify(await unavailable.json())).not.toContain("secret");
   });
 });

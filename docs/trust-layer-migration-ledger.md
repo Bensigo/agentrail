@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `4044c1ba`, after merged PR
-#1674.
+Last reconciled: 2026-08-11 at main commit `95388f60`, after merged PR
+#1676.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -20,10 +20,10 @@ or customer proof.
 
 ## R8 exit reconciliation
 
-R8.1 and the owner-approved selected-route slice within R8.2 are closed.
-Canonical R8.2 remains open for literal MCP/chat/Console parity. There is no
-R8.3. R8 remains **FAIL / not release-ready**. A missing live proof does not
-reopen a completed source slice unless a regression is found.
+R8.1 and the canonical R8.2 source/test implementation are closed. There is
+no R8.3. R8 remains **FAIL / not release-ready** because deployed/live and
+customer proof are still missing. A missing live proof does not reopen a
+completed source slice unless a regression is found.
 
 The compact R8 gate remains: the correction reaches the associated builder
 task context or durable fallback, records delivery/acknowledgement, and
@@ -32,7 +32,7 @@ never claims repair or resume without a receipt.
 | AC | Canonical requirement | Source/test | Local runtime | Deployed/live | Customer | Implementation exit |
 | --- | --- | --- | --- | --- | --- | --- |
 | R8.1 | Failed or unproven required criteria create evidence-bound correction packets with the original criterion, observed and expected behavior, reproduction, affected context, evidence, and scope boundary. | Complete. The immutable packet path landed in PR #1652. | Complete. Packet identity, validation, and PostgreSQL custody ran locally. | Missing. | Missing. | **Closed.** |
-| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | The owner-approved selected-route slice is complete. Literal MCP/chat/Console correction-retrieval parity is not present on current main and is not claimed. | Partial. Persistence and state-machine paths ran against local PostgreSQL; GitHub, OIDC, and vendor portions are source/test only. | Missing. | Missing. | **Selected-route slice closed; literal canonical parity open; release FAIL.** |
+| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | Complete. MCP, primary Jace chat, and Console resolve the same server-validated current packet custody; none can create a follow-up issue. | Partial. Persistence and current-cycle isolation ran against local PostgreSQL, and the adapters passed local tests/builds. No authenticated browser-to-server or external-provider run was performed. | Missing. | Missing. | **Source/test slice closed; release FAIL until deployed/live and customer proof exist.** |
 
 The R8.2 extension is part of R8.2, not a new acceptance criterion:
 
@@ -70,6 +70,8 @@ The implementation sequence is intentionally split into narrow pull requests:
   repair-head evidence.
 - #1674: same-dispatch durable Jace fallback with no second vendor route or
   GitHub post.
+- #1676: one server-derived current correction-packet resolver exposed through
+  bounded read-only MCP, primary Jace chat, and Console surfaces.
 
 The final R8 local proof included focused Console tests, the exact Console CI
 lane, full database tests, fresh migrated PostgreSQL integration, package
@@ -94,11 +96,10 @@ requirements remain:
 | R12.2 | Technical docs retain optional internal adapters; pricing is a consistent team commercial experiment, not a product-value claim. |
 
 Each following slice must name the AC it closes and preserve the proof
-boundaries above. Literal R8.2 retrieval parity is the only remaining canonical
-R8 source blocker; it must use the existing packet custody and read-only
-authority rather than another delivery system. The first R9.1 slice then adds
-the missing current-head human decision seam without giving Jace merge
-authority. A later R9.1 slice must converge the current signed-GitHub merge
-event and the separate post-merge outcome route onto one exact decided-head
-lineage. None of these slices may reopen the bounded selected-route
+boundaries above. There is no remaining canonical R8 source blocker; deployed,
+live-provider, and customer proof remain separate release gates. The first R9.1
+slice adds the missing current-head human decision seam without giving Jace
+merge authority. A later R9.1 slice must converge the current signed-GitHub
+merge event and the separate post-merge outcome route onto one exact
+decided-head lineage. None of these slices may reopen the bounded R8
 implementation merely because deployed, live, or customer proof is missing.

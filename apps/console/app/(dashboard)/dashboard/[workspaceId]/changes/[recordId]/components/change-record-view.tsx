@@ -129,10 +129,58 @@ export type AcceptanceCorrectionPacketsEnvelope =
         | "invalid_packet_custody";
     };
 
+export type AcceptancePrDecision =
+  | "approved"
+  | "changes_requested"
+  | "rejected"
+  | "approved_with_exception";
+
+export type AcceptanceFinalDecisionEnvelope =
+  | {
+      kind: "current";
+      binding: {
+        bindingId: string;
+        workspaceId: string;
+        recordId: string;
+        repo: string;
+        prNumber: number;
+        headSha: string;
+        headCycleId: string;
+        authorityGeneration: number;
+        reviewJobId: string;
+        reviewVerdict: "proven" | "failed" | "not_proven" | "not_testable";
+        postedReviewUrl: string;
+        postedAttestationEventId: string;
+        acceptanceContract: { id: string; version: number; sha256: string };
+      };
+      decision: null | {
+        eventId: string;
+        eventKey: string;
+        decision: AcceptancePrDecision;
+        rationale: string | null;
+        decidedBy: string;
+        decidedRole: "owner" | "admin";
+        decidedAt: string;
+      };
+    }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | {
+      kind: "not_ready";
+      reason:
+        | "review_job_unavailable"
+        | "confirmed_contract_unavailable"
+        | "posted_attestation_unavailable"
+        | "invalid_review_custody"
+        | "invalid_decision_custody";
+    };
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   correctionPackets: AcceptanceCorrectionPacketsEnvelope;
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+  canRecordFinalDecision: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -360,8 +408,117 @@ export function isCorrectionPacketsEnvelope(value: unknown): value is Acceptance
     && packet.acceptanceContract.version === acceptanceContract.version);
 }
 
+function isAcceptancePrDecision(value: unknown): value is AcceptancePrDecision {
+  return value === "approved" || value === "changes_requested"
+    || value === "rejected" || value === "approved_with_exception";
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 64) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value;
+}
+
+function isGithubReviewUrl(value: unknown, repo: unknown, prNumber: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_048 || value !== value.trim()) return false;
+  if (!isSafeRepo(repo) || !isPositiveInteger(prNumber)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "github.com"
+      && url.port === "" && url.username === "" && url.password === ""
+      && url.search === ""
+      && url.pathname === `/${repo}/pull/${prNumber}`
+      && /^#pullrequestreview-[1-9][0-9]*$/u.test(url.hash);
+  } catch {
+    return false;
+  }
+}
+
+function isDecisionRationale(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length > 0
+    && value.length <= 4_000 && value === value.trim()
+    && !/[\u0000-\u001f\u007f]/u.test(value) && !SECRET_LIKE.test(value));
+}
+
+export function isFinalDecisionEnvelope(value: unknown): value is AcceptanceFinalDecisionEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found" || value.kind === "not_current") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind === "not_ready") {
+    return hasExactKeys(value, ["kind", "reason"]) && (
+      value.reason === "review_job_unavailable"
+      || value.reason === "confirmed_contract_unavailable"
+      || value.reason === "posted_attestation_unavailable"
+      || value.reason === "invalid_review_custody"
+      || value.reason === "invalid_decision_custody"
+    );
+  }
+  if (value.kind !== "current" || !hasExactKeys(value, ["kind", "binding", "decision"])
+    || !isObject(value.binding) || !hasExactKeys(value.binding, [
+      "bindingId", "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId",
+      "authorityGeneration", "reviewJobId", "reviewVerdict", "postedReviewUrl",
+      "postedAttestationEventId", "acceptanceContract",
+    ])) return false;
+  const binding = value.binding;
+  if (!(typeof binding.bindingId === "string" && UUID.test(binding.bindingId)
+    && typeof binding.workspaceId === "string" && UUID.test(binding.workspaceId)
+    && typeof binding.recordId === "string" && UUID.test(binding.recordId)
+    && isSafeRepo(binding.repo)
+    && isPositiveInteger(binding.prNumber)
+    && typeof binding.headSha === "string" && SHA1.test(binding.headSha)
+    && typeof binding.headCycleId === "string" && UUID.test(binding.headCycleId)
+    && isNonNegativeInteger(binding.authorityGeneration)
+    && typeof binding.reviewJobId === "string" && UUID.test(binding.reviewJobId)
+    && binding.headCycleId === binding.reviewJobId
+    && (binding.reviewVerdict === "proven" || binding.reviewVerdict === "failed"
+      || binding.reviewVerdict === "not_proven" || binding.reviewVerdict === "not_testable")
+    && isGithubReviewUrl(binding.postedReviewUrl, binding.repo, binding.prNumber)
+    && typeof binding.postedAttestationEventId === "string"
+    && UUID.test(binding.postedAttestationEventId)
+    && isObject(binding.acceptanceContract)
+    && hasExactKeys(binding.acceptanceContract, ["id", "version", "sha256"])
+    && typeof binding.acceptanceContract.id === "string" && UUID.test(binding.acceptanceContract.id)
+    && isPositiveInteger(binding.acceptanceContract.version)
+    && typeof binding.acceptanceContract.sha256 === "string"
+    && SHA256.test(binding.acceptanceContract.sha256))) return false;
+  if (value.decision === null) return true;
+  if (!isObject(value.decision) || !hasExactKeys(value.decision, [
+    "eventId", "eventKey", "decision", "rationale", "decidedBy", "decidedRole", "decidedAt",
+  ])) return false;
+  const decision = value.decision;
+  return typeof decision.eventId === "string" && UUID.test(decision.eventId)
+    && decision.eventKey === `acceptance-pr-decision:${binding.reviewJobId}`
+    && isAcceptancePrDecision(decision.decision)
+    && (decision.decision !== "approved" || binding.reviewVerdict === "proven")
+    && isDecisionRationale(decision.rationale)
+    && (decision.decision !== "approved_with_exception" || decision.rationale !== null)
+    && typeof decision.decidedBy === "string"
+    && /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(decision.decidedBy)
+    && (decision.decidedRole === "owner" || decision.decidedRole === "admin")
+    && isIsoTimestamp(decision.decidedAt);
+}
+
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
+}
+
+export function finalDecisionPatchBody(
+  bindingId: string,
+  decision: AcceptancePrDecision,
+  rationale?: string,
+): {
+  action: "record_pr_decision";
+  bindingId: string;
+  decision: AcceptancePrDecision;
+  rationale?: string;
+} {
+  return {
+    action: "record_pr_decision",
+    bindingId,
+    decision,
+    ...(rationale === undefined ? {} : { rationale: rationale.trim() }),
+  };
 }
 
 export function formatChangeRecordDate(value: string): string {
@@ -671,6 +828,167 @@ export function CorrectionsSection({
   );
 }
 
+function finalDecisionLabel(decision: AcceptancePrDecision): string {
+  switch (decision) {
+    case "approved": return "Approved";
+    case "changes_requested": return "Changes requested";
+    case "rejected": return "Rejected";
+    case "approved_with_exception": return "Approved with exception";
+  }
+}
+
+export function FinalDecisionPanel({
+  finalDecision,
+  canRecordFinalDecision,
+  onDecide,
+  deciding,
+  decisionError,
+  exceptionRationale,
+  onExceptionRationaleChange,
+}: {
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+  canRecordFinalDecision: boolean;
+  onDecide: (decision: AcceptancePrDecision, rationale?: string) => void;
+  deciding: boolean;
+  decisionError: string | null;
+  exceptionRationale: string;
+  onExceptionRationaleChange: (value: string) => void;
+}) {
+  if (finalDecision.kind !== "current") {
+    const message = finalDecision.kind === "not_current"
+      ? "No decision can be recorded because an authoritative current PR head and cycle are unavailable. Historical decision events remain audit-only in the timeline."
+      : finalDecision.kind === "not_found"
+        ? "This Change Record is unavailable."
+        : "The current exact-head review is not ready for a human decision.";
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Final human decision
+        </h2>
+        <p className="mt-3 text-sm text-[var(--gray-09)]">{message}</p>
+      </section>
+    );
+  }
+
+  const { binding, decision } = finalDecision;
+  const proven = binding.reviewVerdict === "proven";
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Final human decision
+        </h2>
+        <p className="mt-2 text-xs text-[var(--gray-09)]">
+          This records the human decision. Jace does not merge.
+        </p>
+      </div>
+      <div className="space-y-4 px-4 py-4">
+        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
+          <CorrectionDatum label="Exact head" mono>{binding.headSha}</CorrectionDatum>
+          <CorrectionDatum label="Head cycle" mono>{binding.headCycleId}</CorrectionDatum>
+          <CorrectionDatum label="Review verdict" mono>{binding.reviewVerdict}</CorrectionDatum>
+          <CorrectionDatum label="Authority generation" mono>{binding.authorityGeneration}</CorrectionDatum>
+          <CorrectionDatum label="Acceptance Contract" mono>
+            {binding.acceptanceContract.id} v{binding.acceptanceContract.version}
+          </CorrectionDatum>
+        </dl>
+        <a
+          href={binding.postedReviewUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex text-xs text-[var(--blue-11)] hover:underline"
+        >
+          Open the attested GitHub review
+        </a>
+
+        {decision ? (
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs">
+            <p className="font-medium text-[var(--gray-12)]">
+              Recorded current decision: {finalDecisionLabel(decision.decision)}
+            </p>
+            <p className="mt-2 text-[var(--gray-09)]">
+              {decision.decidedRole} · {decision.decidedBy} · {formatChangeRecordDate(decision.decidedAt)}
+            </p>
+            {decision.rationale ? (
+              <p className="mt-2 whitespace-pre-wrap text-[var(--gray-11)]">{decision.rationale}</p>
+            ) : null}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm font-medium text-[var(--gray-12)]">
+              Not recorded for this current exact head
+            </p>
+            {!canRecordFinalDecision ? (
+              <p className="text-xs text-[var(--gray-09)]">
+                A workspace owner or admin can record the final decision.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {proven ? (
+                    <button
+                      type="button"
+                      disabled={deciding}
+                      onClick={() => onDecide("approved")}
+                      className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                    >
+                      {deciding ? "Recording…" : "Approve PR"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={deciding}
+                    onClick={() => onDecide("changes_requested")}
+                    className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                  >
+                    Request changes
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deciding}
+                    onClick={() => onDecide("rejected")}
+                    className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60"
+                  >
+                    Reject PR
+                  </button>
+                </div>
+                {!proven ? (
+                  <div className="rounded border border-[var(--yellow-06)] bg-[var(--yellow-03)] p-3">
+                    <label
+                      className="block text-xs font-medium text-[var(--gray-12)]"
+                      htmlFor={`decision-exception-${binding.reviewJobId}`}
+                    >
+                      Explicit exception rationale
+                    </label>
+                    <textarea
+                      id={`decision-exception-${binding.reviewJobId}`}
+                      value={exceptionRationale}
+                      onChange={(event) => onExceptionRationaleChange(event.target.value)}
+                      maxLength={4_000}
+                      rows={3}
+                      className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]"
+                    />
+                    <button
+                      type="button"
+                      disabled={deciding || !exceptionRationale.trim()}
+                      onClick={() => onDecide("approved_with_exception", exceptionRationale)}
+                      className="mt-2 rounded border border-[var(--yellow-08)] px-2.5 py-1.5 text-xs font-medium text-[var(--yellow-11)] disabled:opacity-60"
+                    >
+                      Record approval with exception
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+        )}
+        {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   return (
     <section>
@@ -694,6 +1012,11 @@ export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
                   <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 font-mono text-xs text-[var(--gray-09)]">
                     {event.actor}
                   </span>
+                  {event.stage === "human_pr_decision" ? (
+                    <span className="rounded-sm border border-[var(--gray-06)] px-1.5 py-0.5 text-xs text-[var(--gray-09)]">
+                      Audit history only
+                    </span>
+                  ) : null}
                 </div>
                 <time dateTime={event.at} title={new Date(event.at).toLocaleString()} className="font-mono text-xs text-[var(--gray-09)]">
                   {formatChangeRecordDate(event.at)}
@@ -722,6 +1045,10 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [data, setData] = useState<ChangeRecordResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [deciding, setDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [exceptionRationale, setExceptionRationale] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -738,7 +1065,9 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
         if (!body.record || !Array.isArray(body.events)
-          || !isCorrectionPacketsEnvelope(body.correctionPackets)) {
+          || !isCorrectionPacketsEnvelope(body.correctionPackets)
+          || !isFinalDecisionEnvelope(body.finalDecision)
+          || typeof body.canRecordFinalDecision !== "boolean") {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -751,7 +1080,46 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
     load();
     return () => controller.abort();
-  }, [workspaceId, recordId]);
+  }, [workspaceId, recordId, reloadVersion]);
+
+  async function recordFinalDecision(
+    decision: AcceptancePrDecision,
+    rationale?: string,
+  ) {
+    if (!data || data.finalDecision.kind !== "current") {
+      setDecisionError("The current decision binding is no longer available");
+      return;
+    }
+    setDeciding(true);
+    setDecisionError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(finalDecisionPatchBody(
+          data.finalDecision.binding.bindingId,
+          decision,
+          rationale,
+        )),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        kind?: string;
+        error?: string;
+        reason?: string;
+      };
+      if (!response.ok || (body.kind !== "recorded" && body.kind !== "replayed")) {
+        throw new Error(body.error ?? body.reason ?? `HTTP ${response.status}`);
+      }
+      setExceptionRationale("");
+      setReloadVersion((current) => current + 1);
+    } catch (caught) {
+      setDecisionError(
+        caught instanceof Error ? caught.message : "Failed to record final decision",
+      );
+    } finally {
+      setDeciding(false);
+    }
+  }
 
   const backHref = `/dashboard/${workspaceId}/work`;
   if (loading) {
@@ -793,6 +1161,15 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       </div>
       <ChangeRecordAnchors record={data.record} />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
+      <FinalDecisionPanel
+        finalDecision={data.finalDecision}
+        canRecordFinalDecision={data.canRecordFinalDecision}
+        onDecide={recordFinalDecision}
+        deciding={deciding}
+        decisionError={decisionError}
+        exceptionRationale={exceptionRationale}
+        onExceptionRationaleChange={setExceptionRationale}
+      />
       <LifecycleTimeline events={data.events} />
     </div>
   );

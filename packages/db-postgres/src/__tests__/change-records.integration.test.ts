@@ -25,6 +25,7 @@ import {
   changeRecords,
 } from "../schema/change_records.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import { workspaceMemberships } from "../schema/workspace_memberships.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
@@ -70,6 +71,9 @@ import {
   GithubClaudeAgentAcknowledgementConflictError,
   GithubClaudeRepairObservationConflictError,
   readCurrentAcceptanceCorrectionPackets,
+  readCurrentAcceptancePrDecision,
+  recordAcceptancePrDecision,
+  AcceptancePrDecisionConflictError,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -288,6 +292,113 @@ async function appendExactCurrentCorrectionPacket(input: Parameters<typeof exact
     }],
   });
   return packet;
+}
+
+async function recordExactPostedReview(input: {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion?: number;
+  verdict: "proven" | "failed" | "not_proven" | "not_testable";
+}) {
+  const postedReviewUrl = `https://github.com/${input.repo}/pull/${input.prNumber}#pullrequestreview-1`;
+  const outcomeDigest = "a".repeat(64);
+  const postPayloadDigest = "b".repeat(64);
+  const event = await appendChangeRecordEvent({
+    recordId: input.recordId,
+    eventKey: `review:github-posted:${input.jobId}`,
+    stage: "review",
+    actor: "reviewer-of-record",
+    payloadRef: {
+      kind: "review_job_github_posted",
+      jobId: input.jobId,
+      workspaceId: input.workspaceId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
+      recordId: input.recordId,
+      acceptanceContractId: input.acceptanceContractId,
+      acceptanceContractVersion: input.acceptanceContractVersion ?? 1,
+      outcomeDigest,
+      postPayloadDigest,
+      postedReviewUrl,
+      inlineCommentsPosted: 0,
+      commentsFolded: false,
+    },
+  });
+  await db.update(reviewJobs).set({
+    state: "posted",
+    verdict: input.verdict,
+    postedReviewUrl,
+  }).where(eq(reviewJobs.id, input.jobId));
+  return { event: event.event, postedReviewUrl, outcomeDigest, postPayloadDigest };
+}
+
+async function addAcceptanceDecisionActor(
+  workspaceId: string,
+  role: "owner" | "admin" | "member" | "viewer"
+): Promise<string> {
+  const userId = randomUUID();
+  await db.insert(workspaceMemberships).values({ workspaceId, userId, role });
+  return `user:${userId}`;
+}
+
+async function createReadyAcceptanceDecisionRecord(input: {
+  workspaceId: string;
+  workKey: string;
+  prNumber: number;
+  headSha: string;
+  verdict: "proven" | "failed" | "not_proven" | "not_testable";
+}) {
+  const repo = "acme/widgets";
+  const draft = await createDraftAcceptanceRecord({
+    workspaceId: input.workspaceId,
+    repo,
+    workKey: input.workKey,
+    originChannel: "codex_mcp",
+    contract: completeContract(),
+    createdBy: "user:lead",
+  });
+  await db.update(acceptanceContracts).set({
+    status: "confirmed",
+    confirmedBy: "console_user:user-1",
+    confirmedAt: new Date(),
+  }).where(eq(acceptanceContracts.id, draft.contract.id));
+  const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+    workspaceId: input.workspaceId,
+    recordId: draft.record.id,
+    repo,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    event: "opened",
+    deliveryId: `${input.workKey}:opened`,
+    admitReviewJob: true,
+    headTransition: null,
+    source: "github_webhook",
+  });
+  if (advanced.kind !== "advanced") throw new Error("expected current decision head cycle");
+  const posted = await recordExactPostedReview({
+    workspaceId: input.workspaceId,
+    recordId: draft.record.id,
+    jobId: advanced.jobId,
+    repo,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    acceptanceContractId: draft.contract.id,
+    verdict: input.verdict,
+  });
+  const current = await readCurrentAcceptancePrDecision({
+    workspaceId: input.workspaceId,
+    recordId: draft.record.id,
+  });
+  if (current.kind !== "current" || current.decision !== null) {
+    throw new Error("expected an undecided current decision binding");
+  }
+  return { repo, draft, advanced, posted, binding: current.binding };
 }
 
 describe.skipIf(!DB_AVAILABLE)(
@@ -1373,6 +1484,565 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       await expect(readCurrentAcceptanceCorrectionPackets({
         workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_current" });
+    });
+
+    it("records and replays one immutable approved decision for the exact current proven review", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-approved",
+        prNumber: 147,
+        headSha: "7".repeat(40),
+        verdict: "proven",
+      });
+      const expectedContractSha256 = acceptanceContractSha256({
+        acceptanceContractId: ready.draft.contract.id,
+        acceptanceContractVersion: ready.draft.contract.version,
+        contract: ready.draft.contract.contract,
+      });
+      const before = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      });
+      expect(before).toEqual({
+        kind: "current",
+        binding: {
+          bindingId: ready.binding.bindingId,
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          repo: ready.repo,
+          prNumber: 147,
+          headSha: "7".repeat(40),
+          headCycleId: ready.advanced.jobId,
+          authorityGeneration: 1,
+          reviewJobId: ready.advanced.jobId,
+          reviewVerdict: "proven",
+          postedReviewUrl: ready.posted.postedReviewUrl,
+          postedAttestationEventId: ready.posted.event.id,
+          acceptanceContract: {
+            id: ready.draft.contract.id,
+            version: ready.draft.contract.version,
+            sha256: expectedContractSha256,
+          },
+        },
+        decision: null,
+      });
+
+      const input = {
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved" as const,
+        decidedBy: actor,
+      };
+      const first = await recordAcceptancePrDecision(input);
+      const replay = await recordAcceptancePrDecision(input);
+      expect(first).toMatchObject({
+        kind: "recorded",
+        binding: { headCycleId: ready.advanced.jobId, reviewVerdict: "proven" },
+        decision: {
+          eventKey: `acceptance-pr-decision:${ready.advanced.jobId}`,
+          decision: "approved",
+          rationale: null,
+          decidedBy: actor,
+          decidedRole: "owner",
+        },
+      });
+      expect(replay).toMatchObject({
+        kind: "replayed",
+        decision: {
+          eventId: first.kind === "recorded" ? first.decision.eventId : "missing",
+          decidedRole: "owner",
+        },
+      });
+      await expect(recordAcceptancePrDecision({
+        ...input,
+        decision: "rejected",
+      })).rejects.toBeInstanceOf(AcceptancePrDecisionConflictError);
+
+      const userId = actor.slice("user:".length);
+      await db.update(workspaceMemberships).set({ role: "admin" }).where(and(
+        eq(workspaceMemberships.workspaceId, wsId),
+        eq(workspaceMemberships.userId, userId),
+      ));
+      await expect(recordAcceptancePrDecision(input)).resolves.toMatchObject({
+        kind: "replayed",
+        decision: { decidedRole: "owner" },
+      });
+      await db.update(workspaceMemberships).set({ role: "member" }).where(and(
+        eq(workspaceMemberships.workspaceId, wsId),
+        eq(workspaceMemberships.userId, userId),
+      ));
+      await expect(recordAcceptancePrDecision(input)).resolves.toEqual({ kind: "not_authorized" });
+
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        decision: { decision: "approved", decidedBy: actor, decidedRole: "owner" },
+      });
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: randomUUID(),
+        recordId: ready.draft.record.id,
+      })).resolves.toEqual({ kind: "not_found" });
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, ready.advanced.jobId)))[0])
+        .toMatchObject({ state: "posted", verdict: "proven" });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, ready.draft.record.id)))[0])
+        .toMatchObject({ state: "open", mergedSha: null, currentPrHeadSha: "7".repeat(40) });
+    });
+
+    it("enforces owner/admin roles, all four choices, rationale rules, and the proven approval gate", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const member = await addAcceptanceDecisionActor(wsId, "member");
+      const viewer = await addAcceptanceDecisionActor(wsId, "viewer");
+
+      const exception = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-exception",
+        prNumber: 148,
+        headSha: "8".repeat(40),
+        verdict: "not_proven",
+      });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: exception.draft.record.id,
+        bindingId: exception.binding.bindingId,
+        decision: "approved",
+        decidedBy: owner,
+      })).resolves.toEqual({
+        kind: "decision_not_allowed",
+        reason: "approval_requires_proven",
+      });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: exception.draft.record.id,
+        bindingId: exception.binding.bindingId,
+        decision: "approved_with_exception",
+        rationale: "  The owner accepts the documented unproven browser criterion for this head.  ",
+        decidedBy: admin,
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        binding: { reviewVerdict: "not_proven" },
+        decision: {
+          decision: "approved_with_exception",
+          rationale: "The owner accepts the documented unproven browser criterion for this head.",
+          decidedRole: "admin",
+        },
+      });
+
+      const changes = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-changes",
+        prNumber: 150,
+        headSha: "c".repeat(40),
+        verdict: "failed",
+      });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: changes.draft.record.id,
+        bindingId: changes.binding.bindingId,
+        decision: "changes_requested",
+        rationale: "Repair AC-1 and rerun the exact-head review.",
+        decidedBy: owner,
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        decision: { decision: "changes_requested", decidedRole: "owner" },
+      });
+
+      const rejected = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-rejected",
+        prNumber: 151,
+        headSha: "d".repeat(40),
+        verdict: "proven",
+      });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: rejected.draft.record.id,
+        bindingId: rejected.binding.bindingId,
+        decision: "rejected",
+        decidedBy: admin,
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        decision: { decision: "rejected", rationale: null, decidedRole: "admin" },
+      });
+
+      const unauthorized = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-unauthorized",
+        prNumber: 152,
+        headSha: "e".repeat(40),
+        verdict: "proven",
+      });
+      for (const decidedBy of [member, viewer]) {
+        await expect(recordAcceptancePrDecision({
+          workspaceId: wsId,
+          recordId: unauthorized.draft.record.id,
+          bindingId: unauthorized.binding.bindingId,
+          decision: "approved",
+          decidedBy,
+        })).resolves.toEqual({ kind: "not_authorized" });
+      }
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, unauthorized.draft.record.id),
+        eq(changeRecordEvents.stage, "human_pr_decision"),
+      ))).toHaveLength(0);
+    });
+
+    it("fails closed for missing or malformed job, Contract, attestation, and decision custody", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const repo = "acme/widgets";
+      const prNumber = 153;
+      const headSha = "f".repeat(40);
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo,
+        workKey: "current-pr-decision-custody",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed",
+        confirmedBy: "console_user:user-1",
+        confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo,
+        prNumber,
+        headSha,
+        event: "opened",
+        deliveryId: "current-pr-decision-custody:opened",
+        admitReviewJob: true,
+        headTransition: null,
+        source: "github_webhook",
+      });
+      if (advanced.kind !== "advanced") throw new Error("expected decision custody cycle");
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "review_job_unavailable" });
+
+      const posted = await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        jobId: advanced.jobId,
+        repo,
+        prNumber,
+        headSha,
+        acceptanceContractId: draft.contract.id,
+        verdict: "proven",
+      });
+      const attestationWhere = and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, `review:github-posted:${advanced.jobId}`),
+      );
+      await db.update(changeRecordEvents).set({ actor: "server:forged" }).where(attestationWhere);
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_review_custody" });
+      await db.update(changeRecordEvents).set({ actor: "reviewer-of-record" }).where(attestationWhere);
+
+      await db.update(acceptanceContracts).set({ status: "draft" })
+        .where(eq(acceptanceContracts.id, draft.contract.id));
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "confirmed_contract_unavailable" });
+      await db.update(acceptanceContracts).set({ status: "confirmed" })
+        .where(eq(acceptanceContracts.id, draft.contract.id));
+
+      await db.update(reviewJobs).set({ verdict: "optimistic" })
+        .where(eq(reviewJobs.id, advanced.jobId));
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_review_custody" });
+      await db.update(reviewJobs).set({ verdict: "proven", postedReviewUrl: posted.postedReviewUrl })
+        .where(eq(reviewJobs.id, advanced.jobId));
+
+      const readyToDecide = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      });
+      if (readyToDecide.kind !== "current") throw new Error("expected restored decision custody");
+
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        bindingId: readyToDecide.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      })).resolves.toMatchObject({ kind: "recorded" });
+      const decisionWhere = and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-pr-decision:${advanced.jobId}`),
+      );
+      const decisionEvent = (await db.select().from(changeRecordEvents).where(decisionWhere))[0]!;
+      await db.update(changeRecordEvents).set({
+        payloadRef: { ...decisionEvent.payloadRef, decidedRole: "member" },
+      }).where(decisionWhere);
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_decision_custody" });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        bindingId: readyToDecide.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      })).rejects.toBeInstanceOf(AcceptancePrDecisionConflictError);
+    });
+
+    it("serializes a decision write with a signed head advance without rebinding the stale click", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const repo = "acme/widgets";
+      const prNumber = 155;
+      const headA = "3".repeat(40);
+      const headB = "4".repeat(40);
+      const a = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-write-head-race",
+        prNumber,
+        headSha: headA,
+        verdict: "proven",
+      });
+
+      const [decision, b] = await Promise.all([
+        recordAcceptancePrDecision({
+          workspaceId: wsId,
+          recordId: a.draft.record.id,
+          bindingId: a.binding.bindingId,
+          decision: "approved",
+          decidedBy: actor,
+        }),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: a.draft.record.id,
+          repo,
+          prNumber,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "current-pr-decision-write-head-race:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+      ]);
+      if (b.kind !== "advanced") throw new Error("expected racing B decision cycle");
+      expect(["recorded", "not_current"]).toContain(decision.kind);
+
+      const decisionEvents = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, a.draft.record.id),
+        eq(changeRecordEvents.stage, "human_pr_decision"),
+      ));
+      if (decision.kind === "recorded") {
+        expect(decisionEvents).toHaveLength(1);
+        expect(decisionEvents[0]).toMatchObject({
+          eventKey: `acceptance-pr-decision:${a.advanced.jobId}`,
+          payloadRef: {
+            bindingId: a.binding.bindingId,
+            headSha: headA,
+            headCycleId: a.advanced.jobId,
+          },
+        });
+      } else {
+        expect(decisionEvents).toHaveLength(0);
+      }
+      expect(decisionEvents).not.toContainEqual(expect.objectContaining({
+        eventKey: `acceptance-pr-decision:${b.jobId}`,
+      }));
+
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a.draft.record.id,
+        jobId: b.jobId,
+        repo,
+        prNumber,
+        headSha: headB,
+        acceptanceContractId: a.draft.contract.id,
+        verdict: "proven",
+      });
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        binding: { headSha: headB, headCycleId: b.jobId },
+        decision: null,
+      });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a.draft.record.id,
+        bindingId: a.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      })).resolves.toEqual({ kind: "not_current" });
+    });
+
+    it("keeps decisions occurrence-bound across a locked A-to-B-to-A sequence", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const repo = "acme/widgets";
+      const prNumber = 154;
+      const headA = "1".repeat(40);
+      const headB = "2".repeat(40);
+      const a1 = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "current-pr-decision-a-b-a",
+        prNumber,
+        headSha: headA,
+        verdict: "proven",
+      });
+      const a1Decision = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      });
+      expect(a1Decision).toMatchObject({
+        kind: "recorded",
+        binding: { headCycleId: a1.advanced.jobId, headSha: headA },
+      });
+
+      const [racingRead, b] = await Promise.all([
+        readCurrentAcceptancePrDecision({ workspaceId: wsId, recordId: a1.draft.record.id }),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: a1.draft.record.id,
+          repo,
+          prNumber,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "current-pr-decision-a-b-a:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+      ]);
+      if (b.kind !== "advanced") throw new Error("expected B decision cycle");
+      if (racingRead.kind === "current") {
+        expect(racingRead).toMatchObject({
+          binding: { headCycleId: a1.advanced.jobId, headSha: headA },
+          decision: { decision: "approved" },
+        });
+      } else {
+        expect(racingRead).toEqual({ kind: "not_ready", reason: "review_job_unavailable" });
+      }
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        jobId: b.jobId,
+        repo,
+        prNumber,
+        headSha: headB,
+        acceptanceContractId: a1.draft.contract.id,
+        verdict: "failed",
+      });
+      const bCurrent = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+      });
+      expect(bCurrent).toMatchObject({
+        kind: "current",
+        binding: { headCycleId: b.jobId, headSha: headB },
+        decision: null,
+      });
+      if (bCurrent.kind !== "current") throw new Error("expected current B decision binding");
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        decision: "changes_requested",
+        decidedBy: actor,
+      })).resolves.toEqual({ kind: "not_current" });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: bCurrent.binding.bindingId,
+        decision: "changes_requested",
+        decidedBy: actor,
+      })).resolves.toMatchObject({ kind: "recorded", binding: { headCycleId: b.jobId } });
+
+      const a2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo,
+        prNumber,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "current-pr-decision-a-b-a:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (a2.kind !== "advanced") throw new Error("expected A2 decision cycle");
+      expect(a2.jobId).not.toBe(a1.advanced.jobId);
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        jobId: a2.jobId,
+        repo,
+        prNumber,
+        headSha: headA,
+        acceptanceContractId: a1.draft.contract.id,
+        verdict: "proven",
+      });
+      const a2Current = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+      });
+      expect(a2Current).toMatchObject({
+        kind: "current",
+        binding: { headCycleId: a2.jobId, headSha: headA },
+        decision: null,
+      });
+      if (a2Current.kind !== "current") throw new Error("expected current A2 decision binding");
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        decision: "rejected",
+        decidedBy: actor,
+      })).resolves.toEqual({ kind: "not_current" });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a2Current.binding.bindingId,
+        decision: "rejected",
+        decidedBy: actor,
+      })).resolves.toMatchObject({ kind: "recorded", binding: { headCycleId: a2.jobId } });
+
+      const decisionEvents = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, a1.draft.record.id),
+        eq(changeRecordEvents.stage, "human_pr_decision"),
+      ));
+      expect(decisionEvents.map((event) => event.eventKey).sort()).toEqual([
+        `acceptance-pr-decision:${a1.advanced.jobId}`,
+        `acceptance-pr-decision:${b.jobId}`,
+        `acceptance-pr-decision:${a2.jobId}`,
+      ].sort());
+
+      await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo,
+        prNumber,
+        headSha: headA,
+        event: "closed",
+        deliveryId: "current-pr-decision-a-b-a:closed",
+        source: "github_webhook",
+      });
+      await expect(readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
       })).resolves.toEqual({ kind: "not_current" });
     });
 

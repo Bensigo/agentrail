@@ -37,6 +37,7 @@ from agentrail.dependencies.evidence import (
     write_dependency_evidence,
 )
 from agentrail.dependencies.pnpm import DependencySnapshot
+from agentrail.dependencies.go_modules import GO_MODULES_OBSERVATION_PROFILE
 from agentrail.dependencies.manager import CARGO_ADAPTER_PROFILE, NPM_ADAPTER_PROFILE, PNPM_ADAPTER_PROFILE
 from agentrail.dependencies.pnpm import adapter_identity_fingerprint
 
@@ -244,6 +245,97 @@ def test_cargo_resolver_and_forged_payload_remain_blocked_at_both_evidence_gates
     }
     assert dependency_gate_input(forged) == (
         False, "dependency evidence adapter capability is unavailable",
+    )
+
+
+def test_go_observation_and_forged_ready_payload_remain_blocked_at_both_evidence_gates() -> None:
+    fingerprint = "sha256:go-candidate"
+    candidate = DependencyCandidate(
+        package="github.com/acme/lib",
+        dependency_kind="dependencies",
+        specifier="v1.2.3",
+        current_version="v1.2.3",
+        target_version="v1.3.0",
+        manifest_path="go.mod",
+        lockfile_path="go.sum",
+        baseline_sha="a" * 40,
+        fingerprint=fingerprint,
+        ecosystem="go",
+        package_manager="go-modules",
+        adapter_profile=GO_MODULES_OBSERVATION_PROFILE,
+        adapter_identity_fingerprint=adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint,
+            ecosystem="go",
+            package_manager="go-modules",
+            adapter_profile=GO_MODULES_OBSERVATION_PROFILE,
+        ),
+    )
+    release = ReleaseEvidence(
+        EvidenceResolution.RESOLVED,
+        "v1.3.0",
+        (
+            EvidenceSource(
+                "proxy.golang.org:github.com/acme/lib@v1.3.0",
+                "https://proxy.golang.org/github.com/acme/lib/@v/v1.3.0.info",
+                NOW,
+                "release",
+            ),
+        ),
+        NOW,
+        canonical=True,
+    )
+    lock = LockResolution(
+        EvidenceResolution.RESOLVED,
+        direct_changes=(
+            DependencyChange(
+                "github.com/acme/lib",
+                ("v1.2.3",),
+                ("v1.3.0",),
+                "direct",
+            ),
+        ),
+        observed_at=NOW,
+    )
+    security = SecurityEvidence(
+        EvidenceResolution.RESOLVED,
+        sources=(
+            EvidenceSource(
+                "osv:Go:github.com/acme/lib@v1.3.0",
+                "https://api.osv.dev/v1/query",
+                NOW,
+                "security",
+            ),
+        ),
+        observed_at=NOW,
+    )
+
+    evidence = collect_dependency_evidence(
+        candidate,
+        release=_Provider(release),
+        usage=_Provider(_usage()),
+        lock=_Provider(lock),
+        security=_Provider(security),
+        observed_at=NOW,
+    )
+
+    assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
+    assert "candidate adapter capability is unavailable" in evidence.decision.blocking_reasons
+    assert dependency_gate_input(evidence.to_dict()) == (
+        False,
+        "dependency evidence adapter capability is unavailable",
+    )
+
+    forged = json.loads(json.dumps(evidence.to_dict()))
+    forged["decision"] = {
+        "status": "ready",
+        "proofComplete": True,
+        "blockingReasons": [],
+        "waivedReasons": [],
+        "waiver": None,
+    }
+    assert dependency_gate_input(forged) == (
+        False,
+        "dependency evidence adapter capability is unavailable",
     )
 
 

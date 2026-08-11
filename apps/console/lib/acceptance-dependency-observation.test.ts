@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
-  ACCEPTANCE_DEPENDENCY_GO_PROFILE,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
   ACCEPTANCE_DEPENDENCY_UV_PROFILE,
   ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
@@ -148,40 +147,6 @@ function validUv(): Record<string, unknown> {
   return value;
 }
 
-function validGo(
-  module = "github.com/acme/widget",
-  currentVersion = "v1.2.3",
-  targetVersion = "v1.3.0",
-): Record<string, unknown> {
-  const value = cloneValid();
-  const identity = { ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_PROFILE };
-  Object.assign(value.candidate as Record<string, unknown>, {
-    identity,
-    package: module,
-    dependencyKind: "dependencies",
-    specifier: currentVersion,
-    currentVersion,
-    targetVersion,
-  });
-  Object.assign(value.runtime as Record<string, unknown>, {
-    identity,
-    version: "1.26.1",
-  });
-  Object.assign(value.packageManager as Record<string, unknown>, {
-    name: "go",
-    version: "1.26.1",
-    profile: ACCEPTANCE_DEPENDENCY_GO_PROFILE,
-    updateArgv: ["go", "get", "-mod=mod", `${module}@${targetVersion}`],
-  });
-  (value.manifest as Record<string, unknown>).path = "go.mod";
-  (value.lockfile as Record<string, unknown>).path = "go.sum";
-  Object.assign(value.security as Record<string, unknown>, {
-    identity,
-    reference: `osv:Go:${module}@${targetVersion.slice(1)}`,
-  });
-  return value;
-}
-
 describe("parseAcceptanceDependencyObservation", () => {
   it("normalizes the bounded fixed pnpm profile without claiming approval", () => {
     const raw = cloneValid();
@@ -242,169 +207,6 @@ describe("parseAcceptanceDependencyObservation", () => {
       boundaryAssessment: "candidate_for_server_verification",
     });
     expect(JSON.stringify(result)).not.toMatch(/install|execute|approv|deliver/iu);
-  });
-
-  it.each([
-    ["v1 module", "github.com/acme/widget", "v1.2.3", "v1.3.0"],
-    ["semantic-import v2 module", "github.com/acme/widget/v2", "v2.1.0", "v2.2.0"],
-    ["gopkg v3 exception", "gopkg.in/yaml.v3", "v3.0.0", "v3.0.1"],
-  ])("normalizes the bounded Go 1.26 profile for a %s", (_label, module, current, target) => {
-    const raw = validGo(module, current, target);
-    expect(parseAcceptanceDependencyObservation(raw)).toEqual({
-      input: raw,
-      boundaryAssessment: "candidate_for_server_verification",
-    });
-    expect(JSON.stringify(parseAcceptanceDependencyObservation(raw)))
-      .not.toMatch(/execute|approv|deliver|dispatch/iu);
-  });
-
-  it.each([
-    ["uppercase module", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/Acme/widget";
-    }],
-    ["host without a public suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "localhost/acme/widget";
-    }],
-    ["numeric top-level domain", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "example.123/acme/widget";
-    }],
-    ["overlong host label", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = `${"a".repeat(64)}.com/acme/widget`;
-    }],
-    ["empty path segment", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme//widget";
-    }],
-    ["overlong path segment", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = `github.com/${"a".repeat(129)}`;
-    }],
-    ["reserved path element", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/con";
-    }],
-    ["reserved path element before extension", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/con.txt";
-    }],
-    ["reserved numbered path element", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/com1";
-    }],
-    ["shortname path element", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/foo~1";
-    }],
-    ["shortname path prefix before extension", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/foo~1.bar";
-    }],
-    ["reserved host element", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "con.example/acme/widget";
-    }],
-    ["non-production dependency kind", (raw: Record<string, unknown>) => {
-      (raw.candidate as { dependencyKind: string }).dependencyKind = "devDependencies";
-    }],
-    ["specifier drift", (raw: Record<string, unknown>) => {
-      (raw.candidate as { specifier: string }).specifier = "^v1.2.3";
-    }],
-    ["non-v current version", (raw: Record<string, unknown>) => {
-      (raw.candidate as { currentVersion: string; specifier: string }).currentVersion = "1.2.3";
-      (raw.candidate as { specifier: string }).specifier = "1.2.3";
-    }],
-    ["prerelease target", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "v1.3.0-rc.1";
-    }],
-    ["non-increasing target", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "v1.2.2";
-    }],
-    ["major-changing target", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "v2.0.0";
-    }],
-    ["v1 semantic suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/widget/v1";
-    }],
-    ["v0 semantic suffix", (raw: Record<string, unknown>) => {
-      Object.assign(raw.candidate as Record<string, unknown>, {
-        package: "github.com/acme/widget/v0",
-        currentVersion: "v0.1.0", specifier: "v0.1.0", targetVersion: "v0.2.0",
-      });
-    }],
-    ["zero-padded semantic suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/widget/v01";
-    }],
-    ["dotted v1 suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/widget/v1.2";
-    }],
-    ["dotted v2 suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "github.com/acme/widget/v2.0";
-    }],
-    ["v2 missing semantic suffix", (raw: Record<string, unknown>) => {
-      Object.assign(raw.candidate as Record<string, unknown>, {
-        currentVersion: "v2.1.0", specifier: "v2.1.0", targetVersion: "v2.2.0",
-      });
-    }],
-    ["gopkg slash suffix", (raw: Record<string, unknown>) => {
-      Object.assign(raw.candidate as Record<string, unknown>, {
-        package: "gopkg.in/yaml/v3",
-        currentVersion: "v3.0.0", specifier: "v3.0.0", targetVersion: "v3.0.1",
-      });
-    }],
-    ["unsuffixed gopkg module", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "gopkg.in/yaml";
-    }],
-    ["gopkg v1 suffix", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "gopkg.in/yaml.v1";
-    }],
-    ["nested manifest", (raw: Record<string, unknown>) => {
-      (raw.manifest as { path: string }).path = "services/api/go.mod";
-    }],
-    ["nested lockfile", (raw: Record<string, unknown>) => {
-      (raw.lockfile as { path: string }).path = "services/api/go.sum";
-    }],
-    ["Go below 1.26", (raw: Record<string, unknown>) => {
-      (raw.runtime as { version: string | null }).version = "1.25.9";
-    }],
-    ["Go above 1.26", (raw: Record<string, unknown>) => {
-      (raw.packageManager as { version: string | null }).version = "1.27.0";
-    }],
-    ["wrong OSV ecosystem", (raw: Record<string, unknown>) => {
-      (raw.security as { reference: string }).reference = "osv:npm:github.com/acme/widget@v1.3.0";
-    }],
-  ] as const)("keeps bounded invalid Go evidence only on the historical replay seam: %s", (_label, mutate) => {
-    const raw = validGo();
-    mutate(raw);
-    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
-    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
-      .toBe("historical_replay_candidate");
-  });
-
-  it.each([
-    ["missing -mod=mod", ["go", "get", "github.com/acme/widget@v1.3.0"]],
-    ["reordered argv", ["go", "get", "github.com/acme/widget@v1.3.0", "-mod=mod"]],
-    ["extra mutation flag", ["go", "get", "-mod=mod", "github.com/acme/widget@v1.3.0", "-u"]],
-  ])("records bounded Go command drift as refused unsafe evidence: %s", (_label, argv) => {
-    const raw = validGo();
-    (raw.packageManager as { updateArgv: string[] }).updateArgv = argv;
-    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
-      .toBe("refused_unsafe_runtime");
-  });
-
-  it("keeps the Go tool name separate from the go-modules identity", () => {
-    const raw = validGo();
-    (raw.packageManager as { name: string }).name = "go-modules";
-    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
-      .toBe("refused_unsafe_runtime");
-  });
-
-  it("rejects Go module paths beyond the shared 214-character storage bound", () => {
-    const raw = validGo();
-    (raw.candidate as { package: string }).package = `example.com/${"a".repeat(204)}`;
-    expect(((raw.candidate as { package: string }).package).length).toBeGreaterThan(214);
-    expect(parseAcceptanceDependencyObservationForStorage(raw)).toBeNull();
-  });
-
-  it("does not promote an unsupported Cargo identity into the Go profile", () => {
-    const raw = validGo();
-    const cargo = { ecosystem: "rust", manager: "cargo", profile: "cargo_lockfile_only_v1" };
-    (raw.candidate as Record<string, unknown>).identity = cargo;
-    (raw.runtime as Record<string, unknown>).identity = cargo;
-    (raw.security as Record<string, unknown>).identity = cargo;
-    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
-      .toBe("refused_unsupported_profile");
   });
 
   it.each([
@@ -682,7 +484,7 @@ describe("parseAcceptanceDependencyObservation", () => {
   it.each([
     ["python", "poetry", "poetry_lock_v1"], ["python", "uv", "uv_lock_v1"],
     ["python", "pip", "pip_requirements_v1"], ["rust", "cargo", "cargo_lock_v1"],
-    ["go", "go-modules", "go_mod_v1"], ["node", "yarn", "yarn_lock_v1"],
+    ["go", "go-modules", "go_1_26_root_mod_sum_public_proxy_v1"], ["node", "yarn", "yarn_lock_v1"],
     ["node", "bun", "bun_lock_v1"], ["jvm", "maven", "maven_lock_v1"],
     ["jvm", "gradle", "gradle_lock_v1"], ["dotnet", "dotnet", "nuget_lock_v1"],
     ["php", "composer", "composer_lock_v1"],

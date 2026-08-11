@@ -233,42 +233,16 @@ database/Console acceptance-observation profile, cannot pass the canonical
 R10.1 ingestion boundary as `observed`, and grants no approval, Pack, builder,
 delivery, pull-request, or merge authority.
 
-PR #1706 adds the closed `go` / `go-modules` /
-`go_1_26_root_mod_sum_public_proxy_v1` evidence profile. It accepts only
-stable Go 1.26 runtime and tool evidence, root `go.mod` and `go.sum` exact-head
-custody, a candidate from a canonical public direct module requirement, stable
-same-major upward versions, exact zip and `/go.mod` `h1:` checksum rows, and
-the exact OSV `Go` module-and-target identity. Module paths are lowercase and
-bounded, reject platform-reserved and nonportable path elements, enforce the
-canonical `/vN` major suffix or the narrow `gopkg.in/name.vN` convention, and
-reject ambiguous numeric-looking suffixes.
-
-The immutable future-builder instruction is `go get -mod=mod
-<module>@<target>`. Trusted runner evidence remains responsible for attesting
-the fixed Go 1.26 binary and clean environment, disabled workspace/toolchain,
-VCS/auth/config escape hatches, public Go proxy and checksum database, bounded
-filesystem/cache roots, and restricted egress. The database does not infer
-those facts. It validates the bounded evidence and independently rebinds the
-Record, current head cycle, confirmed Contract, compiled Pack, root source
-blobs, tree custody, and OSV identity; missing or mismatched custody refuses or
-remains `not_proven`.
-
-The Python Go observer parses the exact root manifest/checksum inputs and
-consumes only an injected registry adapter; it does not execute Go or call the
-canonical R10.1 ingestion route. A pre-support Go v2 refusal remains immutable:
-exact evidence can replay only as the historical refusal, changed evidence
-conflicts, and a new broad or malformed body creates no event. Legacy v1
-replay remains pnpm-only.
-
 PR #1695 reconciled the source/test conclusion then supported by these bounded
 profiles. It closed only the pnpm, npm, Yarn 4, and uv foundation; it did not
 close canonical R10.1.
 
 Canonical R10.1 source/test remains open. The active v1 matrix requires safe,
-adapter-driven profiles across the named package-manager families. pnpm, npm,
-Yarn 4, uv, and Go Modules are currently accepted profiles. pip/requirements,
-Poetry, Maven, Gradle, NuGet/dotnet, Composer, and Cargo remain required R10
-work; detected-only or source-only observer support is not operational support.
+adapter-driven profiles for npm/pnpm/Yarn; pip/requirements, Poetry, and uv;
+Maven and Gradle; NuGet/dotnet; Composer; Cargo; and Go Modules. Only pnpm,
+npm, Yarn 4, and uv are currently accepted profiles. pip/requirements, Poetry,
+Maven, Gradle, NuGet/dotnet, Composer, Cargo, and Go Modules remain required
+R10 work; detected-only support is not operational support.
 
 Every manager without a bounded safe profile must return the explicit
 fail-closed `refused_unsupported_profile` capability/evidence result. Such a
@@ -276,6 +250,16 @@ result cannot become `observed`, receive approval, or mint an R10.2 Pack, and
 immutable historical replay cannot promote it. Bun, Ruby Bundler, Elixir Mix,
 Dart Pub, SwiftPM, and other lower-priority managers remain explicit extension
 points until a safe profile is added; none may be coerced to npm semantics.
+
+PR #1706 temporarily admitted a Go Modules profile beyond the custody the
+implementation could prove. This corrective slice removes Go from accepted
+evidence, approval, and external-builder Pack authority while retaining a
+source-only observation foundation. Historical rows remain audit-visible under
+the normal immutable-event policy, but do not grant current approval or Pack
+authority. New Go bodies are `refused_unsupported_profile` and cannot be
+accepted as `observed`. `go.sum` values are syntax-checked provided-baseline
+material only, not authenticated checksum-database or proxy receipts. No live
+builder, deployed, or customer proof is claimed.
 
 Poetry was audited rather than admitted. Its non-installing `update <package>
 --lock` command still has no exact-target argument and Poetry 2.4.1 can fall
@@ -324,22 +308,6 @@ typechecks/builds, scoped lint, diff checks, and independent adversarial review
 are green. No uv or OSV command was run, no live canonical runner called the
 ingestion route, no external builder received the Pack, and no deployed, live,
 or customer path was observed.
-
-The Go Modules compatibility gate covers 127 focused Python manager/observer
-tests, 217 focused Console parser, route, and Record-detail tests, seven DB
-boundary tests, and three focused fresh-migrated PostgreSQL cases covering
-exact profile admission, refusal and root-source truth, immutable historical
-replay, and R10.2 Pack propagation. The complete 92-case Change Record file
-and full 143-file / 1,896-test database suite pass on fresh migrated
-PostgreSQL. A broader local non-integration Python run passed 5,381 tests plus
-101 subtests. Package typechecks/builds, scoped lint, diff checks, and
-independent adversarial review are green. PR #1706 also carries a
-[browser-rendered component screenshot](screenshots/r101-go-modules-receipt.png)
-of the exact Go receipt and no-authority Pack; it is component proof, not an
-authenticated Record-detail flow. No Go command was run, no proxy, checksum
-database, or OSV evidence was acquired, no authenticated canonical runner
-called the ingestion route, no external builder received a Pack, and no
-deployed, live, or customer path was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,

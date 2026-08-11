@@ -7,6 +7,7 @@ import pytest
 
 import agentrail.dependencies.cargo as cargo_module
 import agentrail.dependencies.observation as observation_module
+from agentrail.dependencies.go_modules import go_proxy_list_url
 from agentrail.dependencies.observation import (
     CandidatesResult,
     UnsupportedResult,
@@ -22,7 +23,6 @@ from agentrail.dependencies.pnpm import (
 
 
 BASELINE = "b" * 40
-GO_SUM_HASH = f"h1:{'A' * 43}="
 
 
 class Registry:
@@ -35,6 +35,9 @@ class Registry:
         self.calls.append(package)
         values = self.versions.get(package)
         return RegistryPackage(tuple(values), tuple(self.yanked.get(package, ()))) if values is not None else None
+
+    def package_metadata_source_url(self, package: str) -> str:
+        return go_proxy_list_url(package)
 
 
 class Newest(TargetVersionAdapter):
@@ -409,187 +412,27 @@ def test_cargo_parser_enforces_manifest_lock_package_and_edge_caps(monkeypatch) 
     assert registry.calls == []
 
 
-def test_go_modules_root_public_proxy_profile_detects_same_major_candidate() -> None:
+def test_go_modules_dispatch_detects_candidate_and_checksum() -> None:
+    checksum = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     result = observe_dependencies(
         _snapshot(
             **{
-                "go.mod": (
-                    "module example.com/app\n\n"
-                    "go 1.26\n\n"
-                    "require (\n\tgithub.com/acme/lib v1.2.3\n)\n"
-                ),
+                "go.mod": "module example.com/app\n\ngo 1.22\n\nrequire (\n\tgithub.com/acme/lib v1.2.3\n)\n",
                 "go.sum": (
-                    f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n"
-                    f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
+                    f"github.com/acme/lib v1.2.3 {checksum}\n"
+                    f"github.com/acme/lib v1.2.3/go.mod {checksum}\n"
                 ),
             }
         ),
-        registry=Registry({
-            "github.com/acme/lib": (
-                "v1.2.3", "v1.3.0-rc.1", "v1.3.0", "v2.0.0",
-            ),
-        }),
+        registry=Registry({"github.com/acme/lib": ("v1.2.3", "v1.3.0")}),
         target_versions=Newest(),
     )
     assert isinstance(result, CandidatesResult)
     candidate = result.candidates[0]
     assert (candidate.package_manager, candidate.ecosystem) == ("go-modules", "go")
-    assert (candidate.current_version, candidate.target_version) == ("v1.2.3", "v1.3.0")
-    assert candidate.dependency_kind == "dependencies"
-    assert candidate.specifier == "v1.2.3"
-    assert candidate.adapter_profile == "go_1_26_root_mod_sum_public_proxy_v1"
-    assert candidate.adapter_identity_fingerprint is not None
-    assert candidate.manager_commands["update"] == (
-        "go get -mod=mod github.com/acme/lib@v1.3.0"
-    )
-
-
-@pytest.mark.parametrize(
-    "go_mod",
-    [
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib v1.2.3 // indirect\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib v1.2.3\nreplace github.com/acme/lib => ../lib\n",
-        "module example.com/app\ngo 1.26\ntoolchain go1.26.5\nrequire github.com/acme/lib v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/Acme/lib v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib/v2 v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib/v01 v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib/v1.2 v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib/v2.0 v2.1.0\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/lib v1.2.3-rc.1\n",
-        "module example.com/app\ngo 1.26\nrequire gopkg.in/yaml/v3 v3.0.0\n",
-        "module example.com/app\ngo 1.26\nrequire gopkg.in/yaml v1.2.3\n",
-        "module example.com/app\ngo 1.27\nrequire github.com/acme/lib v1.2.3\n",
-        "module example.com/app\ngo 1.26.1\nrequire github.com/acme/lib v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/con v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/con.txt v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/com1 v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/foo~1 v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire github.com/acme/foo~1.bar v1.2.3\n",
-        "module example.com/app\ngo 1.26\nrequire con.example/acme/lib v1.2.3\n",
-        (
-            "module example.com/app\n"
-            f"go 1.{'9' * 200}\n"
-            "require github.com/acme/lib v1.2.3\n"
-        ),
-        (
-            "module example.com/app\ngo 1.26\nrequire github.com/acme/lib "
-            f"v{'9' * 200}.0.0\n"
-        ),
-        (
-            "module example.com/app\ngo 1.26\nrequire "
-            f"example.com/{'a' * 100}/{'b' * 102} v1.2.3\n"
-        ),
-    ],
-)
-def test_go_modules_profile_refuses_unmodelled_or_ambiguous_manifest(go_mod: str) -> None:
-    registry = Registry({"github.com/acme/lib": ("v1.2.3", "v1.3.0")})
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "go.mod": go_mod,
-                "go.sum": (
-                    f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n"
-                    f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
-                ),
-            }
-        ),
-        registry=registry,
-        target_versions=Newest(),
-    )
-    assert isinstance(result, InsufficientEvidenceResult)
-    assert registry.calls == []
-
-
-@pytest.mark.parametrize(
-    "go_sum",
-    [
-        f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n",
-        (
-            f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n"
-            f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n"
-            f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
-        ),
-        (
-            "github.com/acme/lib v1.2.3 h1:not-a-sha256\n"
-            f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
-        ),
-        (
-            f"github.com/acme/lib v1.2.3 h1:{'A' * 42}B=\n"
-            f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
-        ),
-        (
-            f"github.com/acme/lib v1.2.2 {GO_SUM_HASH}\n"
-            f"github.com/acme/lib v1.2.2/go.mod {GO_SUM_HASH}\n"
-        ),
-    ],
-)
-def test_go_modules_profile_requires_exact_zip_and_go_mod_checksum_custody(go_sum: str) -> None:
-    registry = Registry({"github.com/acme/lib": ("v1.2.3", "v1.3.0")})
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "go.mod": "module example.com/app\ngo 1.26\nrequire github.com/acme/lib v1.2.3\n",
-                "go.sum": go_sum,
-            }
-        ),
-        registry=registry,
-        target_versions=Newest(),
-    )
-    assert isinstance(result, InsufficientEvidenceResult)
-    assert registry.calls == []
-
-
-def test_go_modules_profile_never_selects_a_cross_major_target() -> None:
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "go.mod": "module example.com/app\ngo 1.26\nrequire github.com/acme/lib v1.2.3\n",
-                "go.sum": (
-                    f"github.com/acme/lib v1.2.3 {GO_SUM_HASH}\n"
-                    f"github.com/acme/lib v1.2.3/go.mod {GO_SUM_HASH}\n"
-                ),
-            }
-        ),
-        registry=Registry({"github.com/acme/lib": ("v1.2.3", "v2.0.0")}),
-        target_versions=Newest(),
-    )
-    assert isinstance(result, UnchangedResult)
-
-
-def test_go_modules_profile_accepts_a_canonical_v2_module_path() -> None:
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "go.mod": "module example.com/app\ngo 1.26.0\nrequire github.com/acme/lib/v2 v2.1.0\n",
-                "go.sum": (
-                    f"github.com/acme/lib/v2 v2.1.0 {GO_SUM_HASH}\n"
-                    f"github.com/acme/lib/v2 v2.1.0/go.mod {GO_SUM_HASH}\n"
-                ),
-            }
-        ),
-        registry=Registry({"github.com/acme/lib/v2": ("v2.1.0", "v2.2.0", "v3.0.0")}),
-        target_versions=Newest(),
-    )
-    assert isinstance(result, CandidatesResult)
-    assert result.candidates[0].target_version == "v2.2.0"
-
-
-def test_go_modules_profile_accepts_the_canonical_gopkg_major_suffix() -> None:
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "go.mod": "module example.com/app\ngo 1.26\nrequire gopkg.in/yaml.v3 v3.0.0\n",
-                "go.sum": (
-                    f"gopkg.in/yaml.v3 v3.0.0 {GO_SUM_HASH}\n"
-                    f"gopkg.in/yaml.v3 v3.0.0/go.mod {GO_SUM_HASH}\n"
-                ),
-            }
-        ),
-        registry=Registry({"gopkg.in/yaml.v3": ("v3.0.0", "v3.1.0")}),
-        target_versions=Newest(),
-    )
-    assert isinstance(result, CandidatesResult)
-    assert result.candidates[0].target_version == "v3.1.0"
+    assert candidate.current_version == "v1.2.3"
+    assert candidate.adapter_profile is None
+    assert candidate.adapter_identity_fingerprint is None
 
 
 def test_missing_lockfile_is_typed_insufficient_evidence() -> None:

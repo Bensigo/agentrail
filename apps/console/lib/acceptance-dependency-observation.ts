@@ -6,7 +6,6 @@ export const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 export const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
-export const ACCEPTANCE_DEPENDENCY_GO_PROFILE = "go_1_26_root_mod_sum_public_proxy_v1";
 export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -69,7 +68,6 @@ export type AcceptanceDependencyObservationInput = {
 
 type AcceptanceDependencyObservationProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
-  readonly packageManagerName: string;
   readonly frozenUnsupportedReplayOnMismatch: boolean;
   candidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean;
   runtimeVersionIsValid(version: string): boolean;
@@ -109,9 +107,6 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 };
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
-};
-const ACCEPTANCE_DEPENDENCY_GO_IDENTITY: AcceptanceDependencyProfileIdentity = {
-  ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_PROFILE,
 };
 
 function nodeCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
@@ -187,55 +182,6 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
-function stableGo126(version: string): boolean {
-  const parts = stableSemverParts(version);
-  return parts?.[0] === 1 && parts[1] === 26;
-}
-
-function stableGoModuleVersionParts(value: string): [number, number, number] | null {
-  return value.startsWith("v") ? stableSemverParts(value.slice(1)) : null;
-}
-
-const GO_PUBLIC_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const GO_PATH_SEGMENT = /^[a-z0-9](?:[a-z0-9._~-]{0,126}[a-z0-9])?$/u;
-const GO_RESERVED_PATH_ELEMENT_PREFIX = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
-const GO_SHORTNAME_PATH_ELEMENT_PREFIX = /~[0-9]+$/u;
-const GO_NUMERIC_MAJOR_SUFFIX = /^v[0-9.]+$/u;
-
-function portableGoModulePathElement(value: string): boolean {
-  const prefix = value.split(".", 1)[0] ?? value;
-  return !GO_RESERVED_PATH_ELEMENT_PREFIX.test(prefix)
-    && !GO_SHORTNAME_PATH_ELEMENT_PREFIX.test(prefix);
-}
-
-function canonicalPublicGoModulePath(value: string, major: number): boolean {
-  const [host, ...segments] = value.split("/");
-  if (!host || segments.length === 0 || !GO_PUBLIC_HOST.test(host)
-    || !portableGoModulePathElement(host)
-    || !segments.every((segment) => GO_PATH_SEGMENT.test(segment)
-      && portableGoModulePathElement(segment))) return false;
-  const terminalSegment = segments.at(-1) ?? "";
-  const semanticSuffix = /^v(0|[1-9]\d*)$/u.exec(terminalSegment);
-  const gopkgSuffix = host === "gopkg.in" && segments.length === 1
-    ? /\.v(0|[1-9]\d*)$/u.exec(segments[0]!) : null;
-  if (host === "gopkg.in") {
-    return major >= 2 && gopkgSuffix?.[1] === String(major);
-  }
-  if (major >= 2) return semanticSuffix?.[1] === String(major);
-  return !GO_NUMERIC_MAJOR_SUFFIX.test(terminalSegment);
-}
-
-function goCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
-  if (candidate.dependencyKind !== "dependencies" || candidate.specifier !== candidate.currentVersion) {
-    return false;
-  }
-  const current = stableGoModuleVersionParts(candidate.currentVersion);
-  const target = stableGoModuleVersionParts(candidate.targetVersion);
-  return current !== null && target !== null && current[0] === target[0]
-    && compareStableSemver(target, current) > 0
-    && canonicalPublicGoModulePath(candidate.package, target[0]);
-}
-
 function osvNpmSecurityIsValid(
   security: AcceptanceDependencyObservationInput["security"],
   candidate: AcceptanceDependencyObservationInput["candidate"],
@@ -252,18 +198,9 @@ function osvPyPiSecurityIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
-function osvGoSecurityIsValid(
-  security: AcceptanceDependencyObservationInput["security"],
-  candidate: AcceptanceDependencyObservationInput["candidate"],
-): boolean {
-  return security.provider === "osv"
-    && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion.slice(1)}`;
-}
-
 const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
-    packageManagerName: "pnpm",
     frozenUnsupportedReplayOnMismatch: false,
     candidateIsValid: nodeCandidateIsValid,
     runtimeVersionIsValid: (version) => SEMVER.test(version),
@@ -278,7 +215,6 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
   }],
   ["node:npm:npm_package_lock_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_NPM_IDENTITY,
-    packageManagerName: "npm",
     frozenUnsupportedReplayOnMismatch: true,
     candidateIsValid: npmCandidateIsValid,
     runtimeVersionIsValid: (version) => SEMVER.test(version),
@@ -294,7 +230,6 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
   }],
   ["node:yarn:yarn_berry_v4_root_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_YARN_IDENTITY,
-    packageManagerName: "yarn",
     frozenUnsupportedReplayOnMismatch: true,
     candidateIsValid: yarnCandidateIsValid,
     runtimeVersionIsValid: stableNodeAtLeast1812,
@@ -313,7 +248,6 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
   }],
   ["python:uv:uv_project_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_UV_IDENTITY,
-    packageManagerName: "uv",
     frozenUnsupportedReplayOnMismatch: true,
     candidateIsValid: uvCandidateIsValid,
     runtimeVersionIsValid: stablePython3,
@@ -325,20 +259,6 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
-    ],
-  }],
-  ["go:go-modules:go_1_26_root_mod_sum_public_proxy_v1", {
-    identity: ACCEPTANCE_DEPENDENCY_GO_IDENTITY,
-    packageManagerName: "go",
-    frozenUnsupportedReplayOnMismatch: true,
-    candidateIsValid: goCandidateIsValid,
-    runtimeVersionIsValid: stableGo126,
-    packageManagerVersionIsValid: stableGo126,
-    manifestPathIsValid: (path) => path === "go.mod",
-    lockfilePathIsValid: (path) => path === "go.sum",
-    securityIsValid: osvGoSecurityIsValid,
-    expectedArgv: (candidate) => [
-      "go", "get", "-mod=mod", `${candidate.package}@${candidate.targetVersion}`,
     ],
   }],
 ]);
@@ -548,7 +468,7 @@ function boundaryAssessment(input: AcceptanceDependencyObservationInput): Accept
   const expectedArgv = profile.expectedArgv(input.candidate);
   const exactRuntimeProfile = input.runtime.disposition !== "unsafe";
   const exactPackageManagerProfile = input.packageManager.disposition !== "unsafe"
-    && input.packageManager.name === profile.packageManagerName
+    && input.packageManager.name === profile.identity.manager
     && input.packageManager.profile === profile.identity.profile
     && (
       input.packageManager.disposition !== "safe"

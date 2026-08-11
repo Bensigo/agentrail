@@ -13,6 +13,7 @@ from agentrail.dependencies.execution import (
     execute_approved_pnpm_upgrade,
 )
 from agentrail.dependencies.manager import CARGO_ADAPTER_PROFILE, NPM_ADAPTER_PROFILE
+from agentrail.dependencies.go_modules import GO_MODULES_OBSERVATION_PROFILE
 from agentrail.dependencies.pnpm import adapter_identity_fingerprint
 
 
@@ -115,6 +116,45 @@ def test_cargo_profile_has_no_managed_execution_before_checkout_or_runner(tmp_pa
     assert result.reason_code is ExecutionReason.CAPABILITY_UNAVAILABLE
     assert result.reason == "managed dependency execution adapter is unavailable: cargo"
     assert result.adapter_profile == CARGO_ADAPTER_PROFILE
+    assert runner.calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_go_observation_profile_has_no_managed_execution_before_checkout_or_runner(tmp_path: Path) -> None:
+    fingerprint = "sha256:go-candidate"
+    contract = replace(
+        _contract(),
+        package="github.com/acme/lib",
+        specifier="v1.2.3",
+        current_version="v1.2.3",
+        target_version="v1.3.0",
+        candidate_fingerprint=fingerprint,
+        ecosystem="go",
+        package_manager="go-modules",
+        adapter_profile=GO_MODULES_OBSERVATION_PROFILE,
+        adapter_identity_fingerprint=adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint,
+            ecosystem="go",
+            package_manager="go-modules",
+            adapter_profile=GO_MODULES_OBSERVATION_PROFILE,
+        ),
+        manifest_path="go.mod",
+        lockfile_path="go.sum",
+        verification_commands=(("go", "test", "./..."),),
+    )
+    runner = NoCallRunner()
+
+    result = execute_approved_dependency_upgrade(
+        "/repository-must-not-be-touched",
+        contract,
+        runner=runner,
+        workspace_parent=tmp_path,
+    )
+
+    assert result.status is ExecutionStatus.REFUSED
+    assert result.reason_code is ExecutionReason.CAPABILITY_UNAVAILABLE
+    assert result.reason == "managed dependency execution adapter is unavailable: go-modules"
+    assert result.adapter_profile == GO_MODULES_OBSERVATION_PROFILE
     assert runner.calls == []
     assert list(tmp_path.iterdir()) == []
 

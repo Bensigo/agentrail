@@ -2651,6 +2651,11 @@ const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Z
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const GO_PUBLIC_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const GO_PATH_SEGMENT = /^[a-z0-9](?:[a-z0-9._~-]{0,126}[a-z0-9])?$/u;
+const GO_RESERVED_PATH_ELEMENT_PREFIX = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
+const GO_SHORTNAME_PATH_ELEMENT_PREFIX = /~[0-9]+$/u;
+const GO_NUMERIC_MAJOR_SUFFIX = /^v[0-9.]+$/u;
 const NODE_DEPENDENCY_KINDS = [
   "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
 ] as const;
@@ -2669,6 +2674,7 @@ const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
 
 type AcceptanceDependencyReceiptProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
+  readonly packageManagerName: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -2784,6 +2790,49 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
+function stableGo126(version: string): boolean {
+  const parts = stableSemverParts(version);
+  return parts?.[0] === 1 && parts[1] === 26;
+}
+
+function stableGoModuleVersionParts(value: string): [number, number, number] | null {
+  return value.startsWith("v") ? stableSemverParts(value.slice(1)) : null;
+}
+
+function portableGoModulePathElement(value: string): boolean {
+  const prefix = value.split(".", 1)[0] ?? value;
+  return !GO_RESERVED_PATH_ELEMENT_PREFIX.test(prefix)
+    && !GO_SHORTNAME_PATH_ELEMENT_PREFIX.test(prefix);
+}
+
+function canonicalPublicGoModulePath(value: string, major: number): boolean {
+  const [host, ...segments] = value.split("/");
+  if (!host || segments.length === 0 || !GO_PUBLIC_HOST.test(host)
+    || !portableGoModulePathElement(host)
+    || !segments.every((segment) => GO_PATH_SEGMENT.test(segment)
+      && portableGoModulePathElement(segment))) return false;
+  const terminalSegment = segments.at(-1) ?? "";
+  const semanticSuffix = /^v(0|[1-9]\d*)$/u.exec(terminalSegment);
+  const gopkgSuffix = host === "gopkg.in" && segments.length === 1
+    ? /\.v(0|[1-9]\d*)$/u.exec(segments[0]!) : null;
+  if (host === "gopkg.in") {
+    return major >= 2 && gopkgSuffix?.[1] === String(major);
+  }
+  if (major >= 2) return semanticSuffix?.[1] === String(major);
+  return !GO_NUMERIC_MAJOR_SUFFIX.test(terminalSegment);
+}
+
+function goDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies" || candidate.specifier !== candidate.currentVersion) {
+    return false;
+  }
+  const current = stableGoModuleVersionParts(candidate.currentVersion);
+  const target = stableGoModuleVersionParts(candidate.targetVersion);
+  return current !== null && target !== null && current[0] === target[0]
+    && compareStableSemver(target, current) > 0
+    && canonicalPublicGoModulePath(candidate.package, target[0]);
+}
+
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2800,9 +2849,18 @@ function osvPyPiReceiptIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function osvGoReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion.slice(1)}`;
+}
+
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
+    packageManagerName: "pnpm",
     candidateIsValid: nodeDependencyCandidateIsValid,
     runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
     packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
@@ -2816,6 +2874,7 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
   }],
   ["node:npm:npm_package_lock_only_v1", {
     identity: { ecosystem: "node", manager: "npm", profile: "npm_package_lock_only_v1" },
+    packageManagerName: "npm",
     candidateIsValid: npmDependencyCandidateIsValid,
     runtimeVersionIsValid: (version) => EXACT_SEMVER.test(version),
     packageManagerVersionIsValid: (version) => EXACT_SEMVER.test(version),
@@ -2834,6 +2893,7 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       manager: "yarn",
       profile: "yarn_berry_v4_root_lockfile_only_v1",
     },
+    packageManagerName: "yarn",
     candidateIsValid: yarnDependencyCandidateIsValid,
     runtimeVersionIsValid: stableNodeAtLeast1812,
     packageManagerVersionIsValid: stableYarn4,
@@ -2855,6 +2915,7 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       manager: "uv",
       profile: "uv_project_lockfile_only_v1",
     },
+    packageManagerName: "uv",
     candidateIsValid: uvDependencyCandidateIsValid,
     runtimeVersionIsValid: stablePython3,
     packageManagerVersionIsValid: stableUv012,
@@ -2865,6 +2926,23 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
+  ["go:go-modules:go_1_26_root_mod_sum_public_proxy_v1", {
+    identity: {
+      ecosystem: "go",
+      manager: "go-modules",
+      profile: "go_1_26_root_mod_sum_public_proxy_v1",
+    },
+    packageManagerName: "go",
+    candidateIsValid: goDependencyCandidateIsValid,
+    runtimeVersionIsValid: stableGo126,
+    packageManagerVersionIsValid: stableGo126,
+    manifestPathIsValid: (path) => path === "go.mod",
+    lockfilePathIsValid: (path) => path === "go.sum",
+    securityIsValid: osvGoReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "go", "get", "-mod=mod", `${candidate.package}@${candidate.targetVersion}`,
     ],
   }],
 ]);
@@ -3054,7 +3132,7 @@ function isDependencyObservation(
     && value.runtime.disposition === "safe"
     && profile.runtimeVersionIsValid(value.runtime.version ?? "")
     && value.packageManager.disposition === "safe"
-    && value.packageManager.name === profile.identity.manager
+    && value.packageManager.name === profile.packageManagerName
     && profile.packageManagerVersionIsValid(value.packageManager.version ?? "")
     && value.packageManager.profile === profile.identity.profile
     && exactJsonEqual(value.packageManager.updateArgv, profile.expectedArgv(value.candidate))

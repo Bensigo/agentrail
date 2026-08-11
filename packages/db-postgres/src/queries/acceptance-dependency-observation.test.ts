@@ -111,6 +111,44 @@ const validUv = {
   },
 };
 
+const goIdentity = {
+  ecosystem: "go",
+  manager: "go-modules",
+  profile: "go_1_26_root_mod_sum_public_proxy_v1",
+};
+const validGo = {
+  ...valid,
+  candidate: {
+    identity: goIdentity,
+    package: "github.com/agentrail/example/v2",
+    dependencyKind: "dependencies" as const,
+    specifier: "v2.3.4",
+    currentVersion: "v2.3.4",
+    targetVersion: "v2.4.0",
+  },
+  runtime: {
+    ...valid.runtime,
+    identity: goIdentity,
+    version: "1.26.1",
+  },
+  packageManager: {
+    ...valid.packageManager,
+    name: "go",
+    version: "1.26.1",
+    profile: "go_1_26_root_mod_sum_public_proxy_v1",
+    updateArgv: [
+      "go", "get", "-mod=mod", "github.com/agentrail/example/v2@v2.4.0",
+    ],
+  },
+  manifest: { ...valid.manifest, path: "go.mod" },
+  lockfile: { ...valid.lockfile, path: "go.sum" },
+  security: {
+    ...valid.security,
+    identity: goIdentity,
+    reference: "osv:Go:github.com/agentrail/example/v2@2.4.0",
+  },
+};
+
 describe("Acceptance dependency observation input boundary", () => {
   it("rejects caller-supplied authority, status, fingerprint, and execution side effects", async () => {
     for (const extra of [
@@ -211,6 +249,32 @@ describe("Acceptance dependency observation input boundary", () => {
       },
       { ...validUv, manifest: { ...validUv.manifest, path: "../pyproject.toml" } },
       { ...validUv, security: { ...validUv.security, reportSha256: "not-a-digest" } },
+    ]) {
+      await expect(recordAcceptanceDependencyObservation(malformed as never))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+    }
+  });
+
+  it("rejects structurally unsafe Go evidence before historical replay lookup", async () => {
+    for (const malformed of [
+      { ...validGo, candidate: { ...validGo.candidate, package: `github.com/acme/mod\u202e` } },
+      { ...validGo, candidate: { ...validGo.candidate, package: "x".repeat(215) } },
+      {
+        ...validGo,
+        candidate: {
+          ...validGo.candidate,
+          identity: { ...validGo.candidate.identity, ecosystem: "Go" },
+        },
+      },
+      {
+        ...validGo,
+        packageManager: {
+          ...validGo.packageManager,
+          updateArgv: [...validGo.packageManager.updateArgv, `-modfile\u2066=other.mod`],
+        },
+      },
+      { ...validGo, manifest: { ...validGo.manifest, path: "../go.mod" } },
+      { ...validGo, security: { ...validGo.security, reportSha256: "not-a-digest" } },
     ]) {
       await expect(recordAcceptanceDependencyObservation(malformed as never))
         .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);

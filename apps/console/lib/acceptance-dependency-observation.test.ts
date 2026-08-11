@@ -15,6 +15,7 @@ const VALID = {
   recordId: "22222222-2222-4222-8222-222222222222",
   compiledPackId: "33333333-3333-4333-8333-333333333333",
   candidate: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     package: "@acme/widget",
     dependencyKind: "dependencies",
     specifier: "^1.2.0",
@@ -22,8 +23,9 @@ const VALID = {
     targetVersion: "1.3.0",
   },
   runtime: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     disposition: "safe",
-    nodeVersion: "22.14.0",
+    version: "22.14.0",
     evidenceSha256: "a".repeat(64),
   },
   packageManager: {
@@ -49,6 +51,7 @@ const VALID = {
   },
   baseline: { headSha: "f".repeat(40) },
   security: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     disposition: "clear",
     provider: "osv",
     reference: "osv:npm:@acme/widget@1.3.0",
@@ -89,7 +92,7 @@ describe("parseAcceptanceDependencyObservation", () => {
 
   it("records an explicitly unsafe runtime as refused unsafe runtime evidence", () => {
     const raw = cloneValid();
-    Object.assign(raw.runtime as object, { disposition: "unsafe", nodeVersion: "latest" });
+    Object.assign(raw.runtime as object, { disposition: "unsafe", version: "latest" });
     expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment).toBe("refused_unsafe_runtime");
   });
 
@@ -117,7 +120,7 @@ describe("parseAcceptanceDependencyObservation", () => {
       const raw = cloneValid();
       Object.assign(raw[field] as object, {
         disposition: "unavailable",
-        ...(field === "runtime" ? { nodeVersion: null } : { version: null }),
+        ...(field === "runtime" ? { version: null } : { version: null }),
       });
       expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment).toBe("not_proven");
     }
@@ -139,6 +142,47 @@ describe("parseAcceptanceDependencyObservation", () => {
   ])("rejects malformed input: %s", (_label, mutate) => {
     const raw = cloneValid();
     mutate(raw);
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+  });
+
+  it.each([
+    ["python", "poetry", "poetry_lock_v1"], ["python", "uv", "uv_lock_v1"],
+    ["python", "pip", "pip_requirements_v1"], ["rust", "cargo", "cargo_lock_v1"],
+    ["go", "go-modules", "go_mod_v1"], ["node", "yarn", "yarn_lock_v1"],
+    ["node", "bun", "bun_lock_v1"], ["jvm", "maven", "maven_lock_v1"],
+    ["jvm", "gradle", "gradle_lock_v1"], ["dotnet", "dotnet", "nuget_lock_v1"],
+    ["php", "composer", "composer_lock_v1"],
+  ])("accepts bounded unsupported %s/%s identity for server refusal", (ecosystem, manager, profile) => {
+    const raw = cloneValid();
+    for (const field of [raw.candidate, raw.runtime, raw.security] as Array<Record<string, unknown>>) {
+      field.identity = { ecosystem, manager, profile };
+    }
+    (raw.candidate as Record<string, unknown>).currentVersion = "release-1";
+    (raw.candidate as Record<string, unknown>).targetVersion = "release-2";
+    (raw.runtime as Record<string, unknown>).version = "runtime-unknown";
+    Object.assign(raw.packageManager as Record<string, unknown>, {
+      name: manager,
+      version: "manager-version-unknown",
+      profile,
+      updateArgv: [manager, "update", "example-package"],
+    });
+    (raw.manifest as Record<string, unknown>).path = "ecosystem/manifest.file";
+    (raw.lockfile as Record<string, unknown>).path = "ecosystem/lock.file";
+    (raw.security as Record<string, unknown>).provider = "unknown-provider";
+    (raw.security as Record<string, unknown>).reference = "opaque:server-verified-only";
+    const parsed = parseAcceptanceDependencyObservation(raw);
+    expect(parsed?.boundaryAssessment).toBe("refused_unsupported_profile");
+    expect(parsed?.input.packageManager).toMatchObject({ name: manager, profile });
+    expect(JSON.stringify(parsed)).not.toContain("pnpm");
+  });
+
+  it("rejects legacy v1 runner bodies instead of inferring a manager identity", () => {
+    const raw = cloneValid();
+    delete (raw.candidate as Record<string, unknown>).identity;
+    delete (raw.runtime as Record<string, unknown>).identity;
+    (raw.runtime as Record<string, unknown>).nodeVersion = (raw.runtime as Record<string, unknown>).version;
+    delete (raw.runtime as Record<string, unknown>).version;
+    delete (raw.security as Record<string, unknown>).identity;
     expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
   });
 });

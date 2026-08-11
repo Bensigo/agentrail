@@ -20,6 +20,7 @@ import {
   validatePnpmObservationProposalCandidate,
   type DependencyObservationDraftError,
 } from "../queries/dependency_observation_acceptance_records.js";
+import { readDependencyDraftProposalDetail } from "../queries/dependency_draft_proposal_detail.js";
 
 const DB_AVAILABLE: boolean = await (async () => {
   try {
@@ -176,6 +177,11 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     return { workspaceId, watchId: source.watch.id, candidateFingerprint: fingerprintOf(source.candidate) };
   }
 
+  async function createProposalDraft() {
+    const source = await observe();
+    return createDraftAcceptanceRecordFromDependencyObservation(locator(source));
+  }
+
   it("creates one draft Record, v1 Contract, and immutable exact pnpm proposal custody", async () => {
     const source = await observe({
       hashes: {
@@ -314,6 +320,195 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     await expect(createDraftAcceptanceRecordFromDependencyObservation({
       workspaceId: foreign, watchId: source.watch.id, candidateFingerprint: fingerprintOf(source.candidate),
     })).rejects.toMatchObject({ code: "not_found" } satisfies Partial<DependencyObservationDraftError>);
+  });
+
+  it("projects only exact draft proposal custody and refuses an additional event", async () => {
+    const source = await observe();
+    const draft = await createDraftAcceptanceRecordFromDependencyObservation(locator(source));
+
+    await expect(readDependencyDraftProposalDetail({ workspaceId, recordId: draft.record.id })).resolves.toMatchObject({
+      kind: "draft",
+      record: { id: draft.record.id, contractId: draft.contract.id, contractVersion: 1 },
+      proposal: {
+        candidate: { package: "@agentrail/widget", currentVersion: "1.0.0", targetVersion: "1.1.0" },
+        files: {
+          manifest: { path: "package.json", sha256: MANIFEST_HASH },
+          lockfile: { path: "pnpm-lock.yaml", sha256: LOCKFILE_HASH },
+        },
+        profile: { ecosystem: "node", manager: "pnpm", capability: "proposal_observation_only" },
+        evidenceAdmission: "unresolved",
+        laterEvidence: { confirmation: "not_recorded", delivery: "not_recorded", result: "not_recorded" },
+      },
+    });
+    const projection = await readDependencyDraftProposalDetail({ workspaceId, recordId: draft.record.id });
+    expect(JSON.stringify(projection)).not.toContain("manager_commands");
+    expect(JSON.stringify(projection)).not.toContain("verification_commands");
+
+    await db.insert(changeRecordEvents).values({
+      id: randomUUID(), recordId: draft.record.id, eventKey: "unexpected-later-event",
+      stage: "unexpected", actor: "server:test", payloadRef: {},
+    });
+    await expect(readDependencyDraftProposalDetail({ workspaceId, recordId: draft.record.id })).resolves.toEqual({
+      kind: "invalid_custody",
+    });
+  });
+
+  it("does not disclose a draft proposal across tenants", async () => {
+    const draft = await createProposalDraft();
+    const foreignWorkspaceId = (await db.insert(workspaces).values({
+      name: "foreign dependency proposal reader",
+      slug: `foreign-proposal-reader-${randomUUID()}`,
+    }).returning({ id: workspaces.id }))[0]!.id;
+    try {
+      await expect(readDependencyDraftProposalDetail({
+        workspaceId: foreignWorkspaceId,
+        recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_found" });
+    } finally {
+      await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspaceId));
+    }
+  });
+
+  it("fails closed when the proposal source reference is tampered", async () => {
+    const draft = await createProposalDraft();
+    const sourceReference = draft.record.sourceReferences[0]!;
+    await db.update(changeRecords).set({
+      sourceReferences: [{
+        ...sourceReference,
+        proposalCustodyIdentity: `sha256:${"f".repeat(64)}`,
+      }],
+    }).where(eq(changeRecords.id, draft.record.id));
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("recomputes custody and rejects coherent source, Contract, and event tampering", async () => {
+    const draft = await createProposalDraft();
+    const candidate = pnpmCandidate({
+      package: "@agentrail/forged-widget",
+      current_version: "2.0.0",
+      target_version: "2.1.0",
+      specifier: "^2.0.0",
+      manager_commands: {
+        version: "pnpm --version",
+        install: "pnpm install --frozen-lockfile",
+        update: "pnpm update --lockfile-only --ignore-scripts @agentrail/forged-widget@2.1.0",
+      },
+    });
+    const sourceReference = draft.record.sourceReferences[0]!;
+    const environment = (draft.contract.contract.environment as Record<string, unknown>);
+    await db.update(changeRecords).set({
+      sourceReferences: [{
+        ...sourceReference,
+        candidate,
+        candidateFingerprint: candidate.fingerprint,
+      }],
+    }).where(eq(changeRecords.id, draft.record.id));
+    await db.update(acceptanceContracts).set({
+      contract: {
+        ...draft.contract.contract,
+        originalRequest: "Assess observed dependency candidate @agentrail/forged-widget from 2.0.0 to 2.1.0.",
+        environment: {
+          ...environment,
+          candidate,
+          candidateFingerprint: candidate.fingerprint,
+        },
+      },
+    }).where(eq(acceptanceContracts.id, draft.contract.id));
+    await db.update(changeRecordEvents).set({
+      payloadRef: {
+        ...draft.event.payloadRef,
+        candidate,
+        candidateFingerprint: candidate.fingerprint,
+      },
+    }).where(eq(changeRecordEvents.id, draft.event.id));
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("rejects a coherently replaced deterministic Contract identity", async () => {
+    const draft = await createProposalDraft();
+    const forgedContractId = randomUUID();
+    await db.update(acceptanceContracts).set({ id: forgedContractId })
+      .where(eq(acceptanceContracts.id, draft.contract.id));
+    await db.update(changeRecordEvents).set({
+      payloadRef: {
+        ...draft.event.payloadRef,
+        acceptanceContractId: forgedContractId,
+      },
+    }).where(eq(changeRecordEvents.id, draft.event.id));
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("fails closed when the draft Contract is tampered", async () => {
+    const draft = await createProposalDraft();
+    await db.update(acceptanceContracts).set({
+      contract: {
+        ...draft.contract.contract,
+        originalRequest: "Assess a different dependency candidate.",
+      },
+    }).where(eq(acceptanceContracts.id, draft.contract.id));
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("fails closed when the proposal event is tampered", async () => {
+    const draft = await createProposalDraft();
+    await db.update(changeRecordEvents).set({
+      payloadRef: { ...draft.event.payloadRef, evidenceAdmission: "admitted" },
+    }).where(eq(changeRecordEvents.id, draft.event.id));
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("fails closed when a duplicate Contract row exists", async () => {
+    const draft = await createProposalDraft();
+    await db.insert(acceptanceContracts).values({
+      id: randomUUID(),
+      recordId: draft.record.id,
+      version: 0,
+      status: "draft",
+      contract: draft.contract.contract,
+      createdBy: "server:dependency-observation-proposal",
+    });
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
+  });
+
+  it("fails closed when a later-version Contract exists", async () => {
+    const draft = await createProposalDraft();
+    await db.insert(acceptanceContracts).values({
+      id: randomUUID(),
+      recordId: draft.record.id,
+      version: 2,
+      status: "draft",
+      contract: draft.contract.contract,
+      createdBy: "server:dependency-observation-proposal",
+    });
+
+    await expect(readDependencyDraftProposalDetail({
+      workspaceId,
+      recordId: draft.record.id,
+    })).resolves.toEqual({ kind: "invalid_custody" });
   });
 
   it("does not reuse a candidate after newer failed or unchanged observations", async () => {

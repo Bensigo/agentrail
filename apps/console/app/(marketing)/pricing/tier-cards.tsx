@@ -4,7 +4,7 @@ import { TIERS } from "./tiers";
 /**
  * Shared tier card grid (subscription-platform slice 10, Task 1 — owner
  * feedback 2026-08-02: the landing page must show the FULL pricing cards —
- * name, mono price, Seats/Included, feature list, CTA — the same
+ * name, mono price, seats, commercial status, feature list, CTA — the same
  * presentation as `/pricing`, not the compact one-line tier summaries slice
  * 9 shipped). Moved verbatim out of `./page.tsx` (where this grid first
  * shipped, subscription-platform slice 7 Task 1) into its own module so
@@ -64,7 +64,7 @@ const ENTERPRISE_CONTACT_EMAIL = "hello@heyjace.com";
 
 /**
  * The three tier cards (Starter/Growth/Enterprise) as a `grid-cols-1
- * lg:grid-cols-3` grid — name, mono price, Seats/Included stat pair,
+ * lg:grid-cols-3` grid — name, mono price, seats/status pair,
  * feature list, CTA. Both `/pricing` and the landing render this exact
  * function; see this module's own doc-comment for the width-wrapper split
  * of responsibility.
@@ -89,8 +89,8 @@ export function TierCards() {
                 <dd className="text-[var(--gray-12)]">{tier.seats}</dd>
               </div>
               <div>
-                <dt className="text-[var(--gray-11)]">Included</dt>
-                <dd className="text-[var(--gray-12)]">{tier.included}</dd>
+                <dt className="text-[var(--gray-11)]">Commercial status</dt>
+                <dd className="text-[var(--gray-12)]">{tier.commercialStatus}</dd>
               </div>
             </dl>
             <ul className="mt-4 mb-6 flex flex-col gap-2">

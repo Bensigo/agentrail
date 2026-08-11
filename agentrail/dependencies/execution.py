@@ -29,8 +29,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
 from agentrail.dependencies.evidence import DependencyEvidence
-from agentrail.dependencies.manager import COMMAND_PLANS, CommandPlan, ManagerId
-from agentrail.dependencies.pnpm import DependencyCandidate
+from agentrail.dependencies.manager import (
+    ADAPTER_PROFILE_IDS,
+    ManagerId,
+)
+from agentrail.dependencies.pnpm import DependencyCandidate, adapter_identity_fingerprint
 from agentrail.run.evidence import bound_evidence
 
 
@@ -60,6 +63,7 @@ class ExecutionReason(str, Enum):
     EXECUTION_ERROR = "execution_error"
     EVIDENCE_REQUIRED = "evidence_required"
     EVIDENCE_MISMATCH = "evidence_mismatch"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
 
 
 Command = Tuple[str, ...]
@@ -122,6 +126,8 @@ class ApprovedPnpmUpgrade:
     ecosystem: str = "node"
     package_manager: str = "pnpm"
     package_manager_version: str = ""
+    adapter_profile: Optional[str] = None
+    adapter_identity_fingerprint: Optional[str] = None
     dependency_evidence: Optional[DependencyEvidence] = None
     manifest_path: str = "package.json"
     lockfile_path: str = "pnpm-lock.yaml"
@@ -154,6 +160,10 @@ class ApprovedPnpmUpgrade:
             ecosystem=getattr(candidate, "ecosystem", "node") or "node",
             package_manager=getattr(candidate, "package_manager", "pnpm") or "pnpm",
             package_manager_version=getattr(candidate, "package_manager_version", None) or "",
+            adapter_profile=getattr(candidate, "adapter_profile", None),
+            adapter_identity_fingerprint=getattr(
+                candidate, "adapter_identity_fingerprint", None
+            ),
             dependency_evidence=dependency_evidence,
             manifest_path=candidate.manifest_path,
             lockfile_path=candidate.lockfile_path,
@@ -219,6 +229,8 @@ class DependencyExecutionResult:
     ecosystem: str = ""
     package_manager: str = ""
     package_manager_version: str = ""
+    adapter_profile: Optional[str] = None
+    adapter_identity_fingerprint: Optional[str] = None
     package: str = ""
     current_version: str = ""
     target_version: str = ""
@@ -262,6 +274,8 @@ class DependencyExecutionResult:
             "ecosystem": self.ecosystem,
             "packageManager": self.package_manager,
             "packageManagerVersion": self.package_manager_version,
+            "adapterProfile": self.adapter_profile,
+            "adapterIdentityFingerprint": self.adapter_identity_fingerprint,
             "package": self.package,
             "currentVersion": self.current_version,
             "targetVersion": self.target_version,
@@ -278,6 +292,11 @@ class _CommandResult:
 _EXACT_VERSION = re.compile(r"^(?:v)?(\d+\.\d+\.\d+)$")
 _EXACT_PNPM = re.compile(r"^pnpm@(\d+\.\d+\.\d+)$")
 _SHELL_META = re.compile(r"[;&|<>`]|\n")
+
+# Detection, an evidence profile and a descriptive command plan do not grant
+# managed execution capability. pnpm is the only executor implemented here;
+# npm candidates are handed to an external builder and refuse before clone.
+_MANAGED_EXECUTION_MANAGERS = frozenset({ManagerId.PNPM.value})
 
 
 def _normalise_commands(commands: Iterable[Union[str, Sequence[str]]]) -> Tuple[Command, ...]:
@@ -296,8 +315,17 @@ def _normalise_commands(commands: Iterable[Union[str, Sequence[str]]]) -> Tuple[
 
 
 def _normalise_path(path: str) -> str:
-    value = str(path).replace("\\", "/").lstrip("./")
-    if not value or value.startswith("/") or value == ".." or value.startswith("../"):
+    if not isinstance(path, str):
+        raise ValueError(f"path is not text: {path!r}")
+    value = path.replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    if (
+        not value
+        or value.startswith("/")
+        or re.match(r"^[A-Za-z]:/", value)
+        or ".." in value.split("/")
+    ):
         raise ValueError(f"path is outside the repository: {path!r}")
     return value
 
@@ -315,6 +343,24 @@ def _validate_contract(contract: ApprovedPnpmUpgrade) -> Optional[str]:
     }
     if any(not isinstance(value, str) or not value.strip() for value in required.values()):
         return "approved dependency contract is incomplete"
+    expected_profile = ADAPTER_PROFILE_IDS.get(
+        (contract.ecosystem, contract.package_manager)
+    )
+    if expected_profile is None:
+        return "dependency execution adapter capability is unavailable"
+    if contract.adapter_profile != expected_profile:
+        return "approved dependency adapter profile is mismatched"
+    try:
+        expected_adapter_fingerprint = adapter_identity_fingerprint(
+            candidate_fingerprint=contract.candidate_fingerprint,
+            ecosystem=contract.ecosystem,
+            package_manager=contract.package_manager,
+            adapter_profile=expected_profile,
+        )
+    except ValueError:
+        return "approved dependency adapter identity is invalid"
+    if contract.adapter_identity_fingerprint != expected_adapter_fingerprint:
+        return "approved dependency adapter identity fingerprint is mismatched"
     evidence = contract.dependency_evidence
     if evidence is None or not evidence.decision.proof_complete:
         return "dependency evidence is missing or not proof-complete"
@@ -325,6 +371,11 @@ def _validate_contract(contract: ApprovedPnpmUpgrade) -> Optional[str]:
         or identity.current_version != contract.current_version
         or identity.target_version != contract.target_version
         or identity.baseline_sha != contract.baseline_sha
+        or identity.ecosystem != contract.ecosystem
+        or identity.package_manager != contract.package_manager
+        or identity.adapter_profile != contract.adapter_profile
+        or identity.adapter_identity_fingerprint
+        != contract.adapter_identity_fingerprint
     ):
         return "dependency evidence does not match the approved candidate"
     if contract.dependency_kind not in {"dependencies", "devDependencies", "optionalDependencies", "buildDependencies"}:
@@ -340,8 +391,15 @@ def _validate_contract(contract: ApprovedPnpmUpgrade) -> Optional[str]:
             *contract.affected_usage_paths,
             *contract.required_test_paths,
         )
+        seen_paths: set[str] = set()
         for path in paths:
-            _normalise_path(path)
+            normalised = _normalise_path(path)
+            if normalised in seen_paths:
+                return (
+                    "approved dependency paths collide after normalization: "
+                    f"{normalised}"
+                )
+            seen_paths.add(normalised)
     except ValueError as exc:
         return str(exc)
     return None
@@ -432,51 +490,6 @@ def _manifest_matches_contract(checkout: Path, contract: ApprovedPnpmUpgrade) ->
     return None
 
 
-def _manifest_matches_generic_contract(checkout: Path, contract: ApprovedPnpmUpgrade) -> Optional[str]:
-    """Prove the observed dependency is still declared at the baseline.
-
-    JSON package manifests get structural validation. Other ecosystems use a
-    conservative text check because their manifest grammars differ; a missing
-    package or specifier still refuses execution instead of guessing.
-    """
-    path = checkout / _normalise_path(contract.manifest_path)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        return f"approved dependency manifest is unreadable: {exc}"
-    if contract.package_manager in {"npm", "pnpm", "yarn", "bun"}:
-        try:
-            manifest = json.loads(text)
-        except (OSError, ValueError) as exc:
-            return f"approved package manifest is malformed: {exc}"
-        section = manifest.get(contract.dependency_kind) if isinstance(manifest, dict) else None
-        if not isinstance(section, dict) or section.get(contract.package) != contract.specifier:
-            return "approved candidate does not match the package manifest at the baseline"
-        return None
-    if contract.package not in text or contract.specifier not in text:
-        return "approved candidate does not match the dependency manifest at the baseline"
-    return None
-
-
-def _generic_plan(contract: ApprovedPnpmUpgrade) -> Optional[CommandPlan]:
-    try:
-        manager = ManagerId(contract.package_manager)
-    except ValueError:
-        return None
-    return COMMAND_PLANS.get(manager)
-
-
-def _expand_command(command: Command, contract: ApprovedPnpmUpgrade) -> Command:
-    values = {"{dependency}": contract.package, "{version}": contract.target_version}
-    return tuple(next((part.replace(key, value) for key, value in values.items() if key in part), part) for part in command)
-
-
-def _manager_version_command(plan: CommandPlan) -> Command:
-    if plan.install[:3] == ("python", "-m", "pip"):
-        return ("python", "-m", "pip", "--version")
-    return (plan.install[0], "--version")
-
-
 def _git_changed_files(runner: CommandRunner, checkout: Path, baseline_sha: str, timeout: int) -> Tuple[Tuple[str, ...], Optional[str]]:
     diff = _command(runner, ("git", "diff", "--name-only", baseline_sha), cwd=checkout, timeout=timeout)
     status = _command(runner, ("git", "status", "--porcelain=v1", "--untracked-files=all"), cwd=checkout, timeout=timeout)
@@ -540,6 +553,18 @@ def execute_approved_pnpm_upgrade(
 ) -> DependencyExecutionResult:
     """Execute one approved upgrade and always remove its disposable checkout."""
 
+    if contract.package_manager != ManagerId.PNPM.value:
+        result = _finish(
+            status=ExecutionStatus.REFUSED,
+            reason_code=ExecutionReason.INVALID_CONTRACT,
+            reason="pnpm executor accepts only package_manager=pnpm",
+            baseline_sha=contract.baseline_sha,
+        )
+        result.dependency_evidence = contract.dependency_evidence
+        result.adapter_profile = contract.adapter_profile
+        result.adapter_identity_fingerprint = contract.adapter_identity_fingerprint
+        return result
+
     invalid = _validate_contract(contract)
     if invalid:
         if "approval" in invalid:
@@ -552,6 +577,9 @@ def execute_approved_pnpm_upgrade(
             code = ExecutionReason.INVALID_CONTRACT
         result = _finish(status=ExecutionStatus.REFUSED, reason_code=code, reason=invalid, baseline_sha=contract.baseline_sha)
         result.dependency_evidence = contract.dependency_evidence
+        result.candidate_fingerprint = contract.candidate_fingerprint
+        result.adapter_profile = contract.adapter_profile
+        result.adapter_identity_fingerprint = contract.adapter_identity_fingerprint
         return result
 
     parent = Path(workspace_parent) if workspace_parent is not None else None
@@ -681,6 +709,8 @@ def execute_approved_pnpm_upgrade(
             result.ecosystem = getattr(contract, "ecosystem", "")
             result.package_manager = getattr(contract, "package_manager", "")
             result.package_manager_version = getattr(contract, "package_manager_version", "") or ""
+            result.adapter_profile = contract.adapter_profile
+            result.adapter_identity_fingerprint = contract.adapter_identity_fingerprint
             result.package = contract.package
             result.current_version = contract.current_version
             result.target_version = contract.target_version
@@ -705,13 +735,13 @@ def execute_approved_dependency_upgrade(
     timeout: int = 1800,
     workspace_parent: Optional[Union[str, Path]] = None,
 ) -> DependencyExecutionResult:
-    """Execute an approved upgrade through the detected manager's command plan.
+    """Execute only the managed pnpm profile.
 
-    The legacy pnpm entry point remains byte-for-byte compatible for existing
-    callers. New callers use this manager-neutral entry point; unsupported or
-    unknown managers refuse before cloning a checkout.
+    Detection, observation, evidence profiles and descriptive command plans do
+    not grant managed execution capability. Every other manager, including
+    npm, refuses before a checkout is created or a runner is called.
     """
-    if contract.package_manager == "pnpm":
+    if contract.package_manager in _MANAGED_EXECUTION_MANAGERS:
         return execute_approved_pnpm_upgrade(
             repository,
             contract,
@@ -720,152 +750,31 @@ def execute_approved_dependency_upgrade(
             workspace_parent=workspace_parent,
         )
 
-    invalid = _validate_contract(contract)
-    plan = _generic_plan(contract)
-    if invalid is None and plan is None:
-        invalid = f"unsupported dependency manager: {contract.package_manager}"
-    if invalid:
-        code = ExecutionReason.APPROVAL_REQUIRED if "approval" in invalid else ExecutionReason.INVALID_CONTRACT
-        result = _finish(
-            status=ExecutionStatus.REFUSED,
-            reason_code=code,
-            reason=invalid,
-            baseline_sha=contract.baseline_sha,
-        )
-        result.dependency_evidence = contract.dependency_evidence
-        result.candidate_fingerprint = contract.candidate_fingerprint
-        result.approval_id = contract.approval_id
-        result.approved = contract.approved
-        result.ecosystem = contract.ecosystem
-        result.package_manager = contract.package_manager
-        result.package_manager_version = contract.package_manager_version
-        result.package = contract.package
-        result.current_version = contract.current_version
-        result.target_version = contract.target_version
-        result.manifest_path = contract.manifest_path
-        result.lockfile_path = contract.lockfile_path
-        return result
-
-    parent = Path(workspace_parent) if workspace_parent is not None else None
-    workspace: Optional[Path] = None
-    result: Optional[DependencyExecutionResult] = None
-    try:
-        workspace = Path(tempfile.mkdtemp(prefix="agentrail-dependency-", dir=str(parent) if parent else None))
-        checkout = workspace / "checkout"
-        package_env = _isolated_package_env(workspace)
-        clone = _command(
-            runner,
-            ("git", "clone", "--no-local", "--no-hardlinks", "--quiet", str(repository), str(checkout)),
-            cwd=workspace,
-            timeout=timeout,
-        )
-        if not clone.evidence.passed:
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.CLONE_FAILED, reason="disposable checkout could not be created", baseline_sha=contract.baseline_sha)
-            return result
-
-        checkout_sha = _command(runner, ("git", "rev-parse", "HEAD"), cwd=checkout, timeout=timeout).evidence.stdout.strip()
-        if checkout_sha != contract.baseline_sha:
-            checkout_result = _command(runner, ("git", "checkout", "--quiet", "--detach", contract.baseline_sha), cwd=checkout, timeout=timeout)
-            if not checkout_result.evidence.passed:
-                result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.BASELINE_SHA_MISMATCH, reason="disposable checkout is not at the approved baseline SHA", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha)
-                return result
-            checkout_sha = _command(runner, ("git", "rev-parse", "HEAD"), cwd=checkout, timeout=timeout).evidence.stdout.strip()
-        if checkout_sha != contract.baseline_sha:
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.BASELINE_SHA_MISMATCH, reason="disposable checkout is not at the approved baseline SHA", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha)
-            return result
-
-        manifest = _normalise_path(contract.manifest_path)
-        lockfile = _normalise_path(contract.lockfile_path)
-        tracked = _command(runner, ("git", "ls-files", "--error-unmatch", lockfile), cwd=checkout, timeout=timeout)
-        if not (checkout / lockfile).is_file():
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.LOCKFILE_MISSING, reason=f"approved {contract.package_manager} lockfile is missing", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha)
-            return result
-        if not tracked.evidence.passed:
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.LOCKFILE_UNCOMMITTED, reason=f"approved {contract.package_manager} lockfile is not committed", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha)
-            return result
-
-        manifest_error = _manifest_matches_generic_contract(checkout, contract)
-        if manifest_error:
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.MANIFEST_MISMATCH, reason=manifest_error, baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha)
-            return result
-
-        manager_version = contract.package_manager_version
-        version_command = _manager_version_command(plan)
-        version_result = _command(runner, version_command, cwd=checkout, timeout=timeout, env=package_env)
-        observed_version = version_result.evidence.stdout.strip().splitlines()[0] if version_result.evidence.stdout.strip() else ""
-        toolchain = Toolchain(
-            pnpm_version=manager_version or observed_version,
-            runtime_version="",
-            pnpm_command=version_command,
-            manager_id=contract.package_manager,
-            manager_version=manager_version or observed_version,
-            manager_command=version_command,
-        )
-        if not version_result.evidence.passed:
-            result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.UNSUPPORTED_RUNTIME, reason=f"{contract.package_manager} is unavailable in the execution environment", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain)
-            return result
-
-        baseline_install = _command(runner, plan.install, cwd=checkout, timeout=timeout, env=package_env)
-        if not baseline_install.evidence.passed:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.BASELINE_INSTALL_FAILED, reason="baseline dependency install failed", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence)
-            return result
-        baseline_verification = tuple(_command(runner, command, cwd=checkout, timeout=timeout, env=package_env).evidence for command in contract.verification_commands)
-        if any(not item.passed for item in baseline_verification):
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.BASELINE_VERIFICATION_FAILED, reason="baseline verification failed; upgrade was not attempted", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification)
-            return result
-
-        upgrade = _command(runner, _expand_command(plan.upgrade, contract), cwd=checkout, timeout=timeout, env=package_env)
-        if not upgrade.evidence.passed:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.UPGRADE_FAILED, reason=f"{contract.package_manager} could not apply the approved dependency update", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence)
-            return result
-        target_install = _command(runner, plan.install, cwd=checkout, timeout=timeout, env=package_env)
-        if not target_install.evidence.passed:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.TARGET_INSTALL_FAILED, reason="target dependency install failed", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence)
-            return result
-        target_verification = tuple(_command(runner, command, cwd=checkout, timeout=timeout, env=package_env).evidence for command in contract.verification_commands)
-        changed_files, diff_error = _git_changed_files(runner, checkout, contract.baseline_sha, timeout)
-        allowed_files = tuple(sorted({_normalise_path(path) for path in (manifest, lockfile, *contract.affected_usage_paths, *contract.required_test_paths)}))
-        if diff_error:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.SCOPE_VIOLATION, reason=diff_error, baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence, target_verification=target_verification, changed_files=changed_files, allowed_files=allowed_files)
-            return result
-        outside = sorted(set(changed_files) - set(allowed_files))
-        if outside:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.SCOPE_VIOLATION, reason=f"upgrade changed files outside the approved scope: {', '.join(outside)}", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence, target_verification=target_verification, changed_files=changed_files, allowed_files=allowed_files)
-            return result
-        if lockfile not in changed_files:
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.NO_DEPENDENCY_CHANGE, reason=f"approved upgrade did not change the {contract.package_manager} lockfile", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence, target_verification=target_verification, changed_files=changed_files, allowed_files=allowed_files)
-            return result
-        if any(not item.passed for item in target_verification):
-            result = _finish(status=ExecutionStatus.RED, reason_code=ExecutionReason.TARGET_VERIFICATION_FAILED, reason="target verification failed", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence, target_verification=target_verification, changed_files=changed_files, allowed_files=allowed_files)
-            return result
-        result = _finish(status=ExecutionStatus.GREEN, reason_code=None, reason=f"approved {contract.package_manager} upgrade passed install, scope, and target verification", baseline_sha=contract.baseline_sha, checkout_sha=checkout_sha, toolchain=toolchain, baseline_install=baseline_install.evidence, baseline_verification=baseline_verification, upgrade=upgrade.evidence, target_install=target_install.evidence, target_verification=target_verification, changed_files=changed_files, allowed_files=allowed_files)
-        return result
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        result = _finish(status=ExecutionStatus.REFUSED, reason_code=ExecutionReason.EXECUTION_ERROR, reason=str(exc), baseline_sha=contract.baseline_sha)
-        return result
-    finally:
-        if result is not None:
-            result.candidate_fingerprint = contract.candidate_fingerprint
-            result.approval_id = contract.approval_id
-            result.approved = contract.approved
-            result.dependency_kind = contract.dependency_kind
-            result.ecosystem = contract.ecosystem
-            result.package_manager = contract.package_manager
-            result.package_manager_version = contract.package_manager_version
-            result.package = contract.package
-            result.current_version = contract.current_version
-            result.target_version = contract.target_version
-            result.manifest_path = contract.manifest_path
-            result.lockfile_path = contract.lockfile_path
-        cleanup_completed = True
-        if workspace is not None:
-            try:
-                shutil.rmtree(workspace)
-            except OSError:
-                cleanup_completed = False
-        if result is not None:
-            result.dependency_evidence = contract.dependency_evidence
-            result.cleanup_completed = cleanup_completed
+    result = _finish(
+        status=ExecutionStatus.REFUSED,
+        reason_code=ExecutionReason.CAPABILITY_UNAVAILABLE,
+        reason=(
+            "managed dependency execution adapter is unavailable: "
+            f"{contract.package_manager}"
+        ),
+        baseline_sha=contract.baseline_sha,
+    )
+    result.dependency_evidence = contract.dependency_evidence
+    result.candidate_fingerprint = contract.candidate_fingerprint
+    result.approval_id = contract.approval_id
+    result.approved = contract.approved
+    result.dependency_kind = contract.dependency_kind
+    result.ecosystem = contract.ecosystem
+    result.package_manager = contract.package_manager
+    result.package_manager_version = contract.package_manager_version
+    result.adapter_profile = contract.adapter_profile
+    result.adapter_identity_fingerprint = contract.adapter_identity_fingerprint
+    result.package = contract.package
+    result.current_version = contract.current_version
+    result.target_version = contract.target_version
+    result.manifest_path = contract.manifest_path
+    result.lockfile_path = contract.lockfile_path
+    return result
 
 
 def write_dependency_execution_evidence(

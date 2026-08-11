@@ -11,7 +11,6 @@ import base64
 import json
 import urllib.parse
 import urllib.request
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -21,6 +20,7 @@ from agentrail.dependencies.pnpm import (
     RegistryPackage,
 )
 from agentrail.dependencies.manager import SupportedDetection, detect_dependency_manager
+from agentrail.dependencies.strict_json import loads_strict_json
 from agentrail.heartbeat.dependency_watch import (
     DependencyWatchState,
     WatchFailure,
@@ -34,6 +34,9 @@ from agentrail.heartbeat.token_provider import get_github_token
 
 CLAIM_WATCHES_OP = "claim_dependency_watches"
 RECORD_WATCH_OBSERVATION_OP = "record_dependency_watch_observation"
+_REGISTRY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_REGISTRY_READ_CHUNK_BYTES = 64 * 1024
+_NPM_ABBREVIATED_ACCEPT = "application/vnd.npm.install-v1+json"
 
 queue_store._SQL.update(
     {
@@ -148,7 +151,7 @@ class RegistryClient:
     def package_metadata(self, package: str) -> Optional[RegistryPackage]:
         try:
             encoded = urllib.parse.quote(package, safe="@/:")
-            if self.manager_id in (None, "npm", "pnpm"):
+            if self.manager_id in ("npm", "pnpm"):
                 body = self._get_json("https://registry.npmjs.org/" + encoded)
                 versions = body.get("versions", {}) if isinstance(body, dict) else {}
                 return RegistryPackage(tuple(str(version) for version in versions)) if isinstance(versions, dict) else None
@@ -191,6 +194,16 @@ class NewestCompatibleTarget:
 
 
 class GithubSnapshotProvider:
+    _NODE_ROOT_MARKERS = (
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+    )
+    _ROOT_INVENTORY_MAX_ENTRIES = 1_000
     _AUTO_ROOT_FILES = (
         "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
         "yarn.lock", "bun.lock", "bun.lockb", "pyproject.toml", "poetry.lock",
@@ -213,19 +226,33 @@ class GithubSnapshotProvider:
         if not isinstance(sha, str) or not sha: raise ValueError("GitHub did not return a commit SHA")
         files: Dict[str, str] = {}
         paths = [manifest, lockfile]
-        if "auto" in paths:
+        root_package_watch = manifest.replace("\\", "/").removeprefix("./") == "package.json"
+        if "auto" in paths or root_package_watch:
             listing = self._get(
                 f"https://api.github.com/repos/{repository}/contents/?ref={urllib.parse.quote(sha, safe='')}",
                 self.token,
             )
             if not isinstance(listing, list):
                 raise ValueError("GitHub did not return a repository root listing")
+            # GitHub's Contents API returns at most 1,000 directory entries.
+            # Exactly 1,000 is therefore ambiguous: a competing manager marker
+            # may have been truncated from the response.
+            if len(listing) >= self._ROOT_INVENTORY_MAX_ENTRIES:
+                raise ValueError("GitHub repository root listing exceeds the inventory limit")
             available = {
                 str(item.get("path"))
                 for item in listing
                 if isinstance(item, dict) and item.get("type") == "file"
             }
-            paths = [path for path in self._AUTO_ROOT_FILES if path in available]
+            if "auto" in paths:
+                paths = [path for path in self._AUTO_ROOT_FILES if path in available]
+            else:
+                # Explicit/legacy root package.json watches must see the same-SHA
+                # competing manager markers. Fetching only the selected pair
+                # would turn an incomplete snapshot into false npm/pnpm support.
+                paths.extend(
+                    path for path in self._NODE_ROOT_MARKERS if path in available
+                )
         for path in dict.fromkeys(path for path in paths if path != "auto"):
             body = self._get(
                 f"https://api.github.com/repos/{repository}/contents/{urllib.parse.quote(path, safe='/')}?ref={sha}",
@@ -236,6 +263,32 @@ class GithubSnapshotProvider:
             if not isinstance(content, str) or encoding != "base64": raise ValueError(f"GitHub did not return {path}")
             files[path] = base64.b64decode(content.replace("\n", "")).decode("utf-8")
         return DependencySnapshot(files=files, baseline_sha=sha)
+
+
+def _legacy_candidate_payload(candidate: Any) -> Dict[str, Any]:
+    """Keep the merged #1687 heartbeat producer vector byte-shape stable.
+
+    Adapter profile custody is carried by the later evidence/execution
+    identity.  Adding it to the persisted draft candidate would silently alter
+    the live proposal contract.
+    """
+
+    return {
+        "package": candidate.package,
+        "dependency_kind": candidate.dependency_kind,
+        "specifier": candidate.specifier,
+        "current_version": candidate.current_version,
+        "target_version": candidate.target_version,
+        "manifest_path": candidate.manifest_path,
+        "lockfile_path": candidate.lockfile_path,
+        "baseline_sha": candidate.baseline_sha,
+        "fingerprint": candidate.fingerprint,
+        "ecosystem": candidate.ecosystem,
+        "package_manager": candidate.package_manager,
+        "package_manager_version": candidate.package_manager_version,
+        "verification_commands": candidate.verification_commands,
+        "manager_commands": dict(candidate.manager_commands),
+    }
 
 
 class SqlWatchStore(WatchStore):
@@ -250,7 +303,7 @@ class SqlWatchStore(WatchStore):
         error_code = None
         if observation.failure is WatchFailure.UNSUPPORTED: error_code = "unsupported"
         elif observation.failure is WatchFailure.INSUFFICIENT_EVIDENCE: error_code = "insufficient_evidence"
-        candidates = [asdict(candidate) for candidate in observation.candidates]
+        candidates = [_legacy_candidate_payload(candidate) for candidate in observation.candidates]
         self.executor.execute(RECORD_WATCH_OBSERVATION_OP, {
             "workspace_id": workspace_id,
             "watch_id": watch_id,
@@ -269,10 +322,64 @@ class SqlWatchStore(WatchStore):
         return True
 
 
-def _http_get(url: str, token: str) -> Any:
+def _github_get(url: str, token: str) -> Any:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "agentrail-heartbeat"})
     with urllib.request.urlopen(request, timeout=8) as response:
         return json.load(response)
+
+
+def _registry_get(url: str, manager_id: str) -> Any:
+    """Fetch one registry response without forwarding GitHub credentials.
+
+    The response is bounded before UTF-8 decoding or JSON parsing. A missing
+    Content-Length is allowed for chunked responses, but the streamed N+1 read
+    still refuses a body beyond the fixed cap.
+    """
+
+    accept = (
+        _NPM_ABBREVIATED_ACCEPT
+        if manager_id in ("npm", "pnpm")
+        else "text/plain" if manager_id == "go-modules" else "application/json"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": accept, "User-Agent": "agentrail-heartbeat"},
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        headers = getattr(response, "headers", None)
+        raw_length = headers.get("Content-Length") if headers is not None else None
+        declared_length: Optional[int] = None
+        if raw_length is not None:
+            try:
+                declared_length = int(raw_length)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("registry response has an invalid Content-Length") from exc
+            if declared_length < 0 or declared_length > _REGISTRY_MAX_RESPONSE_BYTES:
+                raise ValueError("registry response exceeds the byte limit")
+
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            remaining = _REGISTRY_MAX_RESPONSE_BYTES + 1 - total
+            chunk = response.read(min(_REGISTRY_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise ValueError("registry response body is not bytes")
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _REGISTRY_MAX_RESPONSE_BYTES:
+                raise ValueError("registry response exceeds the byte limit")
+        if declared_length is not None and total != declared_length:
+            raise ValueError("registry response Content-Length does not match its body")
+
+    try:
+        text = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("registry response is not valid UTF-8") from exc
+    if manager_id == "go-modules":
+        return text
+    return loads_strict_json(text, document="registry response")
 
 
 class DependencyWatchRuntime:
@@ -312,12 +419,17 @@ class DependencyWatchRuntime:
         try:
             token = self.token_provider(self.workspace_id, self.executor)
             if not token: raise ValueError("GitHub installation token unavailable")
-            provider = self.snapshot_provider or GithubSnapshotProvider(token, _http_get)
+            provider = self.snapshot_provider or GithubSnapshotProvider(token, _github_get)
             snapshot = provider.snapshot(str(row["repository_name"]), str(row.get("default_branch") or "main"), str(row["manifest_path"]), str(row["lockfile_path"]))
             detected = detect_dependency_manager(snapshot.files)
+            manager_id = (
+                detected.manager_id.value
+                if isinstance(detected, SupportedDetection)
+                else None
+            )
             registry = self.registry or RegistryClient(
-                lambda url: _http_get(url, ""),
-                detected.manager_id.value if isinstance(detected, SupportedDetection) else None,
+                lambda url: _registry_get(url, manager_id or ""),
+                manager_id,
             )
             watch = DependencyWatchState(
                 workspace_id=self.workspace_id,

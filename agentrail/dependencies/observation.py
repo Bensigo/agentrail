@@ -12,6 +12,8 @@ its result and candidate types.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -40,6 +42,7 @@ from agentrail.dependencies.pnpm import (
 from agentrail.dependencies.manager import (
     CARGO_ADAPTER_PROFILE,
     COMMAND_PLANS,
+    GO_MODULES_ADAPTER_PROFILE,
     NPM_ADAPTER_PROFILE,
     NPM_DEPENDENCY_KINDS,
     ManagerId,
@@ -117,8 +120,26 @@ _UV_REQUIRES_PYTHON = re.compile(
 )
 _UV_PYPI_REGISTRY = "https://pypi.org/simple"
 _UV_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
-_GO_REQUIRE = re.compile(r"^\s*(\S+)\s+(v\S+)(?:\s+//\s*(.*))?\s*$")
-_GO_SUM = re.compile(r"^(\S+)\s+(v[^\s/]+)(?:/go\.mod)?\s+h1:\S+\s*$")
+_GO_MODULE_HOST = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+_GO_MODULE_SEGMENT = re.compile(r"^[a-z0-9](?:[a-z0-9._~-]{0,126}[a-z0-9])?$")
+_GO_WINDOWS_RESERVED_PREFIX = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$"
+)
+_GO_WINDOWS_SHORT_NAME_SUFFIX = re.compile(r"~[0-9]+$")
+_GO_STABLE_VERSION = re.compile(
+    r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
+)
+_GO_LANGUAGE_VERSION = re.compile(r"^1\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$")
+_GO_REQUIRE = re.compile(r"^(?P<module>\S+)[ \t]+(?P<version>v\S+)$")
+_GO_SUM = re.compile(
+    r"^(?P<module>[A-Za-z0-9][A-Za-z0-9._~/-]{0,239}) "
+    r"(?P<version>v[^\s/]+)(?P<mod>/go\.mod)? "
+    r"(?P<hash>h1:[A-Za-z0-9+/]{43}=)$"
+)
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def observe_dependencies(
@@ -816,58 +837,214 @@ def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[T
     return tuple(entries), None
 
 
+def _go_stable_version(value: object) -> Optional[Tuple[int, int, int]]:
+    if not isinstance(value, str) or len(value) > 128:
+        return None
+    match = _GO_STABLE_VERSION.fullmatch(value)
+    if match is None:
+        return None
+    parts = match.groups()
+    if any(len(part) > 16 for part in parts):
+        return None
+    parsed = tuple(int(part) for part in parts)
+    if any(part > _MAX_SAFE_INTEGER for part in parsed):
+        return None
+    return parsed[0], parsed[1], parsed[2]
+
+
+def _go_sum_hash_is_canonical(value: str) -> bool:
+    if not value.startswith("h1:"):
+        return False
+    encoded = value[3:]
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return (
+        len(decoded) == 32
+        and base64.b64encode(decoded).decode("ascii") == encoded
+    )
+
+
+def _go_language_version_is_valid(value: str) -> bool:
+    if len(value) > 128:
+        return False
+    match = _GO_LANGUAGE_VERSION.fullmatch(value)
+    if match is None:
+        return False
+    minor, patch = match.groups()
+    if len(minor) > 16 or (patch is not None and len(patch) > 16):
+        return False
+    parsed_minor = int(minor)
+    parsed_patch = int(patch) if patch is not None else 0
+    return (
+        18 <= parsed_minor <= 26
+        and parsed_patch <= _MAX_SAFE_INTEGER
+        and (parsed_minor < 26 or parsed_patch == 0)
+    )
+
+
+def _go_module_parts(module: str) -> Optional[Tuple[str, Tuple[str, ...]]]:
+    if len(module) > 214:
+        return None
+    host, separator, suffix = module.partition("/")
+    segments = tuple(suffix.split("/")) if separator else ()
+    if (
+        not segments
+        or _GO_MODULE_HOST.fullmatch(host) is None
+        or any(_GO_MODULE_SEGMENT.fullmatch(segment) is None for segment in segments)
+        or any(
+            not _go_module_path_element_is_portable(element)
+            for element in (host, *segments)
+        )
+    ):
+        return None
+    return host, segments
+
+
+def _go_module_path_element_is_portable(element: str) -> bool:
+    prefix = element.split(".", 1)[0].lower()
+    return (
+        _GO_WINDOWS_RESERVED_PREFIX.fullmatch(prefix) is None
+        and _GO_WINDOWS_SHORT_NAME_SUFFIX.search(prefix) is None
+    )
+
+
+def _go_module_matches_major(module: str, major: int) -> bool:
+    parts = _go_module_parts(module)
+    if parts is None:
+        return False
+    host, segments = parts
+    slash_suffix = re.fullmatch(r"v(0|[1-9]\d*)", segments[-1])
+    numeric_looking_slash_suffix = re.fullmatch(r"v[0-9.]+", segments[-1])
+    gopkg_suffix = (
+        re.search(r"\.v(0|[1-9]\d*)$", segments[0])
+        if host == "gopkg.in" and len(segments) == 1
+        else None
+    )
+    if host == "gopkg.in":
+        return (
+            major >= 2
+            and gopkg_suffix is not None
+            and gopkg_suffix.group(1) == str(major)
+        )
+    if major < 2:
+        return numeric_looking_slash_suffix is None
+    return slash_suffix is not None and slash_suffix.group(1) == str(major)
+
+
 def _go_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
+    """Admit only the root, public-proxy Go Modules v1 source profile."""
+
     mod_text = files.get("go.mod", "")
     sum_text = files.get("go.sum", "")
+    if not isinstance(mod_text, str) or not isinstance(sum_text, str):
+        return (), "go.mod and go.sum must be UTF-8 text"
+    try:
+        if len(mod_text.encode("utf-8")) > 512 * 1024:
+            return (), "go.mod exceeds the byte limit"
+        if len(sum_text.encode("utf-8")) > 8 * 1024 * 1024:
+            return (), "go.sum exceeds the byte limit"
+    except UnicodeEncodeError:
+        return (), "go.mod and go.sum must be valid UTF-8 text"
+
+    module_path: Optional[str] = None
+    language_version: Optional[str] = None
     requirements: Dict[str, _Entry] = {}
     in_require = False
+
+    def add_requirement(value: str, line_number: int) -> Optional[str]:
+        if "//" in value:
+            return f"go.mod indirect or commented requirements are outside the Go Modules v1 profile at line {line_number}"
+        match = _GO_REQUIRE.fullmatch(value)
+        if match is None:
+            return f"go.mod has an unsupported require entry at line {line_number}"
+        module = match.group("module")
+        version = match.group("version")
+        parsed = _go_stable_version(version)
+        if _go_module_parts(module) is None:
+            return f"go.mod dependency is not a canonical public module path: {module}"
+        if parsed is None:
+            return f"go.mod version for {module} must be an exact stable Go module release"
+        if not _go_module_matches_major(module, parsed[0]):
+            return f"go.mod module path major does not match {version}: {module}"
+        if module in requirements:
+            return f"go.mod declares {module} more than once"
+        requirements[module] = _Entry(
+            module, "dependencies", version, version, "go.mod", "go.sum"
+        )
+        return None
+
     for line_number, raw_line in enumerate(mod_text.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("//"):
             continue
+        if in_require:
+            if line == ")":
+                in_require = False
+                continue
+            error = add_requirement(line, line_number)
+            if error is not None:
+                return (), error
+            continue
         if line == "require (":
-            if in_require:
-                return (), f"go.mod has nested require blocks at line {line_number}"
             in_require = True
             continue
-        if in_require and line == ")":
-            in_require = False
-            continue
         if line.startswith("require "):
-            line = line[len("require ") :].strip()
-        if not in_require and not raw_line.lstrip().startswith("require "):
+            error = add_requirement(line[len("require ") :].strip(), line_number)
+            if error is not None:
+                return (), error
             continue
-        match = _GO_REQUIRE.fullmatch(line)
-        if not match:
-            return (), f"go.mod has an unsupported require entry at line {line_number}"
-        module, version, comment = match.groups()
-        if module in requirements:
-            return (), f"go.mod declares {module} more than once"
-        kind = "devDependencies" if comment and "indirect" in comment else "dependencies"
-        requirements[module] = _Entry(module, kind, version, version, "go.mod", "go.sum")
+        if line.startswith("module "):
+            value = line[len("module ") :]
+            if module_path is not None or _go_module_parts(value) is None:
+                return (), f"go.mod has an invalid or duplicate module directive at line {line_number}"
+            module_path = value
+            continue
+        if line.startswith("go "):
+            value = line[len("go ") :]
+            if language_version is not None or not _go_language_version_is_valid(value):
+                return (), f"go.mod has an invalid, duplicate, or pre-1.18 go directive at line {line_number}"
+            language_version = value
+            continue
+        return (), f"go.mod directive is outside the Go Modules v1 profile at line {line_number}"
+
     if in_require:
         return (), "go.mod has an unterminated require block"
+    if module_path is None or language_version is None:
+        return (), "go.mod must contain one canonical module directive and one Go 1.18+ directive"
     if not requirements:
-        return (), "go.mod has no supported require entries"
-    sums: set = set()
-    for raw_line in sum_text.splitlines():
+        return (), "go.mod has no direct stable require entries"
+
+    sums: Dict[Tuple[str, str, str], str] = {}
+    for line_number, raw_line in enumerate(sum_text.splitlines(), start=1):
         line = raw_line.strip()
-        if not line or line.startswith("//"):
+        if not line:
             continue
         match = _GO_SUM.fullmatch(line)
-        if match:
-            sums.add((match.group(1), match.group(2)))
+        if match is None:
+            return (), f"go.sum has a malformed checksum entry at line {line_number}"
+        if not _go_sum_hash_is_canonical(match.group("hash")):
+            return (), f"go.sum has a noncanonical h1 checksum at line {line_number}"
+        kind = "go.mod" if match.group("mod") else "zip"
+        key = (match.group("module"), match.group("version"), kind)
+        if key in sums:
+            return (), f"go.sum repeats checksum custody for {key[0]}@{key[1]} ({kind})"
+        sums[key] = match.group("hash")
+
     names = sorted(set(selected) if selected else requirements.keys())
     if any(not isinstance(name, str) or not name for name in names):
         return (), "selected dependency names must be non-empty strings"
     for name in names:
         if name not in requirements:
-            return (), f"selected dependency is not declared in go.mod: {name}"
+            return (), f"selected dependency is not a direct require in go.mod: {name}"
         entry = requirements[name]
-        if (name, entry.current_version) not in sums:
-            return (), f"go.sum has no checksum evidence for {name}@{entry.current_version}"
-        if _parse_version(entry.current_version) is None:
-            return (), f"go.mod version for {name} is not safely parseable"
+        for kind in ("zip", "go.mod"):
+            if (name, entry.current_version, kind) not in sums:
+                return (), (
+                    f"go.sum has no exact {kind} checksum evidence for "
+                    f"{name}@{entry.current_version}"
+                )
     return tuple(requirements[name] for name in names), None
 
 
@@ -882,7 +1059,12 @@ def _observe_entries(
     candidates: List[DependencyCandidate] = []
     unchanged: List[str] = []
     for entry in entries:
-        if _parse_version(entry.current_version) is None:
+        if manager.name is ManagerName.GO_MODULES:
+            if _go_stable_version(entry.current_version) is None:
+                return _insufficient(
+                    f"locked Go module version for {entry.package} must be an exact stable release"
+                )
+        elif _parse_version(entry.current_version) is None:
             return _insufficient(f"locked version for {entry.package} is not safely parseable")
         if manager.name is ManagerName.NPM:
             if _NPM_PACKAGE.fullmatch(entry.package) is None:
@@ -923,6 +1105,22 @@ def _observe_entries(
             if not available:
                 return _insufficient(
                     f"registry versions for {entry.package} contain no stable numeric releases"
+                )
+        elif manager.name is ManagerName.GO_MODULES:
+            current = _go_stable_version(entry.current_version)
+            assert current is not None
+            available = tuple(sorted(
+                (
+                    version
+                    for version in metadata.available_versions
+                    if (parsed := _go_stable_version(version)) is not None
+                    and parsed[0] == current[0]
+                ),
+                key=lambda version: _go_stable_version(version) or (0, 0, 0),
+            ))
+            if entry.current_version not in available:
+                return _insufficient(
+                    f"public Go proxy data for {entry.package} does not contain the exact locked version"
                 )
         else:
             available = tuple(metadata.available_versions)
@@ -992,6 +1190,17 @@ def _observe_entries(
             target_matches, constraint_error = cargo_constraint_matches(entry.specifier, target)
             if constraint_error is not None or not target_matches:
                 return _insufficient(f"target version for {entry.package} does not satisfy its Cargo semver constraint")
+        if manager.name is ManagerName.GO_MODULES:
+            current = _go_stable_version(entry.current_version)
+            parsed_target = _go_stable_version(target)
+            if current is None or parsed_target is None or parsed_target[0] != current[0]:
+                return _insufficient(
+                    f"target Go module version for {entry.package} must be a stable same-major release"
+                )
+            if not _go_module_matches_major(entry.package, parsed_target[0]):
+                return _insufficient(
+                    f"target Go module major does not match its module path: {entry.package}"
+                )
         comparison = _compare_versions(entry.current_version, target)
         if comparison == 0:
             unchanged.append(entry.package)
@@ -1037,6 +1246,7 @@ def _make_candidate(
     adapter_profile = {
         ManagerName.NPM: NPM_ADAPTER_PROFILE,
         ManagerName.CARGO: CARGO_ADAPTER_PROFILE,
+        ManagerName.GO_MODULES: GO_MODULES_ADAPTER_PROFILE,
     }.get(manager.name)
     adapter_fingerprint = (
         adapter_identity_fingerprint(

@@ -73,12 +73,13 @@ class AdapterCapability(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
-# These IDs are the closed adapter identities already persisted by the
-# Console/database proposal boundary.  They are data custody, not aliases that
-# may be inferred from a lockfile name at execution time.
+# These IDs are the closed identities admitted by the legacy Python evidence
+# gate. Source-only observer profiles remain outside this map until a matching
+# evidence resolver exists; none may be inferred from a lockfile at execution.
 PNPM_ADAPTER_PROFILE = "pnpm_lockfile_only_v1"
 NPM_ADAPTER_PROFILE = "npm_package_lock_only_v1"
 CARGO_ADAPTER_PROFILE = "cargo_lock_registry_only_v1"
+GO_MODULES_ADAPTER_PROFILE = "go_1_26_root_mod_sum_public_proxy_v1"
 ADAPTER_PROFILE_IDS: Mapping[Tuple[str, str], str] = {
     (Ecosystem.NODE.value, ManagerId.PNPM.value): PNPM_ADAPTER_PROFILE,
     (Ecosystem.NODE.value, ManagerId.NPM.value): NPM_ADAPTER_PROFILE,
@@ -274,7 +275,11 @@ COMMAND_PLANS: Dict[ManagerId, CommandPlan] = {
     ),
     ManagerId.PIP: CommandPlan(("python", "-m", "pip", "install", "-r", "requirements.txt"), ("python", "-m", "pip", "install", "--upgrade", "{dependency}=={version}"), ("python", "-m", "pytest")),
     ManagerId.CARGO: CommandPlan(("cargo", "fetch", "--locked"), ("cargo", "update", "-p", "{dependency}", "--precise", "{version}"), ("cargo", "test")),
-    ManagerId.GO_MODULES: CommandPlan(("go", "mod", "download"), ("go", "get", "{dependency}@{version}"), ("go", "test", "./...")),
+    ManagerId.GO_MODULES: CommandPlan(
+        ("go", "mod", "download"),
+        ("go", "get", "-mod=mod", "{dependency}@{version}"),
+        ("go", "test", "./..."),
+    ),
     ManagerId.BUNDLER: CommandPlan(("bundle", "install", "--deployment"), ("bundle", "update", "{dependency}"), ("bundle", "exec", "rake", "test")),
     ManagerId.COMPOSER: CommandPlan(("composer", "install", "--no-interaction", "--prefer-dist"), ("composer", "update", "{dependency}", "--with-dependencies"), ("composer", "test")),
     ManagerId.MAVEN: CommandPlan(("mvn", "-B", "dependency:go-offline"), ("mvn", "-B", "versions:use-dep-version", "-Dincludes={dependency}", "-DdepVersion={version}", "-DgenerateBackupPoms=false"), ("mvn", "-B", "test")),
@@ -571,6 +576,7 @@ __all__ = [
     "AdapterCapability",
     "ADAPTER_PROFILE_IDS",
     "CARGO_ADAPTER_PROFILE",
+    "GO_MODULES_ADAPTER_PROFILE",
     "DependencyManagerSnapshot",
     "DetectionResult",
     "DetectionStatus",

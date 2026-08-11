@@ -188,6 +188,44 @@ function uvRequestBody() {
   return value;
 }
 
+function goRequestBody(
+  module = "github.com/acme/widget",
+  currentVersion = "v1.2.3",
+  targetVersion = "v1.3.0",
+) {
+  const value = structuredClone(VALID);
+  const identity = {
+    ecosystem: "go",
+    manager: "go-modules",
+    profile: "go_1_26_root_mod_sum_public_proxy_v1",
+  };
+  value.candidate = {
+    ...value.candidate,
+    identity,
+    package: module,
+    dependencyKind: "dependencies",
+    specifier: currentVersion,
+    currentVersion,
+    targetVersion,
+  };
+  value.runtime = { ...value.runtime, identity, version: "1.26.1" };
+  value.packageManager = {
+    ...value.packageManager,
+    name: "go",
+    version: "1.26.1",
+    profile: "go_1_26_root_mod_sum_public_proxy_v1",
+    updateArgv: ["go", "get", "-mod=mod", `${module}@${targetVersion}`],
+  };
+  value.manifest = { ...value.manifest, path: "go.mod" };
+  value.lockfile = { ...value.lockfile, path: "go.sum" };
+  value.security = {
+    ...value.security,
+    identity,
+    reference: `osv:Go:${module}@${targetVersion.slice(1)}`,
+  };
+  return value;
+}
+
 function historicalNpmReplayBody() {
   const value = npmRequestBody();
   Object.assign(value.candidate, {
@@ -273,6 +311,67 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(uv);
     expect(JSON.stringify(await response.json())).not.toMatch(/upgrade-package|security|approv|execute/iu);
+  });
+
+  it("passes one exact Go 1.26 module observation to the same DB authority", async () => {
+    const go = goRequestBody("gopkg.in/yaml.v3", "v3.0.0", "v3.0.1");
+    const response = await POST(request(go));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(go);
+    expect(go.candidate.identity.manager).toBe("go-modules");
+    expect(go.packageManager.name).toBe("go");
+    expect(JSON.stringify(await response.json()))
+      .not.toMatch(/go get|-mod|security|approv|execute|deliver/iu);
+  });
+
+  it("passes bounded Go command drift once so the DB can persist refusal truth", async () => {
+    const go = goRequestBody();
+    go.packageManager.updateArgv = ["go", "get", "github.com/acme/widget@v1.3.0"];
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("recorded", "refused_unsafe_runtime", ["unsafe_package_manager_argv"]) as never
+    );
+
+    const response = await POST(request(go));
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(go);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
+    });
+  });
+
+  it("lets bounded formerly unsupported Go evidence reach only the exact DB replay seam", async () => {
+    const historical = goRequestBody("gopkg.in/yaml/v3", "v3.0.0", "v3.0.1");
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+
+    const response = await POST(request(historical));
+
+    expect(response.status).toBe(200);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "replayed",
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    });
+  });
+
+  it("maps a new or altered historical Go candidate to sanitized invalid evidence", async () => {
+    vi.mocked(recordAcceptanceDependencyObservation).mockRejectedValue(
+      new AcceptanceDependencyObservationInvalidEvidenceError()
+    );
+
+    const response = await POST(request(
+      goRequestBody("gopkg.in/yaml/v3", "v3.0.0", "v3.0.1")
+    ));
+
+    expect(response.status).toBe(400);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    await expect(response.json()).resolves.toEqual({ error: "Invalid dependency observation" });
   });
 
   it("lets bounded formerly-supported uv evidence reach only the exact DB replay seam", async () => {

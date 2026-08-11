@@ -5,10 +5,12 @@ import json
 import pytest
 
 from agentrail.dependencies.manager import (
+    ADAPTER_PROFILE_IDS,
     AdapterCapability,
     CommandPlan,
     DetectionStatus,
     Ecosystem,
+    GO_MODULES_ADAPTER_PROFILE,
     ManagerId,
     RepositorySnapshot,
     SupportedDetection,
@@ -254,3 +256,16 @@ def test_uv_plan_is_lock_only_and_suppresses_ambient_execution_inputs() -> None:
     assert "add" not in result.command_plan.upgrade
     assert "sync" not in result.command_plan.install
     assert "run" not in result.command_plan.verify
+
+
+def test_go_modules_profile_has_one_exact_lock_update_instruction_without_execution_capability() -> None:
+    result = _detect("go.mod", "go.sum")
+
+    assert GO_MODULES_ADAPTER_PROFILE == "go_1_26_root_mod_sum_public_proxy_v1"
+    assert isinstance(result, SupportedDetection)
+    assert result.manager_id is ManagerId.GO_MODULES
+    assert result.command_plan.upgrade == (
+        "go", "get", "-mod=mod", "{dependency}@{version}",
+    )
+    assert ("go", "go-modules") not in ADAPTER_PROFILE_IDS
+    assert node_adapter_capability(ManagerId.GO_MODULES) is AdapterCapability.UNSUPPORTED

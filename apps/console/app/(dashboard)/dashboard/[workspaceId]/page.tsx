@@ -1,4 +1,4 @@
-import { getWorkspace } from "@agentrail/db-postgres";
+import { getWorkspace, readAcceptanceRecordSummaries } from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
 import { loadPlanCardData } from "../../../../lib/plan-card-data";
@@ -10,6 +10,7 @@ import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
 import { OnboardingBanner } from "./components/onboarding-banner";
 import { AcceptanceOutcomeMetricsPanel } from "./components/acceptance-outcome-metrics-panel";
 import { ReviewMetricsPanel } from "./components/review-metrics-panel";
+import { AcceptanceRecordSummaryList } from "./components/acceptance-record-summary-list";
 
 export default async function WorkspaceDashboardPage({
   params,
@@ -35,7 +36,10 @@ export default async function WorkspaceDashboardPage({
   // result through as a prop. undefined means DigestPanel renders the
   // dollar-free PlanCardEmpty card — there is no cost card left to fall
   // back to.
-  const planCard = await loadPlanCardData(workspaceId);
+  const [planCard, acceptanceSummaries] = await Promise.all([
+    loadPlanCardData(workspaceId),
+    readAcceptanceRecordSummaries({ workspaceId, limit: 5 }),
+  ]);
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -54,6 +58,11 @@ export default async function WorkspaceDashboardPage({
 
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
+        <AcceptanceRecordSummaryList
+          workspaceId={workspaceId}
+          records={acceptanceSummaries.records}
+          compact
+        />
         <DigestPanel workspaceId={workspaceId} planCard={planCard} />
         <AcceptanceOutcomeMetricsPanel workspaceId={workspaceId} />
         <ReviewMetricsPanel workspaceId={workspaceId} />

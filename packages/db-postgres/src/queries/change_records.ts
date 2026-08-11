@@ -2030,6 +2030,147 @@ export type ListChangeRecordsInput = {
   limit?: number;
 };
 
+export type ReadAcceptanceRecordSummariesInput = {
+  workspaceId: string;
+  repo?: string | null;
+  limit?: number;
+};
+
+export type AcceptanceRecordSummaryContractIdentity = {
+  id: string;
+  version: number;
+  sha256: string;
+};
+
+export type AcceptanceRecordSummaryRequestedWork =
+  | {
+      kind: "confirmed";
+      originalRequest: string;
+      acceptanceContract: AcceptanceRecordSummaryContractIdentity;
+    }
+  | { kind: "unknown" };
+
+export type AcceptanceRecordSummarySourceSnapshotIdentity = {
+  id: string;
+  headSha: string;
+  headCycleId: string;
+  compilerVersion: string;
+  packetSetSha256: string;
+};
+
+export type AcceptanceRecordSummaryCompiledPackIdentity = {
+  id: string;
+  sha256: string;
+  sourceCustodyIdentitySha256: string;
+  compilerVersion: string;
+  policyVersion: string;
+};
+
+export type AcceptanceRecordSummarySuppliedContext =
+  | {
+      kind: "compiled";
+      sourceSnapshot: AcceptanceRecordSummarySourceSnapshotIdentity;
+      compiledPack: AcceptanceRecordSummaryCompiledPackIdentity;
+    }
+  | {
+      kind: "admitted" | "not_proven";
+      sourceSnapshot: AcceptanceRecordSummarySourceSnapshotIdentity;
+    }
+  | { kind: "unknown" };
+
+export type AcceptanceRecordSummaryHeadOccurrence = {
+  kind: "current" | "merged";
+  sha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+};
+
+export type AcceptanceRecordSummaryPullRequest =
+  | { kind: "not_attached" }
+  | {
+      kind: "attached";
+      prNumber: number;
+      head: AcceptanceRecordSummaryHeadOccurrence | { kind: "unknown" };
+    };
+
+export type AcceptanceRecordSummaryProof =
+  | {
+      kind: "recorded";
+      reviewJobId: string;
+      verdict: "proven" | "failed" | "not_proven" | "not_testable";
+      postedReviewUrl: string;
+      postedAttestationEventId: string;
+    }
+  | { kind: "unknown" };
+
+export type AcceptanceRecordSummaryNeededDecision =
+  | { kind: "required"; choices: AcceptancePrDecision[] }
+  | {
+      kind: "recorded";
+      eventId: string;
+      decision: AcceptancePrDecision;
+      decidedAt: Date;
+    }
+  | { kind: "not_required"; reason: "pr_not_attached" | "merged" | "reverted" }
+  | { kind: "unknown" };
+
+export type AcceptanceRecordSummaryPostMergeEvidence = "recorded" | "not_recorded";
+
+export type AcceptanceRecordSummaryOutcome =
+  | { kind: "not_recorded" }
+  | {
+      kind: "signed_merge";
+      mergeEventId: string;
+      mergeSha: string;
+      mergedAt: Date;
+      decisionAlignment: SignedAcceptanceRecordMergeDecisionAlignment["kind"];
+      /** `not_recorded` is absence of canonical evidence, never a known negative. */
+      postMerge: {
+        deployment: AcceptanceRecordSummaryPostMergeEvidence;
+        incident: AcceptanceRecordSummaryPostMergeEvidence;
+        revert: AcceptanceRecordSummaryPostMergeEvidence;
+      };
+    }
+  | { kind: "unknown" };
+
+export type AcceptanceRecordSummaryUnknownReason =
+  | "requested_work_not_confirmed"
+  | "invalid_contract_custody"
+  | "head_occurrence_not_authoritative"
+  | "invalid_head_custody"
+  | "context_not_recorded"
+  | "ambiguous_context_custody"
+  | "invalid_context_custody"
+  | "proof_not_recorded"
+  | "invalid_review_custody"
+  | "decision_not_recorded"
+  | "invalid_decision_custody"
+  | "outcome_not_recorded"
+  | "invalid_merge_custody"
+  | "invalid_post_merge_custody"
+  | "summary_custody_limit";
+
+export type AcceptanceRecordSummary = {
+  recordId: string;
+  workspaceId: string;
+  repo: string;
+  issueNumber: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+  requestedWork: AcceptanceRecordSummaryRequestedWork;
+  suppliedContext: AcceptanceRecordSummarySuppliedContext;
+  pullRequest: AcceptanceRecordSummaryPullRequest;
+  proof: AcceptanceRecordSummaryProof;
+  unknownReasons: AcceptanceRecordSummaryUnknownReason[];
+  neededDecision: AcceptanceRecordSummaryNeededDecision;
+  outcome: AcceptanceRecordSummaryOutcome;
+};
+
+export type ReadAcceptanceRecordSummariesResult = {
+  kind: "records";
+  records: AcceptanceRecordSummary[];
+};
+
 /** List record headers for the workspace index without loading timelines. */
 export async function listChangeRecords(
   input: ListChangeRecordsInput
@@ -14798,4 +14939,1051 @@ async function invalidateAcceptanceCorrectionDispatchForHeadInTransaction(
   )).returning({ id: acceptanceCorrectionDispatches.id });
   if (rows.length !== 1) throw new Error("Correction dispatch invalidation lost its locked precondition");
   return 1;
+}
+
+const ACCEPTANCE_RECORD_SUMMARY_DEFAULT_LIMIT = 100;
+const ACCEPTANCE_RECORD_SUMMARY_MAX_LIMIT = 200;
+const ACCEPTANCE_RECORD_SUMMARY_EVENT_LIMIT = 256;
+const ACCEPTANCE_RECORD_SUMMARY_CONTEXT_IDENTITY_LIMIT = 2;
+
+type AcceptanceRecordSummaryConfirmedContract = {
+  row: AcceptanceContractRow;
+  projection: AcceptanceConfirmedContractProjection;
+  identity: AcceptanceRecordSummaryContractIdentity;
+};
+
+type AcceptanceRecordSummaryFocus = {
+  kind: "current" | "merged";
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+};
+
+type AcceptanceRecordSummaryStoredMerge = {
+  event: ChangeRecordEventRow;
+  payload: SignedAcceptanceRecordMergePayload;
+};
+
+function parseReadAcceptanceRecordSummariesInput(
+  input: unknown,
+): { workspaceId: string; repo: string | null; limit: number } {
+  if (!isRecord(input)
+    || !Object.keys(input).every((key) => key === "workspaceId" || key === "repo" || key === "limit")
+    || !hasOwn(input, "workspaceId") || !isUuid(input["workspaceId"])
+    || (hasOwn(input, "repo") && input["repo"] !== null
+      && (typeof input["repo"] !== "string" || !safeRepo(input["repo"])))
+    || (hasOwn(input, "limit")
+      && (!Number.isSafeInteger(input["limit"])
+        || (input["limit"] as number) < 1
+        || (input["limit"] as number) > ACCEPTANCE_RECORD_SUMMARY_MAX_LIMIT))) {
+    throw new Error("Acceptance Record summaries require only workspace, optional repository, and bounded limit");
+  }
+  return {
+    workspaceId: input["workspaceId"],
+    repo: (input["repo"] as string | null | undefined) ?? null,
+    limit: (input["limit"] as number | undefined) ?? ACCEPTANCE_RECORD_SUMMARY_DEFAULT_LIMIT,
+  };
+}
+
+function acceptanceRecordSummaryConfirmedContract(
+  rows: readonly AcceptanceContractRow[],
+): AcceptanceRecordSummaryConfirmedContract | null | "invalid" {
+  if (rows.length === 0) return null;
+  if (rows.length !== 1) return "invalid";
+  const row = rows[0]!;
+  const projection = projectConfirmedAcceptanceContract(row.contract);
+  if (row.status !== "confirmed" || !isNonBlankString(row.confirmedBy)
+    || !(row.confirmedAt instanceof Date) || Number.isNaN(row.confirmedAt.valueOf())
+    || !projection) return "invalid";
+  try {
+    return {
+      row,
+      projection,
+      identity: {
+        id: row.id,
+        version: row.version,
+        sha256: acceptanceContractSha256({
+          acceptanceContractId: row.id,
+          acceptanceContractVersion: row.version,
+          contract: row.contract,
+        }),
+      },
+    };
+  } catch {
+    return "invalid";
+  }
+}
+
+function acceptanceRecordSummaryRelevantMergeEvents(
+  events: readonly ChangeRecordEventRow[],
+): ChangeRecordEventRow[] {
+  return events.filter((event) => event.eventKey.startsWith("acceptance-pr:signed-merge:")
+    || event.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_KIND);
+}
+
+function acceptanceRecordSummaryRelevantPostMergeEvents(
+  events: readonly ChangeRecordEventRow[],
+): ChangeRecordEventRow[] {
+  return events.filter((event) => event.eventKey.startsWith("acceptance-post-merge:")
+    || event.stage === "post_merge_outcome"
+    || event.payloadRef["kind"] === "acceptance_post_merge_outcome");
+}
+
+function acceptanceRecordSummaryMergeBeforeLineage(
+  record: ChangeRecordRow,
+  events: readonly ChangeRecordEventRow[],
+): AcceptanceRecordSummaryStoredMerge | null | "invalid" {
+  const candidates = acceptanceRecordSummaryRelevantMergeEvents(events);
+  const deliveries = events.filter((event) => event.eventKey.startsWith("external-pr:signed-merge:")
+    || event.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND);
+  const mergeScoped = events.filter((event) => event.stage === SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    || event.eventKey.startsWith("acceptance-pr:signed-merge:")
+    || event.eventKey.startsWith("external-pr:signed-merge:")
+    || event.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_KIND
+    || event.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND);
+  if (record.mergedSha == null) {
+    return candidates.length === 0 && deliveries.length === 0 && mergeScoped.length === 0
+      ? null : "invalid";
+  }
+  if (!EXACT_LOWER_GITHUB_SHA.test(record.mergedSha)
+    || record.currentPrHeadAuthoritative
+    || (record.state !== "merged" && record.state !== "reverted")
+    || candidates.length !== 1 || deliveries.length !== 1
+    || new Set([...candidates, ...deliveries]).size !== mergeScoped.length) return "invalid";
+  const event = candidates[0]!;
+  const payload = parseSignedAcceptanceRecordMergePayload(event, record);
+  if (!payload || payload.mergeSha !== record.mergedSha
+    || record.currentPrHeadAuthorityGeneration < payload.authorityGenerationAfter) return "invalid";
+  const deliveryEventKey = signedAcceptanceRecordMergeDeliveryEventKey({
+    prNumber: payload.prNumber,
+    deliveryId: payload.deliveryId,
+  });
+  const delivery = events.find((candidate) => candidate.id === payload.deliveryEventId
+    && candidate.eventKey === deliveryEventKey);
+  const deliveryPayload = signedAcceptanceRecordMergeDeliveryPayload({
+    workspaceId: payload.workspaceId,
+    recordId: payload.recordId,
+    repo: payload.repo,
+    prNumber: payload.prNumber,
+    deliveryId: payload.deliveryId,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    mergeSha: payload.mergeSha,
+    mergedAt: payload.mergedAt,
+    prUrl: payload.prUrl,
+    githubActor: payload.githubActor,
+    source: payload.source,
+  });
+  if (!delivery
+    || delivery.id !== changeRecordEventId({ recordId: record.id, eventKey: deliveryEventKey })
+    || delivery.stage !== SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    || delivery.actor !== SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR
+    || !isDeepStrictEqual(delivery.payloadRef, deliveryPayload)) return "invalid";
+  return { event, payload };
+}
+
+function acceptanceRecordSummaryFocusFromRecord(
+  record: ChangeRecordRow,
+  merge: AcceptanceRecordSummaryStoredMerge | null | "invalid",
+): AcceptanceRecordSummaryFocus | null | "invalid" {
+  if (record.prNumber == null) {
+    return record.currentPrHeadSha == null && record.currentPrHeadCycleId == null
+      && !record.currentPrHeadAuthoritative ? null : "invalid";
+  }
+  if (!safeRepo(record.repo) || !Number.isSafeInteger(record.prNumber) || record.prNumber <= 0
+    || !Number.isSafeInteger(record.currentPrHeadAuthorityGeneration)
+    || record.currentPrHeadAuthorityGeneration < 0
+    || ((record.currentPrHeadSha == null) !== (record.currentPrHeadCycleId == null))
+    || (record.currentPrHeadSha != null && !EXACT_SHA1.test(record.currentPrHeadSha))
+    || (record.currentPrHeadCycleId != null && !isUuid(record.currentPrHeadCycleId))) return "invalid";
+  if (record.currentPrHeadAuthoritative) {
+    return record.state === "open" && record.mergedSha == null
+      && record.currentPrHeadSha != null && record.currentPrHeadCycleId != null
+      && record.headShas.includes(record.currentPrHeadSha)
+      ? {
+          kind: "current",
+          headSha: record.currentPrHeadSha.toLowerCase(),
+          headCycleId: record.currentPrHeadCycleId,
+          authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        }
+      : "invalid";
+  }
+  if (merge === "invalid") return "invalid";
+  if (merge) {
+    const alignment = merge.payload.decisionAlignment;
+    if (alignment.kind === "aligned" || alignment.kind === "decision_conflicts_merge"
+      || alignment.kind === "not_recorded") {
+      return {
+        kind: "merged",
+        headSha: alignment.binding.headSha,
+        headCycleId: alignment.binding.headCycleId,
+        authorityGeneration: alignment.binding.authorityGeneration,
+      };
+    }
+  }
+  return null;
+}
+
+function acceptanceRecordSummarySnapshotInput(
+  snapshot: AcceptanceContextPackSnapshotRow,
+): AcceptanceContextPackSnapshotInput {
+  return {
+    workspaceId: snapshot.workspaceId,
+    recordId: snapshot.recordId,
+    reviewJobId: snapshot.reviewJobId,
+    acceptanceContractId: snapshot.acceptanceContractId,
+    acceptanceContractVersion: snapshot.acceptanceContractVersion,
+    acceptanceContractSha256: snapshot.acceptanceContractSha256!,
+    repo: snapshot.repo,
+    prNumber: snapshot.prNumber,
+    expectedHeadSha: snapshot.expectedHeadSha,
+    baseSha: snapshot.baseSha,
+    mergeBaseSha: snapshot.mergeBaseSha,
+    headTreeSha: snapshot.headTreeSha,
+    packetIds: snapshot.packetIds,
+    packetSetSha256: snapshot.packetSetSha256,
+    correctionPacketPayloadSetSha256: snapshot.correctionPacketPayloadSetSha256!,
+    compilerVersion: snapshot.compilerVersion,
+    baseIndex: snapshot.baseIndex as AcceptanceContextPackCustodyBaseIndexIdentity | null,
+    overlay: snapshot.overlay as AcceptanceContextPackCustodyOverlayManifestIdentity | null,
+    provenance: snapshot.provenance as AcceptanceContextInclusionExclusionProvenance,
+    status: snapshot.status as AcceptanceContextPackSnapshotStatus,
+    reason: snapshot.reason,
+  };
+}
+
+function acceptanceRecordSummarySourceSnapshotIdentity(
+  snapshot: AcceptanceContextPackSnapshotRow,
+): AcceptanceRecordSummarySourceSnapshotIdentity {
+  return {
+    id: snapshot.id,
+    headSha: snapshot.expectedHeadSha,
+    headCycleId: snapshot.reviewJobId,
+    compilerVersion: snapshot.compilerVersion,
+    packetSetSha256: snapshot.packetSetSha256,
+  };
+}
+
+function acceptanceRecordSummaryUnknownReasons(
+  reasons: Iterable<AcceptanceRecordSummaryUnknownReason>,
+): AcceptanceRecordSummaryUnknownReason[] {
+  return [...new Set(reasons)].sort((left, right) => left.localeCompare(right));
+}
+
+function acceptanceRecordSummaryCycleBinding(input: {
+  record: ChangeRecordRow;
+  focus: AcceptanceRecordSummaryFocus;
+  contract: AcceptanceRecordSummaryConfirmedContract;
+  events: readonly ChangeRecordEventRow[];
+  jobsById: ReadonlyMap<string, ReviewJobRow>;
+  expectedBinding?: CurrentAcceptancePrDecisionBinding;
+}): CurrentAcceptancePrDecisionBinding | null | "invalid" {
+  const attestationEventKey = reviewJobPostedAttestationEventKey(input.focus.headCycleId);
+  const candidates = input.events.filter((event) => event.eventKey === attestationEventKey
+    || (event.payloadRef["kind"] === REVIEW_JOB_POSTED_ATTESTATION_KIND
+      && event.payloadRef["jobId"] === input.focus.headCycleId));
+  if (candidates.length === 0) return null;
+  if (candidates.length !== 1) return "invalid";
+  const event = candidates[0]!;
+  const job = input.jobsById.get(input.focus.headCycleId);
+  const parsed = parseAcceptancePrReviewMetricsCycle({
+    event,
+    job,
+    record: input.record,
+    acceptanceContract: input.contract.identity,
+  });
+  if (!parsed || parsed.binding.headSha !== input.focus.headSha
+    || parsed.binding.headCycleId !== input.focus.headCycleId
+    || parsed.binding.reviewJobId !== input.focus.headCycleId
+    || !job || job.createdAt > event.at
+    || input.contract.row.confirmedAt == null
+    || input.contract.row.confirmedAt > event.at) return "invalid";
+  const base: Omit<CurrentAcceptancePrDecisionBinding, "bindingId"> = {
+    ...parsed.binding,
+    authorityGeneration: input.focus.authorityGeneration,
+  };
+  const binding: CurrentAcceptancePrDecisionBinding = {
+    bindingId: acceptancePrDecisionBindingId(base),
+    ...base,
+  };
+  if (input.expectedBinding
+    && (!historicalMetricsBindingMatchesCurrentBinding(parsed.binding, input.expectedBinding)
+      || input.expectedBinding.authorityGeneration !== input.focus.authorityGeneration
+      || input.expectedBinding.bindingId !== binding.bindingId)) return "invalid";
+  return input.expectedBinding ?? binding;
+}
+
+function acceptanceRecordSummaryDecisionForBinding(
+  events: readonly ChangeRecordEventRow[],
+  binding: CurrentAcceptancePrDecisionBinding,
+): CurrentAcceptancePrDecision | null | "invalid" {
+  const eventKey = acceptancePrDecisionEventKey(binding.headCycleId);
+  const candidates = events.filter((event) => event.eventKey === eventKey
+    || ((event.stage === ACCEPTANCE_PR_DECISION_STAGE
+      || event.payloadRef["kind"] === ACCEPTANCE_PR_DECISION_KIND)
+      && (event.payloadRef["headCycleId"] === binding.headCycleId
+        || event.payloadRef["reviewJobId"] === binding.reviewJobId)));
+  if (candidates.length === 0) return null;
+  if (candidates.length !== 1) return "invalid";
+  return parseCurrentAcceptancePrDecisionEvent({ event: candidates[0]!, binding }) ?? "invalid";
+}
+
+function acceptanceRecordSummaryMergeLineageValid(input: {
+  merge: AcceptanceRecordSummaryStoredMerge;
+  record: ChangeRecordRow;
+  contract: AcceptanceRecordSummaryConfirmedContract | null | "invalid";
+  events: readonly ChangeRecordEventRow[];
+  jobsById: ReadonlyMap<string, ReviewJobRow>;
+}): boolean {
+  const alignment = input.merge.payload.decisionAlignment;
+  if (alignment.kind === "custody_unavailable") return true;
+  if (alignment.kind === "not_current" && alignment.currentBinding == null) return true;
+  if (!input.contract || input.contract === "invalid") return false;
+  const binding = alignment.kind === "not_current"
+    ? alignment.currentBinding!
+    : alignment.binding;
+  const focus: AcceptanceRecordSummaryFocus = {
+    kind: "merged",
+    headSha: binding.headSha,
+    headCycleId: binding.headCycleId,
+    authorityGeneration: binding.authorityGeneration,
+  };
+  const exactBinding = acceptanceRecordSummaryCycleBinding({
+    record: input.record,
+    focus,
+    contract: input.contract,
+    events: input.events,
+    jobsById: input.jobsById,
+    expectedBinding: binding,
+  });
+  if (!exactBinding || exactBinding === "invalid") return false;
+  const decision = acceptanceRecordSummaryDecisionForBinding(input.events, exactBinding);
+  if (decision === "invalid") return false;
+  if (alignment.kind === "not_recorded") return decision === null;
+  if (alignment.kind === "not_current") {
+    return (decision?.decision ?? null) === alignment.currentDecision
+      && (decision?.eventId ?? null) === alignment.currentDecisionEventId;
+  }
+  return decision != null
+    && decision.decision === alignment.decision
+    && decision.eventId === alignment.decisionEventId;
+}
+
+function acceptanceRecordSummaryPostMerge(input: {
+  record: ChangeRecordRow;
+  merge: AcceptanceRecordSummaryStoredMerge;
+  events: readonly ChangeRecordEventRow[];
+}): AcceptanceRecordSummaryOutcome | "invalid" {
+  const candidates = acceptanceRecordSummaryRelevantPostMergeEvents(input.events);
+  const outcomes = candidates.map((event) => historicalPostMergeOutcome(
+    event,
+    input.record,
+    input.merge,
+  ));
+  if (outcomes.some((outcome) => outcome === null)) return "invalid";
+  const exact = outcomes as HumanAcceptancePostMergeOutcome[];
+  const reverted = exact.some((outcome) => outcome.kind === "reverted");
+  if ((input.record.state === "reverted") !== reverted) return "invalid";
+  return {
+    kind: "signed_merge",
+    mergeEventId: input.merge.event.id,
+    mergeSha: input.merge.payload.mergeSha,
+    mergedAt: new Date(input.merge.payload.mergedAt),
+    decisionAlignment: input.merge.payload.decisionAlignment.kind,
+    postMerge: {
+      deployment: exact.some((outcome) => outcome.kind === "deployed")
+        ? "recorded" : "not_recorded",
+      incident: exact.some((outcome) => outcome.kind === "incident")
+        ? "recorded" : "not_recorded",
+      revert: reverted ? "recorded" : "not_recorded",
+    },
+  };
+}
+
+function acceptanceRecordSummaryContextCustody(input: {
+  snapshot: AcceptanceContextPackSnapshotRow;
+  record: ChangeRecordRow;
+  focus: AcceptanceRecordSummaryFocus;
+  contract: AcceptanceRecordSummaryConfirmedContract;
+  job: ReviewJobRow | undefined;
+  events: readonly ChangeRecordEventRow[];
+  repositoryRows: readonly (typeof repositories.$inferSelect)[];
+  wikiPagesById: ReadonlyMap<string, typeof wikiPages.$inferSelect>;
+}): AcceptanceContextPackCustodyResolution | null {
+  const snapshotInput = acceptanceRecordSummarySnapshotInput(input.snapshot);
+  if (!validateAcceptanceContextPackSnapshotInput(snapshotInput)
+    || input.snapshot.id !== acceptanceContextPackSnapshotId(snapshotInput)
+    || input.snapshot.workspaceId !== input.record.workspaceId
+    || input.snapshot.recordId !== input.record.id
+    || input.snapshot.repo !== input.record.repo
+    || input.snapshot.prNumber !== input.record.prNumber
+    || input.snapshot.expectedHeadSha !== input.focus.headSha
+    || input.snapshot.reviewJobId !== input.focus.headCycleId
+    || input.snapshot.acceptanceContractId !== input.contract.identity.id
+    || input.snapshot.acceptanceContractVersion !== input.contract.identity.version
+    || input.snapshot.acceptanceContractSha256 !== input.contract.identity.sha256
+    || !input.job || input.job.id !== input.focus.headCycleId
+    || input.job.workspaceId !== input.record.workspaceId
+    || input.job.repo !== input.record.repo
+    || input.job.prNumber !== input.record.prNumber
+    || input.job.headSha !== input.focus.headSha) return null;
+  const criteria = new Map(input.contract.projection.acceptanceCriteria.map((criterion) => [
+    criterion.id,
+    criterion.text,
+  ]));
+  const correctionEvents = input.events.filter((event) =>
+    event.eventKey.startsWith(`review:correction:${input.focus.headCycleId}:`));
+  const packets = correctionPacketPayloadsForSnapshotEvents(
+    correctionEvents,
+    snapshotInput,
+    criteria,
+  );
+  if (!packets
+    || !isDeepStrictEqual(packets.packetIds, input.snapshot.packetIds)
+    || input.snapshot.packetSetSha256 !== acceptanceContextPacketSetSha256({
+      packetIds: packets.packetIds,
+    })
+    || input.snapshot.correctionPacketPayloadSetSha256
+      !== acceptanceCorrectionPacketPayloadSetSha256({ packets: packets.packets })) return null;
+  const wikiRows: AcceptanceContextPackCustodyResolution["wikiPages"] = [];
+  if (snapshotInput.status === "admitted") {
+    const baseIndex = snapshotInput.baseIndex!;
+    const repositoryIds = [...new Set(baseIndex.pages.map((page) => page.repositoryId))];
+    const repository = input.repositoryRows.length === 1 ? input.repositoryRows[0] : undefined;
+    if (repositoryIds.length > 1
+      || (repositoryIds.length === 1
+        && (!repository || repository.id !== repositoryIds[0]))) return null;
+    let totalBodyBytes = 0;
+    for (const page of baseIndex.pages) {
+      const actual = input.wikiPagesById.get(page.id);
+      const bodyBytes = actual ? Buffer.byteLength(actual.bodyMd, "utf8") : 0;
+      totalBodyBytes += bodyBytes;
+      if (!actual || bodyBytes === 0 || bodyBytes > MAX_CONTEXT_CUSTODY_WIKI_PAGE_BYTES
+        || totalBodyBytes > MAX_CONTEXT_CUSTODY_WIKI_TOTAL_BYTES
+        || actual.workspaceId !== input.record.workspaceId
+        || actual.repositoryId !== page.repositoryId || actual.slug !== page.slug
+        || actual.commitSha.toLowerCase() !== page.commitSha.toLowerCase()
+        || actual.inputsHash.toLowerCase() !== page.inputsHashSha256.toLowerCase()
+        || wikiPageBodySha256(actual.bodyMd) !== page.pageBodySha256.toLowerCase()
+        || actual.stale !== page.stale) return null;
+      wikiRows.push({
+        id: actual.id,
+        repositoryId: actual.repositoryId,
+        slug: actual.slug,
+        commitSha: actual.commitSha,
+        inputsHashSha256: actual.inputsHash,
+        pageBodySha256: wikiPageBodySha256(actual.bodyMd),
+        stale: actual.stale,
+        bodyMd: actual.bodyMd,
+      });
+    }
+  }
+  return {
+    sourceSnapshot: { id: input.snapshot.id, ...snapshotInput },
+    contract: input.contract.projection,
+    acceptanceContractSha256: input.contract.identity.sha256,
+    correctionPackets: packets.packets,
+    correctionPacketPayloadSetSha256: input.snapshot.correctionPacketPayloadSetSha256!,
+    wikiPages: wikiRows,
+  };
+}
+
+function acceptanceRecordSummaryCompiledPack(input: {
+  row: AcceptanceCompiledContextPackRow;
+  custody: AcceptanceContextPackCustodyResolution;
+}): AcceptanceRecordSummaryCompiledPackIdentity | null {
+  const pack = parseCompiledAcceptanceContextPack({
+    kind: "compiled_acceptance_context_pack",
+    version: 1,
+    binding: input.row.binding,
+    compiler: {
+      version: input.row.compilerVersion,
+      policyVersion: input.row.policyVersion,
+      byteCounter: "utf8_byte_upper_bound_v1",
+      byteBudget: COMPILED_PACK_BYTE_BUDGET,
+    },
+    manifest: input.row.manifest,
+    sourceCustodyReceipt: input.row.sourceCustodyReceipt,
+    exactHeadDependencyTreeProofs: input.row.exactHeadDependencyTreeProofs,
+    representations: {
+      jsonSha256: input.row.jsonSha256,
+      markdownSha256: input.row.markdownSha256,
+    },
+    renderedByteCount: input.row.renderedByteCount,
+    packSha256: input.row.packSha256,
+  });
+  if (!pack
+    || input.row.id !== acceptanceCompiledContextPackId({
+      sourceSnapshotId: input.row.sourceSnapshotId,
+      compilerVersion: input.row.compilerVersion,
+      policyVersion: input.row.policyVersion,
+    })
+    || input.row.workspaceId !== input.custody.sourceSnapshot.workspaceId
+    || input.row.sourceSnapshotId !== input.custody.sourceSnapshot.id
+    || compiledPackIdentity(pack) !== input.row.packSha256
+    || pack.sourceCustodyReceipt["identitySha256"] !== input.row.sourceCustodyIdentitySha256
+    || !bindingMatchesCustody(pack.binding, input.custody)
+    || !receiptMatchesCustody(pack.sourceCustodyReceipt, input.custody)
+    || !manifestMatchesCustody(pack, input.custody)
+    || !compiledPackDependencyTreeMetadataMatches(pack)) return null;
+  return {
+    id: input.row.id,
+    sha256: input.row.packSha256,
+    sourceCustodyIdentitySha256: input.row.sourceCustodyIdentitySha256,
+    compilerVersion: input.row.compilerVersion,
+    policyVersion: input.row.policyVersion,
+  };
+}
+
+function mapAcceptanceRecordSummarySnapshotRow(
+  row: Record<string, unknown>,
+): AcceptanceContextPackSnapshotRow {
+  return {
+    id: row["id"] as string,
+    workspaceId: row["workspace_id"] as string,
+    recordId: row["record_id"] as string,
+    reviewJobId: row["review_job_id"] as string,
+    acceptanceContractId: row["acceptance_contract_id"] as string,
+    acceptanceContractVersion: row["acceptance_contract_version"] as number,
+    acceptanceContractSha256: (row["acceptance_contract_sha256"] as string | null) ?? null,
+    repo: row["repo"] as string,
+    prNumber: row["pr_number"] as number,
+    expectedHeadSha: row["expected_head_sha"] as string,
+    baseSha: (row["base_sha"] as string | null) ?? null,
+    mergeBaseSha: (row["merge_base_sha"] as string | null) ?? null,
+    headTreeSha: (row["head_tree_sha"] as string | null) ?? null,
+    packetIds: row["packet_ids"] as string[],
+    packetSetSha256: row["packet_set_sha256"] as string,
+    correctionPacketPayloadSetSha256:
+      (row["correction_packet_payload_set_sha256"] as string | null) ?? null,
+    compilerVersion: row["compiler_version"] as string,
+    baseIndex: (row["base_index"] as Record<string, unknown> | null) ?? null,
+    overlay: (row["overlay"] as Record<string, unknown> | null) ?? null,
+    provenance: row["provenance"] as Record<string, unknown>,
+    status: row["status"] as string,
+    reason: (row["reason"] as string | null) ?? null,
+    createdAt: toDate(row["created_at"]),
+    updatedAt: toDate(row["updated_at"]),
+  };
+}
+
+function mapAcceptanceRecordSummaryCompiledPackRow(
+  row: Record<string, unknown>,
+): AcceptanceCompiledContextPackRow {
+  const exactHeadDependencyTreeProofs = row["exact_head_dependency_tree_proofs"] as AcceptanceCompiledContextPackRow["exactHeadDependencyTreeProofs"];
+  return {
+    id: row["id"] as string,
+    workspaceId: row["workspace_id"] as string,
+    sourceSnapshotId: row["source_snapshot_id"] as string,
+    compilerVersion: row["compiler_version"] as string,
+    policyVersion: row["policy_version"] as string,
+    packSha256: row["pack_sha256"] as string,
+    sourceCustodyIdentitySha256: row["source_custody_identity_sha256"] as string,
+    jsonSha256: row["json_sha256"] as string,
+    markdownSha256: row["markdown_sha256"] as string,
+    renderedByteCount: row["rendered_byte_count"] as number,
+    binding: row["binding"] as Record<string, unknown>,
+    manifest: row["manifest"] as Record<string, unknown>,
+    sourceCustodyReceipt: row["source_custody_receipt"] as Record<string, unknown>,
+    exactHeadDependencyTreeProofs,
+    createdAt: toDate(row["created_at"]),
+  };
+}
+
+function mapAcceptanceRecordSummaryRepositoryRow(
+  row: Record<string, unknown>,
+): typeof repositories.$inferSelect {
+  return {
+    id: row["id"] as string,
+    workspaceId: row["workspace_id"] as string,
+    name: row["name"] as string,
+    url: row["url"] as string,
+    defaultBranch: row["default_branch"] as string,
+    createdAt: toDate(row["created_at"]),
+    updatedAt: toDate(row["updated_at"]),
+  };
+}
+
+const ACCEPTANCE_RECORD_SUMMARY_ALL_DECISIONS: AcceptancePrDecision[] = [
+  "approved",
+  "changes_requested",
+  "rejected",
+  "approved_with_exception",
+];
+
+const ACCEPTANCE_RECORD_SUMMARY_NON_PROVEN_DECISIONS: AcceptancePrDecision[] = [
+  "changes_requested",
+  "rejected",
+  "approved_with_exception",
+];
+
+/**
+ * Bounded list projection for Acceptance Records. The reader acquires every
+ * attached PR lock in deterministic order, then resolves all custody with
+ * set-based reads. A 257th relevant event is detected explicitly; no Record
+ * can silently project a partial view of its first 256 custody events.
+ */
+export async function readAcceptanceRecordSummaries(
+  input: ReadAcceptanceRecordSummariesInput,
+): Promise<ReadAcceptanceRecordSummariesResult> {
+  const parsed = parseReadAcceptanceRecordSummariesInput(input);
+  return db.transaction(async (tx) => {
+    const candidatePredicates = [eq(changeRecords.workspaceId, parsed.workspaceId)];
+    if (parsed.repo != null) candidatePredicates.push(eq(changeRecords.repo, parsed.repo));
+    const candidates = await tx.select().from(changeRecords).where(and(...candidatePredicates))
+      .orderBy(desc(changeRecords.updatedAt), desc(changeRecords.createdAt), desc(changeRecords.id))
+      .limit(parsed.limit);
+    if (candidates.length === 0) return { kind: "records", records: [] };
+
+    const candidateById = new Map(candidates.map((record) => [record.id, record]));
+    const lockKeys = [...new Set(candidates.flatMap((record) =>
+      record.prNumber != null && safeRepo(record.repo)
+        && Number.isSafeInteger(record.prNumber) && record.prNumber > 0
+        ? [acceptanceRecordPullRequestLockKey({
+            workspaceId: record.workspaceId,
+            recordId: record.id,
+            repo: record.repo,
+            prNumber: record.prNumber,
+          })]
+        : []
+    ))].sort((left, right) => left.localeCompare(right));
+    if (lockKeys.length > 0) {
+      await tx.execute(sql`
+        WITH ordered_locks AS MATERIALIZED (
+          SELECT lock_key
+          FROM unnest(${textArraySql(lockKeys)}) AS summary_locks(lock_key)
+          ORDER BY lock_key
+        )
+        SELECT pg_advisory_xact_lock(hashtext(lock_key))
+        FROM ordered_locks
+        ORDER BY lock_key
+      `);
+    }
+
+    const recordIds = candidates.map((record) => record.id);
+    const records = await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, parsed.workspaceId),
+      inArray(changeRecords.id, recordIds),
+      ...(parsed.repo == null ? [] : [eq(changeRecords.repo, parsed.repo)]),
+    )).orderBy(desc(changeRecords.updatedAt), desc(changeRecords.createdAt), desc(changeRecords.id));
+    if (records.length === 0) return { kind: "records", records: [] };
+    const stableRecordIds = records.map((record) => record.id);
+    const stableRecordIdSql = sql.join(
+      stableRecordIds.map((recordId) => sql`${recordId}::uuid`),
+      sql`, `,
+    );
+    const unlockedRecords = new Set(records.flatMap((record) => {
+      const candidate = candidateById.get(record.id);
+      return candidate && candidate.repo === record.repo && candidate.prNumber === record.prNumber
+        ? [] : [record.id];
+    }));
+
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      inArray(acceptanceContracts.recordId, stableRecordIds),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.recordId), asc(acceptanceContracts.version));
+    const confirmedByRecord = new Map<string, AcceptanceContractRow[]>();
+    for (const contract of confirmedRows) {
+      const rows = confirmedByRecord.get(contract.recordId) ?? [];
+      rows.push(contract);
+      confirmedByRecord.set(contract.recordId, rows);
+    }
+    const contractByRecord = new Map(records.map((record) => [
+      record.id,
+      acceptanceRecordSummaryConfirmedContract(confirmedByRecord.get(record.id) ?? []),
+    ]));
+
+    const rawEventRows = Array.from(await tx.execute(sql`
+      WITH ranked_events AS (
+        SELECT events.*,
+          row_number() OVER (
+            PARTITION BY events.record_id
+            ORDER BY events.at ASC, events.id ASC
+          ) AS summary_rank
+        FROM change_record_events AS events
+        WHERE events.record_id IN (${stableRecordIdSql})
+          AND (
+            events.event_key LIKE 'review:github-posted:%'
+            OR events.event_key LIKE 'review:correction:%'
+            OR events.event_key LIKE 'acceptance-pr-decision:%'
+            OR events.event_key LIKE 'acceptance-pr:signed-merge:%'
+            OR events.event_key LIKE 'external-pr:signed-merge:%'
+            OR events.event_key LIKE 'acceptance-post-merge:%'
+            OR events.stage = ${REVIEW_JOB_POSTED_ATTESTATION_STAGE}
+            OR events.stage = ${ACCEPTANCE_PR_DECISION_STAGE}
+            OR events.stage = ${SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE}
+            OR events.stage = 'post_merge_outcome'
+            OR events.payload_ref->>'kind' = ${REVIEW_JOB_POSTED_ATTESTATION_KIND}
+            OR events.payload_ref->>'kind' = ${ACCEPTANCE_PR_DECISION_KIND}
+            OR events.payload_ref->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_KIND}
+            OR events.payload_ref->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND}
+            OR events.payload_ref->>'kind' = 'acceptance_post_merge_outcome'
+          )
+      )
+      SELECT * FROM ranked_events
+      WHERE summary_rank <= ${ACCEPTANCE_RECORD_SUMMARY_EVENT_LIMIT + 1}
+      ORDER BY record_id ASC, at ASC, id ASC
+    `)) as Array<Record<string, unknown>>;
+    const eventRowsByRecord = new Map<string, ChangeRecordEventRow[]>();
+    for (const row of rawEventRows) {
+      const event = mapChangeRecordEventRow(row);
+      const rows = eventRowsByRecord.get(event.recordId) ?? [];
+      rows.push(event);
+      eventRowsByRecord.set(event.recordId, rows);
+    }
+    const eventOverflow = new Set(stableRecordIds.filter((recordId) =>
+      (eventRowsByRecord.get(recordId)?.length ?? 0) > ACCEPTANCE_RECORD_SUMMARY_EVENT_LIMIT
+    ));
+    const eventsByRecord = new Map(stableRecordIds.map((recordId) => [
+      recordId,
+      eventOverflow.has(recordId)
+        ? []
+        : (eventRowsByRecord.get(recordId) ?? []).slice(0, ACCEPTANCE_RECORD_SUMMARY_EVENT_LIMIT),
+    ]));
+
+    const mergeBeforeLineageByRecord = new Map(records.map((record) => [
+      record.id,
+      acceptanceRecordSummaryMergeBeforeLineage(record, eventsByRecord.get(record.id) ?? []),
+    ]));
+    const preliminaryFocusByRecord = new Map(records.map((record) => [
+      record.id,
+      unlockedRecords.has(record.id)
+        ? "invalid" as const
+        : acceptanceRecordSummaryFocusFromRecord(
+            record,
+            mergeBeforeLineageByRecord.get(record.id) ?? null,
+          ),
+    ]));
+    const reviewJobIds = [...new Set(records.flatMap((record) => {
+      const ids: string[] = [];
+      const focus = preliminaryFocusByRecord.get(record.id);
+      if (focus && focus !== "invalid") ids.push(focus.headCycleId);
+      const merge = mergeBeforeLineageByRecord.get(record.id);
+      if (merge && merge !== "invalid") {
+        const alignment = merge.payload.decisionAlignment;
+        if (alignment.kind === "aligned" || alignment.kind === "decision_conflicts_merge"
+          || alignment.kind === "not_recorded") ids.push(alignment.binding.reviewJobId);
+        if (alignment.kind === "not_current" && alignment.currentBinding != null) {
+          ids.push(alignment.currentBinding.reviewJobId);
+        }
+      }
+      return ids;
+    }))];
+    const jobs = reviewJobIds.length === 0 ? [] : await tx.select().from(reviewJobs).where(and(
+      eq(reviewJobs.workspaceId, parsed.workspaceId),
+      inArray(reviewJobs.id, reviewJobIds),
+    ));
+    const jobsById = new Map(jobs.map((job) => [job.id, job]));
+
+    const mergeByRecord = new Map<string, AcceptanceRecordSummaryStoredMerge | null | "invalid">();
+    const focusByRecord = new Map<string, AcceptanceRecordSummaryFocus | null | "invalid">();
+    for (const record of records) {
+      const events = eventsByRecord.get(record.id) ?? [];
+      const contract = contractByRecord.get(record.id) ?? null;
+      let merge = mergeBeforeLineageByRecord.get(record.id) ?? null;
+      if (merge && merge !== "invalid" && !acceptanceRecordSummaryMergeLineageValid({
+        merge,
+        record,
+        contract,
+        events,
+        jobsById,
+      })) merge = "invalid";
+      mergeByRecord.set(record.id, merge);
+      focusByRecord.set(record.id, unlockedRecords.has(record.id)
+        ? "invalid"
+        : acceptanceRecordSummaryFocusFromRecord(record, merge));
+    }
+
+    const focusJobIds = [...new Set([...focusByRecord.values()].flatMap((focus) =>
+      focus && focus !== "invalid" ? [focus.headCycleId] : []
+    ))];
+    const rawSnapshotRows = focusJobIds.length === 0 ? [] : Array.from(await tx.execute(sql`
+      WITH ranked_snapshots AS (
+        SELECT snapshots.*,
+          row_number() OVER (
+            PARTITION BY snapshots.record_id, snapshots.review_job_id
+            ORDER BY snapshots.created_at ASC, snapshots.id ASC
+          ) AS summary_rank
+        FROM acceptance_context_pack_snapshots AS snapshots
+        WHERE snapshots.workspace_id = ${parsed.workspaceId}::uuid
+          AND snapshots.record_id IN (${stableRecordIdSql})
+          AND snapshots.review_job_id IN (${sql.join(
+            focusJobIds.map((jobId) => sql`${jobId}::uuid`),
+            sql`, `,
+          )})
+      )
+      SELECT * FROM ranked_snapshots
+      WHERE summary_rank <= ${ACCEPTANCE_RECORD_SUMMARY_CONTEXT_IDENTITY_LIMIT}
+      ORDER BY record_id ASC, review_job_id ASC, created_at ASC, id ASC
+    `)) as Array<Record<string, unknown>>;
+    const snapshotsByFocus = new Map<string, AcceptanceContextPackSnapshotRow[]>();
+    for (const row of rawSnapshotRows) {
+      const snapshot = mapAcceptanceRecordSummarySnapshotRow(row);
+      const key = `${snapshot.recordId}:${snapshot.reviewJobId}`;
+      const rows = snapshotsByFocus.get(key) ?? [];
+      rows.push(snapshot);
+      snapshotsByFocus.set(key, rows);
+    }
+    const selectedSnapshots = records.flatMap((record) => {
+      const focus = focusByRecord.get(record.id);
+      if (!focus || focus === "invalid") return [];
+      const rows = snapshotsByFocus.get(`${record.id}:${focus.headCycleId}`) ?? [];
+      return rows.length === 1 ? rows : [];
+    });
+    const snapshotIds = selectedSnapshots.map((snapshot) => snapshot.id);
+    const rawCompiledPackRows = snapshotIds.length === 0 ? [] : Array.from(await tx.execute(sql`
+      WITH ranked_packs AS (
+        SELECT packs.*,
+          row_number() OVER (
+            PARTITION BY packs.source_snapshot_id
+            ORDER BY packs.created_at ASC, packs.id ASC
+          ) AS summary_rank
+        FROM acceptance_compiled_context_packs AS packs
+        WHERE packs.workspace_id = ${parsed.workspaceId}::uuid
+          AND packs.source_snapshot_id IN (${sql.join(
+            snapshotIds.map((snapshotId) => sql`${snapshotId}::uuid`),
+            sql`, `,
+          )})
+      )
+      SELECT * FROM ranked_packs
+      WHERE summary_rank <= ${ACCEPTANCE_RECORD_SUMMARY_CONTEXT_IDENTITY_LIMIT}
+      ORDER BY source_snapshot_id ASC, created_at ASC, id ASC
+    `)) as Array<Record<string, unknown>>;
+    const compiledPacksBySnapshot = new Map<string, AcceptanceCompiledContextPackRow[]>();
+    for (const row of rawCompiledPackRows) {
+      const pack = mapAcceptanceRecordSummaryCompiledPackRow(row);
+      const rows = compiledPacksBySnapshot.get(pack.sourceSnapshotId) ?? [];
+      rows.push(pack);
+      compiledPacksBySnapshot.set(pack.sourceSnapshotId, rows);
+    }
+
+    const wikiPageIds = new Set<string>();
+    const wikiRepositoryNames = new Set<string>();
+    for (const snapshot of selectedSnapshots) {
+      const snapshotInput = acceptanceRecordSummarySnapshotInput(snapshot);
+      if (!validateAcceptanceContextPackSnapshotInput(snapshotInput)
+        || snapshotInput.status !== "admitted" || !snapshotInput.baseIndex) continue;
+      wikiRepositoryNames.add(snapshot.repo);
+      for (const page of snapshotInput.baseIndex.pages) wikiPageIds.add(page.id);
+    }
+    const repositoryNames = [...wikiRepositoryNames];
+    const rawRepositoryRows = repositoryNames.length === 0 ? [] : Array.from(await tx.execute(sql`
+      WITH ranked_repositories AS (
+        SELECT repository_rows.*,
+          row_number() OVER (
+            PARTITION BY repository_rows.name
+            ORDER BY repository_rows.created_at ASC, repository_rows.id ASC
+          ) AS summary_rank
+        FROM repositories AS repository_rows
+        WHERE repository_rows.workspace_id = ${parsed.workspaceId}::uuid
+          AND repository_rows.name IN (${sql.join(
+            repositoryNames.map((name) => sql`${name}`),
+            sql`, `,
+          )})
+      )
+      SELECT * FROM ranked_repositories
+      WHERE summary_rank <= ${ACCEPTANCE_RECORD_SUMMARY_CONTEXT_IDENTITY_LIMIT}
+      ORDER BY name ASC, created_at ASC, id ASC
+    `)) as Array<Record<string, unknown>>;
+    const repositoriesByName = new Map<string, Array<typeof repositories.$inferSelect>>();
+    for (const row of rawRepositoryRows) {
+      const repository = mapAcceptanceRecordSummaryRepositoryRow(row);
+      const rows = repositoriesByName.get(repository.name) ?? [];
+      rows.push(repository);
+      repositoriesByName.set(repository.name, rows);
+    }
+    const wikiRows = wikiPageIds.size === 0 ? [] : await tx.select().from(wikiPages).where(and(
+      eq(wikiPages.workspaceId, parsed.workspaceId),
+      inArray(wikiPages.id, [...wikiPageIds]),
+    ));
+    const wikiPagesById = new Map(wikiRows.map((page) => [page.id, page]));
+
+    const summaries = records.map((record): AcceptanceRecordSummary => {
+      const reasons = new Set<AcceptanceRecordSummaryUnknownReason>();
+      const overflow = eventOverflow.has(record.id);
+      if (overflow) reasons.add("summary_custody_limit");
+      const events = eventsByRecord.get(record.id) ?? [];
+      const contract = contractByRecord.get(record.id) ?? null;
+      const requestedWork: AcceptanceRecordSummaryRequestedWork = contract && contract !== "invalid"
+        ? {
+            kind: "confirmed",
+            originalRequest: contract.projection.originalRequest,
+            acceptanceContract: contract.identity,
+          }
+        : { kind: "unknown" };
+      if (contract === null) reasons.add("requested_work_not_confirmed");
+      if (contract === "invalid") reasons.add("invalid_contract_custody");
+
+      const focus = focusByRecord.get(record.id) ?? null;
+      let pullRequest: AcceptanceRecordSummaryPullRequest;
+      if (record.prNumber == null) {
+        pullRequest = { kind: "not_attached" };
+        if (focus === "invalid") reasons.add("invalid_head_custody");
+      } else if (focus && focus !== "invalid") {
+        pullRequest = {
+          kind: "attached",
+          prNumber: record.prNumber,
+          head: {
+            kind: focus.kind,
+            sha: focus.headSha,
+            headCycleId: focus.headCycleId,
+            authorityGeneration: focus.authorityGeneration,
+          },
+        };
+      } else {
+        pullRequest = { kind: "attached", prNumber: record.prNumber, head: { kind: "unknown" } };
+        reasons.add(focus === "invalid" ? "invalid_head_custody" : "head_occurrence_not_authoritative");
+      }
+
+      let binding: CurrentAcceptancePrDecisionBinding | null | "invalid" = null;
+      if (!overflow && focus && focus !== "invalid" && contract && contract !== "invalid") {
+        binding = acceptanceRecordSummaryCycleBinding({
+          record,
+          focus,
+          contract,
+          events,
+          jobsById,
+        });
+      }
+      let proof: AcceptanceRecordSummaryProof = { kind: "unknown" };
+      if (binding && binding !== "invalid") {
+        proof = {
+          kind: "recorded",
+          reviewJobId: binding.reviewJobId,
+          verdict: binding.reviewVerdict,
+          postedReviewUrl: binding.postedReviewUrl,
+          postedAttestationEventId: binding.postedAttestationEventId,
+        };
+      } else if (!overflow) {
+        reasons.add(binding === "invalid" ? "invalid_review_custody" : "proof_not_recorded");
+      }
+
+      let suppliedContext: AcceptanceRecordSummarySuppliedContext = { kind: "unknown" };
+      if (!overflow && focus && focus !== "invalid" && contract && contract !== "invalid") {
+        const snapshots = snapshotsByFocus.get(`${record.id}:${focus.headCycleId}`) ?? [];
+        if (snapshots.length === 0) {
+          reasons.add("context_not_recorded");
+        } else if (snapshots.length !== 1) {
+          reasons.add("ambiguous_context_custody");
+        } else {
+          const snapshot = snapshots[0]!;
+          const custody = acceptanceRecordSummaryContextCustody({
+            snapshot,
+            record,
+            focus,
+            contract,
+            job: jobsById.get(focus.headCycleId),
+            events,
+            repositoryRows: repositoriesByName.get(record.repo) ?? [],
+            wikiPagesById,
+          });
+          const packs = compiledPacksBySnapshot.get(snapshot.id) ?? [];
+          if (!custody || (snapshot.status === "not_proven" && packs.length !== 0)) {
+            reasons.add("invalid_context_custody");
+          } else if (snapshot.status === "not_proven") {
+            suppliedContext = {
+              kind: "not_proven",
+              sourceSnapshot: acceptanceRecordSummarySourceSnapshotIdentity(snapshot),
+            };
+          } else if (packs.length === 0) {
+            suppliedContext = {
+              kind: "admitted",
+              sourceSnapshot: acceptanceRecordSummarySourceSnapshotIdentity(snapshot),
+            };
+          } else if (packs.length !== 1) {
+            reasons.add("ambiguous_context_custody");
+          } else {
+            const compiledPack = acceptanceRecordSummaryCompiledPack({ row: packs[0]!, custody });
+            if (!compiledPack) {
+              reasons.add("invalid_context_custody");
+            } else {
+              suppliedContext = {
+                kind: "compiled",
+                sourceSnapshot: acceptanceRecordSummarySourceSnapshotIdentity(snapshot),
+                compiledPack,
+              };
+            }
+          }
+        }
+      } else if (!overflow) {
+        reasons.add("context_not_recorded");
+      }
+
+      const merge = mergeByRecord.get(record.id) ?? null;
+      let outcome: AcceptanceRecordSummaryOutcome;
+      if (overflow) {
+        outcome = { kind: "unknown" };
+      } else if (merge === "invalid") {
+        outcome = { kind: "unknown" };
+        reasons.add("invalid_merge_custody");
+      } else if (merge) {
+        const projected = acceptanceRecordSummaryPostMerge({ record, merge, events });
+        if (projected === "invalid") {
+          outcome = { kind: "unknown" };
+          reasons.add("invalid_post_merge_custody");
+        } else {
+          outcome = projected;
+        }
+      } else if (acceptanceRecordSummaryRelevantPostMergeEvents(events).length > 0) {
+        outcome = { kind: "unknown" };
+        reasons.add("invalid_post_merge_custody");
+      } else {
+        outcome = { kind: "not_recorded" };
+        reasons.add("outcome_not_recorded");
+      }
+
+      let neededDecision: AcceptanceRecordSummaryNeededDecision;
+      if (record.prNumber == null) {
+        neededDecision = { kind: "not_required", reason: "pr_not_attached" };
+      } else if (outcome.kind === "signed_merge") {
+        neededDecision = {
+          kind: "not_required",
+          reason: record.state === "reverted" ? "reverted" : "merged",
+        };
+      } else if (binding && binding !== "invalid") {
+        const decision = acceptanceRecordSummaryDecisionForBinding(events, binding);
+        if (decision === "invalid") {
+          neededDecision = { kind: "unknown" };
+          reasons.add("invalid_decision_custody");
+        } else if (decision) {
+          neededDecision = {
+            kind: "recorded",
+            eventId: decision.eventId,
+            decision: decision.decision,
+            decidedAt: decision.decidedAt,
+          };
+        } else {
+          neededDecision = {
+            kind: "required",
+            choices: binding.reviewVerdict === "proven"
+              ? [...ACCEPTANCE_RECORD_SUMMARY_ALL_DECISIONS]
+              : [...ACCEPTANCE_RECORD_SUMMARY_NON_PROVEN_DECISIONS],
+          };
+          reasons.add("decision_not_recorded");
+        }
+      } else {
+        neededDecision = { kind: "unknown" };
+        if (!overflow) {
+          reasons.add(binding === "invalid" ? "invalid_decision_custody" : "decision_not_recorded");
+        }
+      }
+
+      return {
+        recordId: record.id,
+        workspaceId: record.workspaceId,
+        repo: record.repo,
+        issueNumber: record.issueNumber,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        requestedWork,
+        suppliedContext,
+        pullRequest,
+        proof,
+        unknownReasons: acceptanceRecordSummaryUnknownReasons(reasons),
+        neededDecision,
+        outcome,
+      };
+    });
+    return { kind: "records", records: summaries };
+  });
 }

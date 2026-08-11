@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspace: vi.fn(),
+  readAcceptanceRecordSummaries: vi.fn(),
 }));
 
 vi.mock("../../../../lib/cached", () => ({
@@ -43,7 +44,11 @@ vi.mock("./components/human-false-green-panel", () => ({
   HumanFalseGreenPanel: () => null,
 }));
 
-import { getWorkspace } from "@agentrail/db-postgres";
+vi.mock("./components/acceptance-record-summary-list", () => ({
+  AcceptanceRecordSummaryList: () => null,
+}));
+
+import { getWorkspace, readAcceptanceRecordSummaries } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
 import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
 import WorkspaceDashboardPage from "./page";
@@ -53,6 +58,7 @@ import { DigestPanel } from "./components/digest-panel";
 import { HealthRatesPanel } from "./components/health-rates-panel";
 import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
 import { AcceptanceOutcomeMetricsPanel } from "./components/acceptance-outcome-metrics-panel";
+import { AcceptanceRecordSummaryList } from "./components/acceptance-record-summary-list";
 
 // This repo's vitest config runs with `environment: "node"` — there is no
 // DOM/render harness (no @testing-library/react, no jsdom) anywhere in the
@@ -127,6 +133,10 @@ function mockHappyPath() {
   // loadPlanCardData, so this keeps every pre-existing test in this
   // describe block on the exact same "no plan card" rendering path.
   vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
+  vi.mocked(readAcceptanceRecordSummaries).mockResolvedValue({
+    kind: "records",
+    records: [],
+  } as never);
 }
 
 async function renderHeader(): Promise<ReactElementLike> {
@@ -139,9 +149,7 @@ async function renderHeader(): Promise<ReactElementLike> {
   return children[0]; // the PageHeader element
 }
 
-/** Walks to the (mocked) DigestPanel element: root children[1] is the
- *  `mt-2 flex flex-col gap-6` wrapper div; its children are
- *  [OnboardingBanner, DigestPanel] in that order. */
+/** Walks to the (mocked) DigestPanel element after the Acceptance summary. */
 async function renderDigestPanel(): Promise<ReactElementLike> {
   const element = asElement(
     await WorkspaceDashboardPage({
@@ -149,7 +157,7 @@ async function renderDigestPanel(): Promise<ReactElementLike> {
     })
   );
   const [, wrapper] = element.props.children as ReactElementLike[];
-  const [, digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
+  const [, , digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
   return asElement(digestPanel);
 }
 
@@ -285,8 +293,9 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
     const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, digestPanel, acceptanceOutcomeMetricsPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
+    const [, acceptanceSummary, digestPanel, acceptanceOutcomeMetricsPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
 
+    expect(asElement(acceptanceSummary).type).toBe(AcceptanceRecordSummaryList);
     expect(asElement(digestPanel).type).toBe(DigestPanel);
     expect(asElement(acceptanceOutcomeMetricsPanel).type).toBe(AcceptanceOutcomeMetricsPanel);
     expect(asElement(acceptanceOutcomeMetricsPanel).props.workspaceId).toBe(WORKSPACE_ID);
@@ -298,6 +307,48 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     // Cross-check via the same whole-tree search the "undefined" case uses
     // above — exactly one mount, not merely "found at the expected index".
     expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(1);
+  });
+});
+
+describe("WorkspaceDashboardPage Acceptance summary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockHappyPath();
+  });
+
+  it("reads the bounded server projection and mounts it before Digest", async () => {
+    const summaries = [{ recordId: "record-1" }];
+    vi.mocked(readAcceptanceRecordSummaries).mockResolvedValue({
+      kind: "records",
+      records: summaries,
+    } as never);
+
+    const root = await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    });
+    const [, wrapper] = asElement(root).props.children as ReactElementLike[];
+    const [, acceptanceSummary, digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
+
+    expect(readAcceptanceRecordSummaries).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      limit: 5,
+    });
+    expect(asElement(acceptanceSummary).type).toBe(AcceptanceRecordSummaryList);
+    expect(asElement(acceptanceSummary).props).toMatchObject({
+      workspaceId: WORKSPACE_ID,
+      records: summaries,
+      compact: true,
+    });
+    expect(asElement(digestPanel).type).toBe(DigestPanel);
+  });
+
+  it("does not read summaries for a non-member workspace", async () => {
+    vi.mocked(getMembership).mockResolvedValue(null as never);
+
+    await expect(WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    })).rejects.toBeDefined();
+    expect(readAcceptanceRecordSummaries).not.toHaveBeenCalled();
   });
 });
 

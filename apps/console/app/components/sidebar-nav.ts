@@ -20,6 +20,7 @@ import {
   Target,
   FileText,
   SearchCode,
+  History,
 } from "lucide-react";
 
 export interface NavItem {
@@ -50,6 +51,7 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
   label: "Your engineer",
   collapsible: false,
   items: [
+    { label: "Changes", href: "changes", icon: History },
     { label: "Home", href: "", icon: LayoutDashboard },
     { label: "Work", href: "work", icon: ListChecks },
     { label: "Approvals", href: "approvals", icon: Inbox },

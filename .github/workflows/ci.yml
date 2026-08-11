@@ -147,6 +147,11 @@ jobs:
           app/api/v1/runner/pr-review/route.test.ts
           app/api/v1/runner/change-record/pr/route.test.ts
           app/api/v1/agent/acceptance-correction-packets/route.test.ts
+          app/components/sidebar-nav.test.ts
+          'app/(dashboard)/dashboard/[workspaceId]/page.test.ts'
+          'app/(dashboard)/dashboard/[workspaceId]/changes/page.test.tsx'
+          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-record-summary-list.test.tsx'
+          'app/api/v1/workspaces/[workspaceId]/change-records/route.test.ts'
           'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/route.test.ts'
           'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-merge-outcomes/route.test.ts'
           'app/api/v1/workspaces/[workspaceId]/acceptance-outcome-metrics/route.test.ts'

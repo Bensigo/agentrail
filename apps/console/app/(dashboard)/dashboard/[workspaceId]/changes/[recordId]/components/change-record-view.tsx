@@ -1464,6 +1464,17 @@ export function formatChangeRecordDate(value: string): string {
   });
 }
 
+export function ChangeRecordBackLink({ workspaceId }: { workspaceId: string }) {
+  return (
+    <a
+      href={`/dashboard/${workspaceId}/changes`}
+      className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]"
+    >
+      <ArrowLeft size={14} /> Back to Changes
+    </a>
+  );
+}
+
 function githubUrl(repo: string, kind: "issues" | "pull", number: number): string {
   return `https://github.com/${repo}/${kind}/${number}`;
 }
@@ -2476,13 +2487,10 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
-  const backHref = `/dashboard/${workspaceId}/work`;
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
-        <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
-        </a>
+        <ChangeRecordBackLink workspaceId={workspaceId} />
         <p className="animate-pulse py-8 text-sm text-[var(--gray-09)]">Loading change record...</p>
       </div>
     );
@@ -2491,9 +2499,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   if (error || !data) {
     return (
       <div className="mx-auto max-w-[900px]">
-        <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
-        </a>
+        <ChangeRecordBackLink workspaceId={workspaceId} />
         <p className="py-8 text-sm text-[var(--red-11)]">{error ?? "Change record not found"}</p>
       </div>
     );
@@ -2502,9 +2508,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   return (
     <div className="mx-auto flex max-w-[900px] flex-col gap-6">
       <div>
-        <a href={backHref} className="mb-3 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
-        </a>
+        <ChangeRecordBackLink workspaceId={workspaceId} />
         <PageHeader
           title="Change Record"
           subtitle={`${data.record.repo} · ${data.record.state}`}

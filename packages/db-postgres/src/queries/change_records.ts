@@ -6122,6 +6122,109 @@ export type ReportGithubCorrectionActivationResult =
   | { kind: "replayed"; activation: AcceptanceCorrectionDispatchGithubActivationRow }
   | { kind: "not_current" };
 
+export type DurableCorrectionDispatchFallbackLane =
+  | "github_findings_and_jace"
+  | "jace_only";
+
+export type DurableCorrectionDispatchFallbackTrigger =
+  | {
+    stage: "github_preflight";
+    preflightId: string;
+    preflightIdentitySha256: string;
+    attempt: number;
+    reason: "installation_or_permission_denied" | "github_unavailable"
+      | "invalid_github_response";
+  }
+  | {
+    stage: "github_finding";
+    publicationId: string;
+    publicationIdentitySha256: string;
+    packetId: string;
+    reason: "github_unavailable" | "ambiguous_response";
+  }
+  | {
+    stage: "github_activation";
+    activationId: string;
+    activationIdentitySha256: string;
+    reason: "github_rejected" | "activation_body_too_large"
+      | "invalid_db_issued_body" | "github_unavailable" | "ambiguous_response";
+  }
+  | {
+    stage: "server_observation";
+    readyPreflightId: string;
+    readyPreflightIdentitySha256: string;
+    reason: "selected_github_carrier_not_accepted";
+  };
+
+export type DurableCorrectionDispatchFallback = {
+  kind: "acceptance_correction_dispatch_durable_fallback";
+  version: 1;
+  id: string;
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  baseSha: string;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  dispatch: { id: string; identitySha256: string };
+  route: {
+    id: string;
+    adapter: "github_codex" | "github_claude";
+    configurationVersion: number;
+    capabilityProfileId: string;
+    capabilityProfileSnapshotSha256: string;
+  };
+  contextPack: {
+    id: string;
+    sha256: string;
+    sourceSnapshotId: string;
+    sourceCustodyIdentitySha256: string;
+  };
+  packets: { ids: string[]; setSha256: string; payloadSetSha256: string };
+  trigger: DurableCorrectionDispatchFallbackTrigger;
+  priorAggregate: {
+    deliveryState: "queued" | "ambiguous_hold" | "failed";
+    agentState: "not_observed";
+    findingsState: "not_started" | "reserved" | "terminal" | "ambiguous_hold";
+    activationState: "not_started" | "reserved" | "ambiguous_hold" | "failed";
+  };
+  lane: DurableCorrectionDispatchFallbackLane;
+  findingCoverageSha256: string;
+  publishedFindings: Array<{
+    publicationId: string;
+    publicationIdentitySha256: string;
+    packetId: string;
+    githubCommentId: string;
+    githubCommentUrl: string;
+  }>;
+  notice: { carrier: "durable_notice"; body: string; bodySha256: string };
+  truthBoundary: {
+    vendorActivation: "not_proven";
+    agentStarted: "not_proven";
+    agentAcknowledged: "not_proven";
+    repairHead: "not_proven";
+  };
+  fallbackIdentitySha256: string;
+};
+
+export type RecordDurableCorrectionDispatchFallbackInput = {
+  workspaceId: string;
+  dispatchId: string;
+};
+
+export type RecordDurableCorrectionDispatchFallbackResult =
+  | { kind: "recorded"; fallback: DurableCorrectionDispatchFallback }
+  | { kind: "replayed"; fallback: DurableCorrectionDispatchFallback }
+  | { kind: "not_eligible" }
+  | { kind: "not_current" };
+
+export type ReadDurableCorrectionDispatchFallbackResult =
+  | { kind: "found"; fallback: DurableCorrectionDispatchFallback }
+  | { kind: "absent" }
+  | { kind: "not_current" };
+
 function isPositiveGithubCommentId(value: unknown): value is string {
   return typeof value === "string"
     && value.length <= MAX_GITHUB_CORRECTION_COMMENT_ID_DIGITS
@@ -7512,6 +7615,621 @@ export async function reportGithubCorrectionActivation(
       throw new Error("GitHub correction activation report lost its dispatch precondition");
     }
     return { kind: "reported", activation: updated[0]! };
+  });
+}
+
+const DURABLE_CORRECTION_FALLBACK_PROTOCOL_VERSION = 1 as const;
+const MAX_DURABLE_CORRECTION_FALLBACK_NOTICE_BYTES = 12_288;
+
+export function acceptanceCorrectionDispatchDurableFallbackId(input: {
+  dispatchId: string;
+}): string {
+  return uuid5Url(`acceptance-correction-dispatch-durable-fallback:${input.dispatchId}`);
+}
+
+type StoredGithubCorrectionFallbackBinding = {
+  dispatch: AcceptanceCorrectionDispatchRow;
+  record: ChangeRecordRow;
+  sourceSnapshot: AcceptanceContextPackSnapshotRow;
+  custody: AcceptanceContextPackCustodyResolution;
+  githubInstallationIdentitySha256: string;
+};
+
+function hasValidStoredGithubCorrectionProfile(
+  dispatch: AcceptanceCorrectionDispatchRow
+): dispatch is AcceptanceCorrectionDispatchRow & {
+  routeAdapter: "github_codex" | "github_claude";
+  capabilityProfileId: string;
+  capabilityProfileSnapshot: Record<string, unknown>;
+  capabilityProfileSnapshotSha256: string;
+} {
+  if (!isGithubNativeBuilderRouteAdapter(dispatch.routeAdapter)
+    || dispatch.capabilityProfileId == null
+    || dispatch.capabilityProfileSnapshot == null
+    || dispatch.capabilityProfileSnapshotSha256 == null
+    || acceptanceContextPackCanonicalSha256(dispatch.routeSnapshot) !== dispatch.routeSnapshotSha256
+    || acceptanceContextPackCanonicalSha256(dispatch.capabilityProfileSnapshot)
+      !== dispatch.capabilityProfileSnapshotSha256) return false;
+  const expectedRouteSnapshot: AcceptanceBuilderRouteSnapshot = {
+    builder: { adapter: dispatch.routeAdapter, routeId: dispatch.routeId },
+    protocol: "github_comment",
+    capability: {
+      availability: "unverified", activation: "github_mention",
+      acknowledgement: "vendor_activity", repairHead: "github_synchronize",
+    },
+    scopeBoundary: ACCEPTANCE_BUILDER_ROUTE_SCOPE,
+  };
+  const profile = dispatch.capabilityProfileSnapshot;
+  const installation = profile["githubInstallationIdentitySha256"];
+  const expectedProfile: AcceptanceBuilderRouteCapabilityProfileSnapshot = {
+    kind: "acceptance_builder_route_capability_profile", version: 1,
+    workspaceId: dispatch.workspaceId, repo: dispatch.repo,
+    routeId: dispatch.routeId, adapter: dispatch.routeAdapter,
+    routeConfigurationVersion: dispatch.routeConfigurationVersion,
+    carrier: "github_issue_comment",
+    carrierIdentity: "workspace_github_app_installation",
+    findingPublication: "individual_no_vendor_mentions",
+    activation: "single_final_vendor_mention",
+    recipient: dispatch.routeAdapter === "github_codex" ? "codex" : "claude",
+    configuration: "configuration_bound", preflight: "required",
+    vendorAvailability: "not_asserted", vendorActivity: "required",
+    repairHead: "github_synchronize", scopeBoundary: "correction_delivery_only",
+    githubInstallationIdentitySha256: typeof installation === "string" ? installation : "",
+  };
+  return typeof installation === "string" && EXACT_SHA256.test(installation)
+    && isDeepStrictEqual(dispatch.routeSnapshot, expectedRouteSnapshot)
+    && isDeepStrictEqual(profile, expectedProfile);
+}
+
+/** Resolve durable stored custody without requiring today's installation/profile. */
+async function resolveStoredGithubCorrectionFallbackBindingInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; dispatchId: string }
+): Promise<StoredGithubCorrectionFallbackBinding | null> {
+  const dispatch = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+    eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+    isNull(acceptanceCorrectionDispatches.invalidatedAt),
+    eq(acceptanceCorrectionDispatches.carrier, "github_comment"),
+  )).limit(1))[0];
+  if (!dispatch || !hasValidStoredGithubCorrectionProfile(dispatch)) return null;
+  if (dispatch.id !== acceptanceCorrectionDispatchId({
+    recordId: dispatch.recordId, headCycleId: dispatch.headCycleId,
+  }) || dispatch.capabilityProfileId !== acceptanceBuilderRouteCapabilityProfileId({
+    routeId: dispatch.routeId,
+    routeConfigurationVersion: dispatch.routeConfigurationVersion,
+  })) return null;
+  const original = correctionDispatchOriginalComparable(dispatch);
+  if (correctionDispatchIdentity(original) !== dispatch.dispatchIdentitySha256) return null;
+  const queued = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:queued:${dispatch.headCycleId}`),
+  )).limit(1))[0];
+  if (!queued || queued.stage !== "builder_handoff"
+    || queued.actor !== "server:dispatch-preparation"
+    || !isDeepStrictEqual(queued.payloadRef,
+      correctionDispatchQueuedEventPayload(original))) return null;
+  const record = (await tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, dispatch.recordId),
+    eq(changeRecords.workspaceId, input.workspaceId),
+    eq(changeRecords.repo, dispatch.repo),
+    eq(changeRecords.prNumber, dispatch.prNumber),
+  )).limit(1))[0];
+  if (!record || !record.currentPrHeadAuthoritative
+    || record.currentPrHeadSha !== dispatch.headSha
+    || record.currentPrHeadCycleId !== dispatch.headCycleId
+    || record.currentPrHeadAuthorityGeneration !== dispatch.authorityGeneration) return null;
+  const sourceSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+    eq(acceptanceContextPackSnapshots.id, dispatch.sourceSnapshotId),
+    eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+    eq(acceptanceContextPackSnapshots.recordId, dispatch.recordId),
+    eq(acceptanceContextPackSnapshots.reviewJobId, dispatch.reviewJobId),
+    eq(acceptanceContextPackSnapshots.repo, dispatch.repo),
+    eq(acceptanceContextPackSnapshots.prNumber, dispatch.prNumber),
+    eq(acceptanceContextPackSnapshots.expectedHeadSha, dispatch.headSha),
+    eq(acceptanceContextPackSnapshots.status, "admitted"),
+  )).limit(1))[0];
+  if (!sourceSnapshot || sourceSnapshot.reviewJobId !== dispatch.headCycleId
+    || !sourceSnapshot.baseSha || !isSha1(sourceSnapshot.baseSha)) return null;
+  const custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
+    workspaceId: input.workspaceId, sourceSnapshotId: dispatch.sourceSnapshotId,
+  });
+  if (custody.sourceSnapshot.baseSha !== sourceSnapshot.baseSha
+    || custody.sourceSnapshot.expectedHeadSha !== dispatch.headSha
+    || custody.sourceSnapshot.reviewJobId !== dispatch.headCycleId
+    || custody.sourceSnapshot.acceptanceContractId !== dispatch.acceptanceContractId
+    || custody.sourceSnapshot.acceptanceContractVersion !== dispatch.acceptanceContractVersion
+    || custody.acceptanceContractSha256 !== dispatch.acceptanceContractSha256
+    || !isDeepStrictEqual(custody.sourceSnapshot.packetIds, dispatch.packetIds)
+    || custody.sourceSnapshot.packetSetSha256 !== dispatch.packetSetSha256
+    || custody.sourceSnapshot.correctionPacketPayloadSetSha256
+      !== dispatch.correctionPacketPayloadSetSha256
+    || custody.correctionPacketPayloadSetSha256
+      !== dispatch.correctionPacketPayloadSetSha256) return null;
+  const compiledPack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+    eq(acceptanceCompiledContextPacks.id, dispatch.compiledPackId),
+    eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+    eq(acceptanceCompiledContextPacks.sourceSnapshotId, dispatch.sourceSnapshotId),
+  )).limit(1))[0];
+  if (!compiledPack || compiledPack.packSha256 !== dispatch.compiledPackSha256
+    || compiledPack.compilerVersion !== dispatch.compilerVersion
+    || compiledPack.policyVersion !== dispatch.policyVersion
+    || compiledPack.jsonSha256 !== dispatch.jsonSha256
+    || compiledPack.markdownSha256 !== dispatch.markdownSha256
+    || compiledPack.sourceCustodyIdentitySha256
+      !== dispatch.sourceCustodyIdentitySha256) return null;
+  const reconstructed = parseCompiledAcceptanceContextPack({
+    kind: "compiled_acceptance_context_pack", version: 1,
+    binding: compiledPack.binding,
+    compiler: { version: compiledPack.compilerVersion,
+      policyVersion: compiledPack.policyVersion,
+      byteCounter: "utf8_byte_upper_bound_v1", byteBudget: COMPILED_PACK_BYTE_BUDGET },
+    manifest: compiledPack.manifest,
+    sourceCustodyReceipt: compiledPack.sourceCustodyReceipt,
+    exactHeadDependencyTreeProofs: compiledPack.exactHeadDependencyTreeProofs,
+    representations: { jsonSha256: compiledPack.jsonSha256,
+      markdownSha256: compiledPack.markdownSha256 },
+    renderedByteCount: compiledPack.renderedByteCount,
+    packSha256: compiledPack.packSha256,
+  });
+  if (!reconstructed || compiledPackIdentity(reconstructed) !== compiledPack.packSha256
+    || !bindingMatchesCustody(compiledPack.binding, custody)
+    || !receiptMatchesCustody(compiledPack.sourceCustodyReceipt, custody)) return null;
+  return {
+    dispatch, record, sourceSnapshot, custody,
+    githubInstallationIdentitySha256:
+      dispatch.capabilityProfileSnapshot["githubInstallationIdentitySha256"] as string,
+  };
+}
+
+function preflightHasExactStoredFallbackBinding(
+  row: AcceptanceCorrectionDispatchGithubPreflightRow,
+  current: StoredGithubCorrectionFallbackBinding
+): boolean {
+  const d = current.dispatch;
+  return row.id === acceptanceCorrectionDispatchGithubPreflightId({
+    dispatchId: d.id, attempt: row.attempt,
+  })
+    && row.workspaceId === d.workspaceId && row.dispatchId === d.id
+    && row.recordId === d.recordId && row.repo === d.repo
+    && row.prNumber === d.prNumber && row.headSha === d.headSha
+    && row.baseSha === current.sourceSnapshot.baseSha
+    && row.headCycleId === d.headCycleId
+    && row.authorityGeneration === d.authorityGeneration
+    && row.dispatchIdentitySha256 === d.dispatchIdentitySha256
+    && row.routeId === d.routeId && row.routeAdapter === d.routeAdapter
+    && row.routeConfigurationVersion === d.routeConfigurationVersion
+    && row.capabilityProfileId === d.capabilityProfileId
+    && row.capabilityProfileSnapshotSha256 === d.capabilityProfileSnapshotSha256
+    && row.githubInstallationIdentitySha256 === current.githubInstallationIdentitySha256
+    && row.preflightProtocolVersion === GITHUB_CORRECTION_CARRIER_PREFLIGHT_PROTOCOL_VERSION
+    && row.permissionContract === GITHUB_CORRECTION_CARRIER_PREFLIGHT_PERMISSION_CONTRACT
+    && row.preflightIdentitySha256 === githubCorrectionCarrierPreflightIdentity(row)
+    && hasValidGithubCorrectionCarrierPreflightResult(row);
+}
+
+function storedFallbackCarrierBinding(
+  current: StoredGithubCorrectionFallbackBinding,
+  readyPreflight: AcceptanceCorrectionDispatchGithubPreflightRow
+): CurrentGithubCorrectionCarrierBinding {
+  const d = current.dispatch;
+  return {
+    ...current,
+    // Fallback replays from the immutable dispatch snapshots. These placeholder
+    // row shapes are never used for mutable route/installation resolution.
+    route: { id: d.routeId } as AcceptanceBuilderRouteRow,
+    profile: {
+      id: d.capabilityProfileId!,
+      snapshot: d.capabilityProfileSnapshot!,
+      snapshotSha256: d.capabilityProfileSnapshotSha256!,
+      githubInstallationIdentitySha256: current.githubInstallationIdentitySha256,
+    } as AcceptanceBuilderRouteCapabilityProfileRow,
+    readyPreflight,
+  };
+}
+
+type DurableCorrectionFallbackPriorAggregate =
+  DurableCorrectionDispatchFallback["priorAggregate"];
+
+type DurableCorrectionFallbackCandidate = {
+  current: StoredGithubCorrectionFallbackBinding;
+  trigger: DurableCorrectionDispatchFallbackTrigger;
+  priorAggregate: DurableCorrectionFallbackPriorAggregate;
+  findingCoverageSha256: string;
+  publishedFindings: DurableCorrectionDispatchFallback["publishedFindings"];
+};
+
+type DurableCorrectionFallbackCandidateResolution =
+  | { kind: "candidate"; candidate: DurableCorrectionFallbackCandidate }
+  | { kind: "not_eligible" }
+  | { kind: "not_current" };
+
+async function resolveDurableCorrectionFallbackCandidateInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; dispatchId: string }
+): Promise<DurableCorrectionFallbackCandidateResolution> {
+  const current = await resolveStoredGithubCorrectionFallbackBindingInTransaction(tx, input);
+  if (!current) return { kind: "not_current" };
+  const d = current.dispatch;
+  if (d.agentState !== "not_observed") return { kind: "not_eligible" };
+  const acknowledgement = (await tx.select({ id: acceptanceCorrectionDispatchGithubClaudeAckReceipts.id })
+    .from(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
+    .where(eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId, d.id)).limit(1))[0];
+  const repairObservation = (await tx.select({ id: acceptanceCorrectionDispatchGithubClaudeRepairObservations.id })
+    .from(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+    .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId, d.id)).limit(1))[0];
+  if (acknowledgement || repairObservation) return { kind: "not_eligible" };
+
+  const preflights = await tx.select().from(acceptanceCorrectionDispatchGithubPreflights)
+    .where(and(
+      eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, input.workspaceId),
+      eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, d.id),
+    )).orderBy(asc(acceptanceCorrectionDispatchGithubPreflights.attempt));
+  for (let index = 0; index < preflights.length; index += 1) {
+    const row = preflights[index]!;
+    if (row.attempt !== index + 1
+      || !preflightHasExactStoredFallbackBinding(row, current)
+      || !await hasVerifiedGithubCorrectionCarrierPreflightEventsInTransaction(tx, row)) {
+      throw new Error("Durable correction fallback preflight custody is invalid");
+    }
+  }
+  const latest = preflights.at(-1);
+  if (!latest || latest.status === "reserved") return { kind: "not_eligible" };
+
+  const findingRows = await tx.select().from(acceptanceCorrectionDispatchGithubFindingPublications)
+    .where(and(
+      eq(acceptanceCorrectionDispatchGithubFindingPublications.workspaceId, input.workspaceId),
+      eq(acceptanceCorrectionDispatchGithubFindingPublications.dispatchId, d.id),
+    )).orderBy(asc(acceptanceCorrectionDispatchGithubFindingPublications.packetId));
+  const activationRows = await tx.select().from(acceptanceCorrectionDispatchGithubActivations)
+    .where(and(
+      eq(acceptanceCorrectionDispatchGithubActivations.workspaceId, input.workspaceId),
+      eq(acceptanceCorrectionDispatchGithubActivations.dispatchId, d.id),
+    ));
+
+  let trigger: DurableCorrectionDispatchFallbackTrigger;
+  let priorAggregate: DurableCorrectionFallbackPriorAggregate;
+  if (latest.status !== "ready") {
+    if (findingRows.length || activationRows.length) {
+      throw new Error("Durable correction fallback has carrier work without a ready preflight");
+    }
+    if (!isGithubCorrectionCarrierPreflightOutcome(latest.result)) {
+      throw new Error("Durable correction fallback preflight result is invalid");
+    }
+    if (latest.result.kind === "remote_pr_not_active"
+      || latest.result.kind === "remote_head_mismatch"
+      || latest.result.kind === "remote_base_mismatch") return { kind: "not_current" };
+    if (latest.result.kind === "ready") return { kind: "not_current" };
+    if (latest.result.kind !== "installation_or_permission_denied"
+      && latest.result.kind !== "github_unavailable"
+      && latest.result.kind !== "invalid_github_response") return { kind: "not_eligible" };
+    trigger = {
+      stage: "github_preflight", preflightId: latest.id,
+      preflightIdentitySha256: latest.preflightIdentitySha256,
+      attempt: latest.attempt, reason: latest.result.kind,
+    };
+    priorAggregate = {
+      deliveryState: "queued", agentState: "not_observed",
+      findingsState: "not_started", activationState: "not_started",
+    };
+  } else {
+    if (!isGithubCorrectionCarrierPreflightOutcome(latest.result)
+      || latest.result.kind !== "ready"
+      || latest.result.headSha !== d.headSha
+      || latest.result.baseSha !== current.sourceSnapshot.baseSha) return { kind: "not_current" };
+    const carrier = storedFallbackCarrierBinding(current, latest);
+    if (findingRows.length > d.packetIds.length
+      || findingRows.some((row) => !d.packetIds.includes(row.packetId))) {
+      throw new Error("Durable correction fallback finding set is invalid");
+    }
+    for (const row of findingRows) {
+      const packet = correctionPacketById(carrier, row.packetId);
+      if (!packet || !publicationHasExactCurrentBinding({ publication: row, current: carrier, packet })
+        || !await hasVerifiedGithubCorrectionFindingEventsInTransaction(tx, row)) {
+        throw new Error("Durable correction fallback finding custody is invalid");
+      }
+    }
+    const findingState = findingRows.some((row) => row.status === "ambiguous_hold")
+      ? "ambiguous_hold" as const
+      : findingRows.length === d.packetIds.length
+        && findingRows.every((row) => row.status === "published" || row.status === "bounded_failed")
+        ? "terminal" as const : findingRows.length ? "reserved" as const : "not_started" as const;
+    if (activationRows.length > 1) throw new Error("Durable correction fallback activation is not singular");
+    const activation = activationRows[0];
+    if (activation) {
+      if (findingState !== "terminal") {
+        throw new Error("Durable correction fallback activation lacks terminal finding custody");
+      }
+      const findingCoverageSha256 = githubCorrectionFindingCoverageSha256(findingRows);
+      const hasUnsafeFinding = findingRows.some((row) => row.body === null
+        || row.resultReason === "invalid_db_issued_body");
+      if (!activationHasExactCurrentBinding({ activation, current: carrier,
+        findingCoverageSha256, hasUnsafeFinding })
+        || !await hasVerifiedGithubCorrectionActivationEventsInTransaction(tx, activation)) {
+        throw new Error("Durable correction fallback activation custody is invalid");
+      }
+      if (activation.status === "carrier_accepted") return { kind: "not_eligible" };
+      const activationReason = activation.resultReason;
+      priorAggregate = {
+        deliveryState: activation.status === "ambiguous_hold" ? "ambiguous_hold"
+          : activation.status === "bounded_failed" ? "failed" : "queued",
+        agentState: "not_observed", findingsState: "terminal",
+        activationState: activation.status === "ambiguous_hold" ? "ambiguous_hold"
+          : activation.status === "bounded_failed" ? "failed" : "reserved",
+      };
+      if (activation.status === "ambiguous_hold") {
+        if (activationReason !== "github_unavailable"
+          && activationReason !== "ambiguous_response") {
+          throw new Error("Durable correction fallback activation ambiguity is invalid");
+        }
+        trigger = {
+          stage: "github_activation", activationId: activation.id,
+          activationIdentitySha256: activation.activationIdentitySha256,
+          reason: activationReason,
+        };
+      } else if (activation.status === "bounded_failed") {
+        if (activationReason !== "github_rejected"
+          && activationReason !== "activation_body_too_large"
+          && activationReason !== "invalid_db_issued_body") {
+          throw new Error("Durable correction fallback activation failure is invalid");
+        }
+        trigger = { stage: "github_activation", activationId: activation.id,
+          activationIdentitySha256: activation.activationIdentitySha256,
+          reason: activationReason };
+      } else {
+        trigger = { stage: "server_observation", readyPreflightId: latest.id,
+          readyPreflightIdentitySha256: latest.preflightIdentitySha256,
+          reason: "selected_github_carrier_not_accepted" };
+      }
+    } else {
+      const ambiguous = findingRows.find((row) => row.status === "ambiguous_hold");
+      priorAggregate = {
+        deliveryState: ambiguous ? "ambiguous_hold" : "queued",
+        agentState: "not_observed", findingsState: findingState,
+        activationState: "not_started",
+      };
+      if (ambiguous) {
+        const findingReason = ambiguous.resultReason;
+        if (findingReason !== "github_unavailable"
+          && findingReason !== "ambiguous_response") {
+          throw new Error("Durable correction fallback finding ambiguity is invalid");
+        }
+        trigger = { stage: "github_finding", publicationId: ambiguous.id,
+          publicationIdentitySha256: ambiguous.publicationIdentitySha256,
+          packetId: ambiguous.packetId, reason: findingReason };
+      } else {
+        trigger = { stage: "server_observation", readyPreflightId: latest.id,
+          readyPreflightIdentitySha256: latest.preflightIdentitySha256,
+          reason: "selected_github_carrier_not_accepted" };
+      }
+    }
+  }
+
+  if (d.deliveryState === "fallback" && d.activationState === "fallback") {
+    if (d.findingsState !== priorAggregate.findingsState) return { kind: "not_current" };
+  } else {
+    if (d.deliveryState !== priorAggregate.deliveryState
+      || d.agentState !== priorAggregate.agentState
+      || d.findingsState !== priorAggregate.findingsState
+      || d.activationState !== priorAggregate.activationState) return { kind: "not_current" };
+  }
+  const publishedFindings = findingRows.filter((row) => row.status === "published").map((row) => ({
+    publicationId: row.id, publicationIdentitySha256: row.publicationIdentitySha256,
+    packetId: row.packetId,
+    githubCommentId: row.githubCommentId!, githubCommentUrl: row.githubCommentUrl!,
+  }));
+  return { kind: "candidate", candidate: {
+    current, trigger, priorAggregate,
+    findingCoverageSha256: githubCorrectionFindingCoverageSha256(findingRows),
+    publishedFindings,
+  } };
+}
+
+function durableCorrectionFallbackValues(
+  candidate: DurableCorrectionFallbackCandidate
+): DurableCorrectionDispatchFallback {
+  const { current, trigger, priorAggregate, findingCoverageSha256, publishedFindings } = candidate;
+  const d = current.dispatch;
+  const lane: DurableCorrectionDispatchFallbackLane = publishedFindings.length
+    ? "github_findings_and_jace" : "jace_only";
+  const reason = trigger.reason;
+  const body = [
+    "## AgentRail correction fallback",
+    "",
+    `Jace recorded durable correction custody for ${d.repo} PR #${d.prNumber} at exact head ${d.headSha}.`,
+    `Dispatch: ${d.id}`,
+    `Context Pack: ${d.compiledPackId} (${d.compiledPackSha256})`,
+    `Correction packets: ${d.packetIds.length} (${d.packetSetSha256})`,
+    `Fallback reason: ${reason}`,
+    `Existing verified GitHub finding comments: ${publishedFindings.length}/${d.packetIds.length}.`,
+    "",
+    "This fallback does not prove vendor activation, agent start or acknowledgement, or a repair head.",
+    "Any new PR head must re-enter exact-head review.",
+  ].join("\n");
+  if (Buffer.byteLength(body, "utf8") > MAX_DURABLE_CORRECTION_FALLBACK_NOTICE_BYTES
+    || body.includes("@")) {
+    throw new Error("Durable correction fallback notice is invalid");
+  }
+  const withoutIdentity = {
+    kind: "acceptance_correction_dispatch_durable_fallback" as const,
+    version: DURABLE_CORRECTION_FALLBACK_PROTOCOL_VERSION,
+    id: acceptanceCorrectionDispatchDurableFallbackId({ dispatchId: d.id }),
+    workspaceId: d.workspaceId, recordId: d.recordId, repo: d.repo,
+    prNumber: d.prNumber, baseSha: current.sourceSnapshot.baseSha!,
+    headSha: d.headSha, headCycleId: d.headCycleId,
+    authorityGeneration: d.authorityGeneration,
+    dispatch: { id: d.id, identitySha256: d.dispatchIdentitySha256 },
+    route: { id: d.routeId,
+      adapter: d.routeAdapter as "github_codex" | "github_claude",
+      configurationVersion: d.routeConfigurationVersion,
+      capabilityProfileId: d.capabilityProfileId!,
+      capabilityProfileSnapshotSha256: d.capabilityProfileSnapshotSha256! },
+    contextPack: { id: d.compiledPackId, sha256: d.compiledPackSha256,
+      sourceSnapshotId: d.sourceSnapshotId,
+      sourceCustodyIdentitySha256: d.sourceCustodyIdentitySha256 },
+    packets: { ids: [...d.packetIds], setSha256: d.packetSetSha256,
+      payloadSetSha256: d.correctionPacketPayloadSetSha256 },
+    trigger, priorAggregate, lane, findingCoverageSha256, publishedFindings,
+    notice: { carrier: "durable_notice" as const, body,
+      bodySha256: createHash("sha256").update(body, "utf8").digest("hex") },
+    truthBoundary: { vendorActivation: "not_proven" as const,
+      agentStarted: "not_proven" as const, agentAcknowledged: "not_proven" as const,
+      repairHead: "not_proven" as const },
+  };
+  return {
+    ...withoutIdentity,
+    fallbackIdentitySha256: acceptanceContextPackCanonicalSha256(withoutIdentity),
+  };
+}
+
+function durableCorrectionFallbackEventPayload(input: {
+  fallback: DurableCorrectionDispatchFallback;
+  kind: "reserved" | "recorded";
+}): Record<string, unknown> {
+  return {
+    kind: input.kind === "reserved"
+      ? "acceptance_correction_dispatch_durable_fallback_reserved"
+      : "acceptance_correction_dispatch_durable_fallback_recorded",
+    version: DURABLE_CORRECTION_FALLBACK_PROTOCOL_VERSION,
+    fallback: input.fallback,
+  };
+}
+
+async function readDurableCorrectionDispatchFallbackInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; dispatchId: string }
+): Promise<ReadDurableCorrectionDispatchFallbackResult> {
+  const existing = (await tx.select({ id: acceptanceCorrectionDispatches.id })
+    .from(acceptanceCorrectionDispatches).where(and(
+      eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+      eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+  if (!existing) return { kind: "absent" };
+  const current = await resolveStoredGithubCorrectionFallbackBindingInTransaction(tx, input);
+  if (!current) return { kind: "not_current" };
+  const reservedKey = `acceptance-correction-dispatch:durable-fallback:reserved:${current.dispatch.headCycleId}`;
+  const recordedKey = `acceptance-correction-dispatch:durable-fallback:recorded:${current.dispatch.headCycleId}`;
+  const events = await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, current.dispatch.recordId),
+    inArray(changeRecordEvents.eventKey, [reservedKey, recordedKey]),
+  ));
+  if (events.length === 0) {
+    if (current.dispatch.deliveryState === "fallback"
+      || current.dispatch.activationState === "fallback") {
+      throw new Error("Durable correction fallback projection has no event custody");
+    }
+    return { kind: "absent" };
+  }
+  if (events.length !== 2) throw new Error("Durable correction fallback event custody is incomplete");
+  const candidate = await resolveDurableCorrectionFallbackCandidateInTransaction(tx, input);
+  if (candidate.kind !== "candidate") {
+    throw new Error("Durable correction fallback event no longer matches its source custody");
+  }
+  const fallback = durableCorrectionFallbackValues(candidate.candidate);
+  const reserved = events.find((event) => event.eventKey === reservedKey);
+  const recorded = events.find((event) => event.eventKey === recordedKey);
+  if (!reserved || !recorded
+    || reserved.stage !== "builder_handoff" || recorded.stage !== "builder_handoff"
+    || reserved.actor !== "server:durable-correction-fallback"
+    || recorded.actor !== "server:durable-correction-fallback"
+    || !isDeepStrictEqual(reserved.payloadRef,
+      durableCorrectionFallbackEventPayload({ fallback, kind: "reserved" }))
+    || !isDeepStrictEqual(recorded.payloadRef,
+      durableCorrectionFallbackEventPayload({ fallback, kind: "recorded" }))
+    || current.dispatch.deliveryState !== "fallback"
+    || current.dispatch.activationState !== "fallback"
+    || current.dispatch.agentState !== "not_observed") {
+    throw new Error("Durable correction fallback event custody is invalid");
+  }
+  return { kind: "found", fallback };
+}
+
+/** Replay-only lookup; absence never creates a fallback or changes dispatch state. */
+export async function readDurableCorrectionDispatchFallback(
+  input: RecordDurableCorrectionDispatchFallbackInput
+): Promise<ReadDurableCorrectionDispatchFallbackResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "dispatchId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.dispatchId)) {
+    throw new Error("Durable correction fallback read requires only workspace and dispatch");
+  }
+  const candidate = (await db.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+    eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "absent" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: candidate.recordId,
+    repo: candidate.repo, prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    return readDurableCorrectionDispatchFallbackInTransaction(tx, input);
+  });
+}
+
+/**
+ * Atomically records the selected dispatch's same-head durable Jace custody.
+ * The trusted production caller invokes this only after its selected GitHub
+ * carrier did not produce an accepted activation; no caller body or route is admitted.
+ */
+export async function recordDurableCorrectionDispatchFallback(
+  input: RecordDurableCorrectionDispatchFallbackInput
+): Promise<RecordDurableCorrectionDispatchFallbackResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "dispatchId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.dispatchId)) {
+    throw new Error("Durable correction fallback record requires only workspace and dispatch");
+  }
+  const candidate = (await db.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+    eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: candidate.recordId,
+    repo: candidate.repo, prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const replay = await readDurableCorrectionDispatchFallbackInTransaction(tx, input);
+    if (replay.kind === "found") return { kind: "replayed", fallback: replay.fallback };
+    if (replay.kind === "not_current") return replay;
+    const resolved = await resolveDurableCorrectionFallbackCandidateInTransaction(tx, input);
+    if (resolved.kind !== "candidate") return resolved;
+    const fallback = durableCorrectionFallbackValues(resolved.candidate);
+    const eventInputs: AppendChangeRecordEventInput[] = ["reserved", "recorded"].map((kind) => ({
+      recordId: resolved.candidate.current.record.id,
+      eventKey: `acceptance-correction-dispatch:durable-fallback:${kind}:${resolved.candidate.current.dispatch.headCycleId}`,
+      stage: "builder_handoff", actor: "server:durable-correction-fallback",
+      payloadRef: durableCorrectionFallbackEventPayload({
+        fallback, kind: kind as "reserved" | "recorded",
+      }),
+    }));
+    const events = await appendChangeRecordEventsAtomicallyInTransaction(tx, eventInputs);
+    if (events.events.some((event) => !event.inserted)) {
+      throw new Error("Durable correction fallback event unexpectedly replayed");
+    }
+    const prior = resolved.candidate.priorAggregate;
+    const updated = await tx.update(acceptanceCorrectionDispatches).set({
+      deliveryState: "fallback", activationState: "fallback", updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+      eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+      isNull(acceptanceCorrectionDispatches.invalidatedAt),
+      eq(acceptanceCorrectionDispatches.headSha, resolved.candidate.current.dispatch.headSha),
+      eq(acceptanceCorrectionDispatches.headCycleId, resolved.candidate.current.dispatch.headCycleId),
+      eq(acceptanceCorrectionDispatches.authorityGeneration,
+        resolved.candidate.current.dispatch.authorityGeneration),
+      eq(acceptanceCorrectionDispatches.deliveryState, prior.deliveryState),
+      eq(acceptanceCorrectionDispatches.agentState, "not_observed"),
+      eq(acceptanceCorrectionDispatches.findingsState, prior.findingsState),
+      eq(acceptanceCorrectionDispatches.activationState, prior.activationState),
+      eq(acceptanceCorrectionDispatches.carrier, "github_comment"),
+    )).returning({ id: acceptanceCorrectionDispatches.id });
+    if (updated.length !== 1) {
+      throw new Error("Durable correction fallback lost its exact dispatch precondition");
+    }
+    return { kind: "recorded", fallback };
   });
 }
 

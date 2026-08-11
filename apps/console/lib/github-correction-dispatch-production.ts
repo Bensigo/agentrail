@@ -1,4 +1,5 @@
 import {
+  acceptanceCorrectionDispatchId,
   acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256,
   acceptanceContextOverlayManifestSha256,
@@ -11,6 +12,8 @@ import {
   listWikiPages,
   projectConfirmedAcceptanceContract,
   queueSelectedCorrectionDispatch,
+  readDurableCorrectionDispatchFallback,
+  recordDurableCorrectionDispatchFallback,
   readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
@@ -60,6 +63,12 @@ export type GithubCorrectionDispatchProductionInput = {
 
 export type GithubCorrectionDispatchProductionResult =
   | ({ dispatchId: string } & GithubCorrectionCarrierResult)
+  | {
+      kind: "durable_fallback_recorded";
+      dispatchId: string;
+      fallbackId: string;
+      lane: "github_findings_and_jace" | "jace_only";
+    }
   | { kind: "invalid_input" | "not_current" }
   | {
       kind: "not_ready";
@@ -241,24 +250,55 @@ async function queueAndRunCarrier(input: {
   workspaceId: string;
   compiledPackId: string;
   selectedAdapter: "github_codex" | "github_claude";
+  expectedDispatchId: string;
 }): Promise<GithubCorrectionDispatchProductionResult> {
   const queued = await queueSelectedCorrectionDispatch({
     workspaceId: input.workspaceId,
     compiledPackId: input.compiledPackId,
   });
-  if (queued.dispatch.routeAdapter !== input.selectedAdapter) return { kind: "not_current" };
-  return mappedCarrierResult(
-    queued.dispatch.id,
-    await runGithubCorrectionCarrier({
+  if (queued.dispatch.id !== input.expectedDispatchId
+    || queued.dispatch.routeAdapter !== input.selectedAdapter) return { kind: "not_current" };
+  const carrier = await runGithubCorrectionCarrier({
+    workspaceId: input.workspaceId,
+    dispatchId: queued.dispatch.id,
+  });
+  if (carrier.kind === "carrier_accepted"
+    || carrier.kind === "not_current"
+    || carrier.kind === "not_ready"
+    || carrier.kind === "invalid_input"
+    || (carrier.kind === "held" && carrier.reason === "storage_unavailable")) {
+    return mappedCarrierResult(queued.dispatch.id, carrier);
+  }
+
+  let fallback: Awaited<ReturnType<typeof recordDurableCorrectionDispatchFallback>>;
+  try {
+    fallback = await recordDurableCorrectionDispatchFallback({
       workspaceId: input.workspaceId,
       dispatchId: queued.dispatch.id,
-    }),
-  );
+    });
+  } catch {
+    return {
+      kind: "held",
+      reason: "storage_unavailable",
+      dispatchId: queued.dispatch.id,
+    };
+  }
+  if (fallback.kind === "recorded" || fallback.kind === "replayed") {
+    return {
+      kind: "durable_fallback_recorded",
+      dispatchId: queued.dispatch.id,
+      fallbackId: fallback.fallback.id,
+      lane: fallback.fallback.lane,
+    };
+  }
+  if (fallback.kind === "not_current") return { kind: "not_current" };
+  return mappedCarrierResult(queued.dispatch.id, carrier);
 }
 
 async function materializeCompileQueueAndRun(input: {
   workspaceId: string;
   selectedAdapter: "github_codex" | "github_claude";
+  expectedDispatchId: string;
   token: string;
   snapshot: ExactHeadGithubContextSnapshot;
   custody: AcceptanceContextPackCustodyResolution;
@@ -278,6 +318,7 @@ async function materializeCompileQueueAndRun(input: {
     workspaceId: input.workspaceId,
     compiledPackId: compiled.persistence.pack.id,
     selectedAdapter: input.selectedAdapter,
+    expectedDispatchId: input.expectedDispatchId,
   });
 }
 
@@ -303,6 +344,27 @@ export async function produceAndRunGithubCorrectionDispatch(
     if (!timeline || !timeline.record.currentPrHeadAuthoritative
       || timeline.record.currentPrHeadSha !== job.headSha
       || timeline.record.currentPrHeadCycleId !== job.id) return { kind: "not_current" };
+
+    // Durable fallback replay belongs to the immutable dispatch aggregate,
+    // not the mutable current route/profile. Resolve it before those lookups
+    // so later configuration drift cannot strand an already-recorded fallback.
+    const existingDispatchId = acceptanceCorrectionDispatchId({
+      recordId: timeline.record.id,
+      headCycleId: timeline.record.currentPrHeadCycleId,
+    });
+    const existingFallback = await readDurableCorrectionDispatchFallback({
+      workspaceId: input.workspaceId,
+      dispatchId: existingDispatchId,
+    });
+    if (existingFallback.kind === "found") {
+      return {
+        kind: "durable_fallback_recorded",
+        dispatchId: existingDispatchId,
+        fallbackId: existingFallback.fallback.id,
+        lane: existingFallback.fallback.lane,
+      };
+    }
+    if (existingFallback.kind === "not_current") return { kind: "not_current" };
 
     const selection = await readAcceptanceBuilderRouteSelection({
       workspaceId: input.workspaceId,
@@ -378,6 +440,7 @@ export async function produceAndRunGithubCorrectionDispatch(
         workspaceId: input.workspaceId,
         compiledPackId: existingPack.id,
         selectedAdapter,
+        expectedDispatchId: existingDispatchId,
       });
     }
 
@@ -400,6 +463,7 @@ export async function produceAndRunGithubCorrectionDispatch(
       return materializeCompileQueueAndRun({
         workspaceId: input.workspaceId,
         selectedAdapter,
+        expectedDispatchId: existingDispatchId,
         token,
         snapshot: existingSnapshot,
         custody: existingCustody,
@@ -487,6 +551,7 @@ export async function produceAndRunGithubCorrectionDispatch(
     return materializeCompileQueueAndRun({
       workspaceId: input.workspaceId,
       selectedAdapter,
+      expectedDispatchId: existingDispatchId,
       token,
       snapshot: exact.snapshot,
       custody,

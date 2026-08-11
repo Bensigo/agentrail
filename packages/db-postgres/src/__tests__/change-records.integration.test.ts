@@ -82,6 +82,8 @@ import {
   reportGithubCorrectionFindingPublication,
   reserveGithubCorrectionActivation,
   reportGithubCorrectionActivation,
+  readDurableCorrectionDispatchFallback,
+  recordDurableCorrectionDispatchFallback,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -219,6 +221,12 @@ describe.skipIf(!DB_AVAILABLE)(
         })
         .returning({ id: workspaces.id });
       wsId = rows[0]!.id;
+    });
+
+    it("returns absent for a deterministic fallback lookup before its dispatch exists", async () => {
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: randomUUID(),
+      })).resolves.toEqual({ kind: "absent" });
     });
 
     afterEach(async () => {
@@ -1634,18 +1642,121 @@ describe.skipIf(!DB_AVAILABLE)(
       })).resolves.toMatchObject({ kind: "held", reason: "reserved", preflight: { id: preflight.preflight.id } });
       const preflightResult = await reportGithubCorrectionCarrierPreflight({
         workspaceId: wsId, preflightId: preflight.preflight.id,
-        // Credential storage failed after reservation. It is a closed,
-        // indeterminate projection so the next reservation can retry rather
-        // than leaving this attempt held indefinitely or misnaming GitHub.
         outcome: { kind: "storage_unavailable" },
       });
       expect(preflightResult).toMatchObject({
         kind: "reported", preflight: { id: preflight.preflight.id, status: "indeterminate", result: { kind: "storage_unavailable" } },
       });
+      await expect(recordDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_eligible" });
+      const unavailableAttempt = await reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      });
+      expect(unavailableAttempt).toMatchObject({ kind: "reserved", preflight: { attempt: 2 } });
+      if (unavailableAttempt.kind !== "reserved") throw new Error("expected unavailable preflight attempt");
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: unavailableAttempt.preflight.id,
+        outcome: { kind: "github_unavailable" },
+      })).resolves.toMatchObject({ kind: "reported", preflight: { status: "indeterminate" } });
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "absent" });
+      const preflightFallback = await recordDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      });
+      expect(preflightFallback).toMatchObject({ kind: "recorded", fallback: {
+        dispatch: { id: githubQueued.dispatch.id }, headSha, headCycleId: job.id,
+        lane: "jace_only", trigger: { stage: "github_preflight", attempt: 2,
+          reason: "github_unavailable" }, publishedFindings: [],
+        truthBoundary: { vendorActivation: "not_proven", agentStarted: "not_proven",
+          agentAcknowledged: "not_proven", repairHead: "not_proven" },
+      } });
+      if (preflightFallback.kind !== "recorded") throw new Error("expected preflight fallback");
+      expect(preflightFallback.fallback.notice.body).not.toContain("@");
+      await expect(recordDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "replayed", fallback: { id: preflightFallback.fallback.id } });
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-fallback-replay-drift",
+        githubInstallationAccountLogin: "different-owner",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      await db.update(acceptanceBuilderRoutes).set({ status: "disabled" })
+        .where(eq(acceptanceBuilderRoutes.id, selectedRoute.route.id));
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "found", fallback: { id: preflightFallback.fallback.id,
+        lane: "jace_only" } });
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-dispatch-profile",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      await db.update(acceptanceBuilderRoutes).set({ status: "active" })
+        .where(eq(acceptanceBuilderRoutes.id, selectedRoute.route.id));
+      const fallbackStaleHeadSha = "0".repeat(40);
+      const fallbackAdvance = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha: fallbackStaleHeadSha, event: "synchronize",
+        deliveryId: "delivery-fallback-stale-head", admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: fallbackStaleHeadSha },
+        source: "github_webhook",
+      });
+      if (fallbackAdvance.kind !== "advanced") throw new Error("expected fallback head advance");
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      const fallbackRevisit = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha, event: "synchronize", deliveryId: "delivery-fallback-revisited-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: fallbackStaleHeadSha, afterHeadSha: headSha },
+        source: "github_webhook",
+      });
+      if (fallbackRevisit.kind !== "advanced") throw new Error("expected fallback head revisit");
+      expect(fallbackRevisit.jobId).not.toBe(job.id);
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      await expect(recordDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      // Test-only restore: production keeps the A2 cycle authoritative. This
+      // broad fixture restores A1 only to continue unrelated carrier proofs.
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:invalidated:${job.id}`),
+      ));
+      await db.update(acceptanceCorrectionDispatches).set({
+        invalidatedAt: null, invalidationReason: null,
+        successorHeadSha: null, successorHeadCycleId: null,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecords).set({
+        currentPrHeadSha: headSha, currentPrHeadCycleId: job.id,
+        currentPrHeadAuthoritative: true, currentPrHeadAuthorityGeneration: 1,
+      })
+        .where(eq(changeRecords.id, draft.record.id));
+      // Test-only rewind: fallback itself has no retry API; this broad fixture
+      // removes both exact events and its projection to continue the carrier path.
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        sql`${changeRecordEvents.eventKey} IN (
+          ${`acceptance-correction-dispatch:durable-fallback:reserved:${job.id}`},
+          ${`acceptance-correction-dispatch:durable-fallback:recorded:${job.id}`}
+        )`,
+      ));
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).rejects.toThrow("projection has no event custody");
+      await db.update(acceptanceCorrectionDispatches).set({
+        deliveryState: "queued", activationState: "not_started",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
       const retry = await reserveGithubCorrectionCarrierPreflight({
         workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
       });
-      expect(retry).toMatchObject({ kind: "reserved", inserted: true, preflight: { attempt: 2, status: "reserved" } });
+      expect(retry).toMatchObject({ kind: "reserved", inserted: true, preflight: { attempt: 3, status: "reserved" } });
       if (retry.kind !== "reserved") throw new Error("expected bounded preflight retry");
       await expect(reportGithubCorrectionCarrierPreflight({
         workspaceId: wsId, preflightId: retry.preflight.id,
@@ -1674,7 +1785,7 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(await db.select().from(acceptanceCorrectionDispatchGithubPreflights).where(and(
         eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, githubQueued.dispatch.id),
         eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, wsId),
-      ))).toHaveLength(2);
+      ))).toHaveLength(3);
       await db.update(workspaces).set({
         githubInstallationId: "installation-preflight-drift",
         githubInstallationAccountLogin: "acme",
@@ -1701,12 +1812,12 @@ describe.skipIf(!DB_AVAILABLE)(
       const preflightResultEvent = (await db.select().from(changeRecordEvents).where(and(
         eq(changeRecordEvents.recordId, draft.record.id),
         eq(changeRecordEvents.eventKey,
-          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:${retry.preflight.attempt}`),
       )).limit(1))[0]!;
       await db.update(changeRecordEvents).set({ payloadRef: { forged: true } }).where(and(
         eq(changeRecordEvents.recordId, draft.record.id),
         eq(changeRecordEvents.eventKey,
-          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:${retry.preflight.attempt}`),
       ));
       await expect(reserveGithubCorrectionCarrierPreflight({
         workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
@@ -1729,7 +1840,7 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(changeRecordEvents).set({ payloadRef: preflightResultEvent.payloadRef }).where(and(
         eq(changeRecordEvents.recordId, draft.record.id),
         eq(changeRecordEvents.eventKey,
-          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:${retry.preflight.attempt}`),
       ));
 
       // Two-stage publication: one ordinary finding reservation wins, all
@@ -1755,7 +1866,7 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(reserveGithubCorrectionCarrierPreflight({
         workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
       })).resolves.toMatchObject({
-        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 2 },
+        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 3 },
       });
       await expect(reportGithubCorrectionFindingPublication({
         workspaceId: wsId, publicationId: findingReservation.publication.id,
@@ -1798,7 +1909,7 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(reserveGithubCorrectionCarrierPreflight({
         workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
       })).resolves.toMatchObject({
-        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 2 },
+        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 3 },
       });
 
       const activationReservations = await Promise.all([
@@ -1836,6 +1947,39 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(reserveGithubCorrectionActivation({
         workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
       })).resolves.toEqual({ kind: "held", reason: "ambiguous_hold" });
+      const activationFallback = await recordDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      });
+      expect(activationFallback).toMatchObject({ kind: "recorded", fallback: {
+        lane: "github_findings_and_jace",
+        trigger: { stage: "github_activation", activationId: activationReservation.activation.id,
+          reason: "ambiguous_response" },
+        publishedFindings: [{ packetId, githubCommentId: "91001", githubCommentUrl: findingUrl }],
+      } });
+      if (activationFallback.kind !== "recorded") throw new Error("expected activation fallback");
+      expect(activationFallback.fallback.notice.body).not.toContain("@");
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "found", fallback: {
+        id: activationFallback.fallback.id, lane: "github_findings_and_jace",
+      } });
+      await db.update(acceptanceCorrectionDispatches).set({ findingsState: "not_started" })
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await expect(readDurableCorrectionDispatchFallback({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).rejects.toThrow("source custody");
+      await db.update(acceptanceCorrectionDispatches).set({ findingsState: "terminal" })
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        sql`${changeRecordEvents.eventKey} IN (
+          ${`acceptance-correction-dispatch:durable-fallback:reserved:${job.id}`},
+          ${`acceptance-correction-dispatch:durable-fallback:recorded:${job.id}`}
+        )`,
+      ));
+      await db.update(acceptanceCorrectionDispatches).set({
+        deliveryState: "ambiguous_hold", activationState: "ambiguous_hold",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
       await db.delete(changeRecordEvents).where(and(
         eq(changeRecordEvents.recordId, draft.record.id),
         eq(changeRecordEvents.eventKey,

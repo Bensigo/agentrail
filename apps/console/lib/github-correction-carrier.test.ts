@@ -249,6 +249,70 @@ describe("runGithubCorrectionCarrier", () => {
     expect(reserveGithubCorrectionActivation).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "remote_pr_not_active",
+    "remote_head_mismatch",
+    "remote_base_mismatch",
+  ] as const)("never offers fallback for stale or inactive preflight: %s", async (reason) => {
+    vi.mocked(preflightGithubCorrectionCarrier).mockResolvedValue({
+      kind: "unavailable",
+      reason,
+    } as never);
+    await expect(runGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID }))
+      .resolves.toEqual({ kind: "not_current" });
+    expect(getGithubCorrectionCarrierCredential).not.toHaveBeenCalled();
+    expect(postGithubCorrectionCarrierComment).not.toHaveBeenCalled();
+  });
+
+  it("keeps replayed storage unavailability on hold instead of offering fallback", async () => {
+    vi.mocked(preflightGithubCorrectionCarrier).mockResolvedValue({
+      kind: "indeterminate",
+      reason: "storage_unavailable",
+    });
+    await expect(runGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID }))
+      .resolves.toEqual({ kind: "held", reason: "storage_unavailable" });
+    expect(getGithubCorrectionCarrierCredential).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unavailable", "installation_or_permission_denied"],
+    ["indeterminate", "github_unavailable"],
+    ["indeterminate", "invalid_github_response"],
+  ] as const)("separates exact-current carrier failure from generic not-ready: %s/%s", async (
+    kind,
+    reason,
+  ) => {
+    vi.mocked(preflightGithubCorrectionCarrier).mockResolvedValue({ kind, reason } as never);
+    await expect(runGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID }))
+      .resolves.toEqual({ kind: "fallback_candidate", reason: "carrier_unavailable" });
+    expect(postGithubCorrectionCarrierComment).not.toHaveBeenCalled();
+  });
+
+  it("offers fallback when a ready preflight credential becomes unavailable", async () => {
+    vi.mocked(getGithubCorrectionCarrierCredential).mockResolvedValue({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    } as never);
+    await expect(runGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID }))
+      .resolves.toEqual({ kind: "fallback_candidate", reason: "carrier_unavailable" });
+    expect(reserveNextGithubCorrectionFindingPublication).not.toHaveBeenCalled();
+  });
+
+  it("offers fallback when the final authenticated PR read is unavailable", async () => {
+    vi.mocked(reserveNextGithubCorrectionFindingPublication).mockResolvedValue({
+      kind: "complete",
+    } as never);
+    vi.mocked(readCurrentGithubPullRequest).mockResolvedValue({
+      ok: false,
+      kind: "not_proven",
+      reason: "github_unavailable",
+    });
+    await expect(runGithubCorrectionCarrier({ workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID }))
+      .resolves.toEqual({ kind: "fallback_candidate", reason: "carrier_unavailable" });
+    expect(reserveGithubCorrectionActivation).not.toHaveBeenCalled();
+  });
+
   it("accepts no widened caller input", async () => {
     await expect(runGithubCorrectionCarrier({
       workspaceId: WORKSPACE_ID, dispatchId: DISPATCH_ID, repo: "attacker/controlled",

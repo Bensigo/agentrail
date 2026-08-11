@@ -1,8 +1,9 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `f1f9220d`, after merged PRs
-#1677–#1681. PR #1682 carries the bounded R10.2 external-builder Pack
-slice described below.
+Last reconciled: 2026-08-11 at main commit `ff1a1eda`, after merged PRs
+#1677–#1682. The current corrective slice updates the R10.1 observation
+contract and the merged R10.2 reader/Pack custody to one versioned manager
+identity without widening either source/test boundary.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -121,29 +122,56 @@ and customer proof are still open.
 
 ## R10 progress
 
-PR #1681 merged the bounded R10.1 source/test slice. It records one immutable
+PR #1681 added a bounded R10.1 source/test foundation. It records one immutable
 dependency observation against the current authoritative Acceptance Record
 head cycle after revalidating the confirmed Contract, compiled Pack, source
 snapshot, manifest, lockfile, and exact-head tree custody under the existing
-PR lock. It derives the candidate identity server-side and records closed
+PR lock. The trusted runner supplies bounded candidate, runtime, package
+manager, lockfile, and security evidence; the database derives the immutable
+binding, candidate fingerprint, and outcome. It records closed
 outcomes for observed evidence, unsafe runtime, lockfile refusal, baseline
 refusal, security refusal, and evidence that remains not proven.
 
-The trusted runner supplies bounded runtime and security evidence, but it
-cannot choose the repository, PR, head cycle, authority generation, Contract,
-status, or candidate fingerprint. The slice neither installs dependencies nor
+The runner cannot choose the repository, PR, head cycle, authority generation,
+Contract, or resulting status. The slice neither installs dependencies nor
 creates an issue, approval, queue entry, builder dispatch, pull request, or
 merge action. It does not extend the legacy dependency-watch or generic
 approval lanes.
 
-Local proof includes focused parser, route, and query tests; a fresh migrated
-PostgreSQL run covering replay, conflicts, refusal truth, source-custody drift,
-reconciliation, A→B→A, and head-advance races; the full database suite; package
-typechecks/builds; scoped lint; and independent adversarial review. No deployed
-runner, live OSV evidence acquisition, external-builder delivery, or customer
-dependency proposal has been observed.
+The merged accepted-observation profile is still pnpm-specific: it requires a
+Node/npm package identity, `package.json`, `pnpm-lock.yaml`, an OSV npm
+reference, and `pnpm_lockfile_only_v1`. It must not be represented as generic
+dependency-manager support. Candidate parsing plus registry lookup currently
+exists for npm, pnpm, Poetry, uv, Cargo, and Go Modules, but only pnpm reaches
+the canonical accepted-observation profile. Yarn, pip, Maven, Gradle,
+dotnet/NuGet, Composer, Bun, Bundler, Mix, Pub, and SwiftPM are detected or
+have command templates only; that is not operational evidence support.
 
-PR #1682 carries the bounded R10.2 source/test slice. An owner or admin can
+Canonical R10.1 therefore remains open. The next corrective slice must make
+the accepted observation contract manager-neutral and return explicit
+unsupported or insufficient-evidence results without npm fallback. Subsequent
+versioned adapter slices must close the v1 priority managers—npm, pnpm, Yarn;
+pip, Poetry, uv; Maven, Gradle; dotnet/NuGet; Composer; Cargo; and Go
+Modules—before R10 source/test closure. Bun and the lower-priority detected
+managers may remain labelled extension points. Frameworks use their ecosystem
+package-manager adapter and do not create separate capability claims.
+
+The corrective contract is versioned. New runner requests must carry the
+explicit ecosystem, manager, and profile identity; legacy v1 request bodies are
+rejected rather than inferred. Existing immutable v1 pnpm observation events
+remain replay-compatible and cannot be duplicated by an equivalent v2 report.
+
+Local proof for the merged pnpm profile includes focused parser, route, and
+query tests; a fresh migrated PostgreSQL run covering replay, conflicts,
+refusal truth, source-custody drift, reconciliation, A→B→A, and head-advance
+races; the full database suite; package typechecks/builds; scoped lint; and
+independent adversarial review. This corrective slice adds source/test proof
+for explicit unsupported identities and immutable v1 event replay; its real
+PostgreSQL proof remains a CI gate. No deployed runner, live OSV evidence
+acquisition, external-builder delivery, or customer dependency proposal has
+been observed.
+
+PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,
 the database revalidates the authoritative head occurrence, confirmed
 Contract, compiled Pack and source custody, and the already selected external
@@ -163,12 +191,15 @@ PostgreSQL transaction cases, the full 1,689-test database suite, package
 typechecks/builds, scoped lint, and independent adversarial review. No external
 builder received the Pack, no dependency was installed, and no deployed/live
 or customer path was observed. R10 remains **FAIL / not release-ready** until
-PR #1682 merges and the deployed/live and customer proof gates are satisfied.
+the manager-neutral R10.1 contract and required v1 adapter evidence profiles
+are closed and the deployed/live and customer proof gates are satisfied.
 
 ## Remaining canonical order
 
-After the bounded R10.2 slice, the next implementation work is R11 and R12.
-Their canonical requirements remain:
+The remaining implementation order is the R10.1 adapter correction and
+required v1 profiles, then R11 and R12. The bounded R10.2 Pack slice is merged
+and must remain compatible with each admitted profile. The canonical
+requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

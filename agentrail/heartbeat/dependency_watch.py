@@ -129,17 +129,36 @@ def _selected_paths(watch: DependencyWatchState, files: Mapping[str, str]) -> Tu
 
 
 def _observation_key(result: ObservationResult, snapshot: DependencySnapshot) -> str:
+    receipt = snapshot.source_inventory_receipt
     if isinstance(result, CandidatesResult):
-        payload = [candidate.fingerprint for candidate in result.candidates]
-        digest = hashlib.sha256(json.dumps(sorted(payload), separators=(",", ":")).encode()).hexdigest()
-        return f"candidates:{digest}"
+        candidate_fingerprints = sorted(
+            candidate.fingerprint for candidate in result.candidates
+        )
+        payload: object = candidate_fingerprints
+        if receipt is not None:
+            payload = {
+                "candidate_fingerprints": candidate_fingerprints,
+                "source_inventory_receipt_sha256": receipt.identity_sha256,
+            }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        receipt_suffix = (
+            f":source:{receipt.identity_sha256}" if receipt is not None else ""
+        )
+        return f"candidates:{digest}{receipt_suffix}"
     payload = {
         "baseline_sha": snapshot.baseline_sha,
         "reasons": list(result.reasons),
         "status": result.status.value,
     }
+    if receipt is not None:
+        payload["source_inventory_receipt_sha256"] = receipt.identity_sha256
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return f"{result.status.value}:{digest}"
+    receipt_suffix = (
+        f":source:{receipt.identity_sha256}" if receipt is not None else ""
+    )
+    return f"{result.status.value}:{digest}{receipt_suffix}"
 
 
 def _candidate_fingerprint(result: ObservationResult) -> Optional[str]:
@@ -185,10 +204,17 @@ def observe_watch(
     if trigger is WatchTrigger.PUSH and not selected_files_changed(
         watch.selected_file_hashes, current_hashes, selected_paths
     ):
+        receipt_suffix = (
+            f":source:{snapshot.source_inventory_receipt.identity_sha256}"
+            if snapshot.source_inventory_receipt is not None
+            else ""
+        )
         observation = WatchObservation(
             trigger=trigger,
             status="unchanged",
-            observation_key=f"push-unchanged:{snapshot.baseline_sha}",
+            observation_key=(
+                f"push-unchanged:{snapshot.baseline_sha}{receipt_suffix}"
+            ),
             failure=WatchFailure.SELECTED_FILES_UNCHANGED,
             reason="selected manifest and lockfile did not change",
             skipped=True,

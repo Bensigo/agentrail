@@ -8,6 +8,12 @@ from io import BytesIO
 
 import pytest
 
+from agentrail.dependencies.pnpm import DependencySnapshot
+from agentrail.dependencies.source_inventory import (
+    DependencySourceInventoryReceipt,
+    git_blob_object_id,
+)
+from agentrail.heartbeat.dependency_watch import WatchObservation, WatchTrigger
 from agentrail.heartbeat.dependency_runtime import DependencyWatchRuntime, RegistryClient
 from agentrail.heartbeat import dependency_runtime
 
@@ -19,7 +25,11 @@ FILES = {
 GO_ROOT_BLOB_SHAS = {"go.mod": "c" * 40, "go.sum": "d" * 40}
 
 
-def _go_root_tree_entries():
+def _go_root_tree_entries(root_files=None):
+    blob_shas = GO_ROOT_BLOB_SHAS if root_files is None else {
+        path: git_blob_object_id(content.encode("utf-8"), hash_hex_length=40)
+        for path, content in root_files.items()
+    }
     return [
         {
             "path": path,
@@ -27,7 +37,7 @@ def _go_root_tree_entries():
             "mode": "100644",
             "sha": blob_sha,
         }
-        for path, blob_sha in GO_ROOT_BLOB_SHAS.items()
+        for path, blob_sha in blob_shas.items()
     ]
 
 
@@ -92,6 +102,8 @@ def test_manual_watch_is_claimed_detected_and_persisted_without_queue_work():
     op, params = executor.executed[0]
     assert op == "record_dependency_watch_observation"
     assert params["status"] == "candidates"
+    assert params["source_inventory_receipt"] is None
+    assert params["source_inventory_receipt_sha256"] is None
     assert "queue" not in json.dumps(params, default=_json_default)
     assert result["proposal_errors"] == 0
     assert len(publisher.calls) == 1
@@ -448,6 +460,10 @@ def test_explicit_go_snapshot_binds_complete_recursive_exact_tree_before_file_re
         f"github.com/acme/lib v1.2.3/go.mod {checksum}\n"
     )
     root_files = {"go.mod": go_mod, "go.sum": go_sum}
+    root_blob_shas = {
+        path: git_blob_object_id(content.encode("utf-8"), hash_hex_length=40)
+        for path, content in root_files.items()
+    }
     calls = []
 
     def github_get(url, token):
@@ -460,14 +476,14 @@ def test_explicit_go_snapshot_binds_complete_recursive_exact_tree_before_file_re
             return {
                 "sha": tree_sha,
                 "truncated": False,
-                "tree": _go_root_tree_entries(),
+                "tree": _go_root_tree_entries(root_files),
             }
         for path, content in root_files.items():
-            if f"/contents/{path}?ref=" in url:
+            if f"/git/blobs/{root_blob_shas[path]}" in url:
                 return {
                     "encoding": "base64",
                     "content": base64.b64encode(content.encode()).decode(),
-                    "sha": GO_ROOT_BLOB_SHAS[path],
+                    "sha": root_blob_shas[path],
                 }
         raise AssertionError(f"unexpected GitHub URL: {url}")
 
@@ -476,14 +492,21 @@ def test_explicit_go_snapshot_binds_complete_recursive_exact_tree_before_file_re
     )
 
     assert snapshot.files == root_files
+    assert snapshot.source_inventory_receipt is not None
+    receipt = snapshot.source_inventory_receipt.as_dict()
+    assert receipt["identity"]["profile"] == "go_github_exact_tree_source_inventory_v1"
+    assert receipt["authority"]["repository"] == "ada/widgets"
+    assert receipt["authority"]["commitSha"] == "a" * 40
+    assert receipt["authority"]["rootTreeSha"] == tree_sha
+    assert receipt["identitySha256"] == snapshot.source_inventory_receipt.identity_sha256
     tree_call = next(url for url in calls if "/git/trees/" in url)
-    mod_call = next(url for url in calls if "/contents/go.mod?ref=" in url)
+    mod_call = next(url for url in calls if f"/git/blobs/{root_blob_shas['go.mod']}" in url)
     assert calls.index(tree_call) < calls.index(mod_call)
     assert tree_call.endswith(f"/git/trees/{tree_sha}?recursive=1")
 
 
 @pytest.mark.parametrize("body_sha", (None, "e" * 40))
-def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -> None:
+def test_go_snapshot_refuses_missing_or_mismatched_git_blob_sha(body_sha) -> None:
     tree_sha = "b" * 40
     calls = []
 
@@ -502,7 +525,7 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
                 "truncated": False,
                 "tree": _go_root_tree_entries(),
             }
-        if "/contents/go.mod?ref=" in url:
+        if f"/git/blobs/{GO_ROOT_BLOB_SHAS['go.mod']}" in url:
             body = {
                 "encoding": "base64",
                 "content": base64.b64encode(b"not decoded").decode(),
@@ -516,7 +539,9 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
     with pytest.raises(ValueError, match="exact tree blob SHA"):
         provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
 
-    assert not any("/contents/go.sum?ref=" in url for url in calls)
+    assert not any(
+        f"/git/blobs/{GO_ROOT_BLOB_SHAS['go.sum']}" in url for url in calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -528,7 +553,7 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
             {
                 "tree": [
                     *_go_root_tree_entries(),
-                    {"path": "go.work", "type": "blob", "mode": "100644"},
+                    {"path": "go.work", "type": "blob", "mode": "100644", "sha": "e" * 40},
                 ]
             },
             "go.work",
@@ -537,7 +562,7 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
             {
                 "tree": [
                     *_go_root_tree_entries(),
-                    {"path": "tools/go.mod", "type": "blob", "mode": "100644"},
+                    {"path": "tools/go.mod", "type": "blob", "mode": "100644", "sha": "e" * 40},
                 ]
             },
             "nested",
@@ -546,7 +571,7 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
             {
                 "tree": [
                     *_go_root_tree_entries(),
-                    {"path": ".config/go/env", "type": "blob", "mode": "100644"},
+                    {"path": ".config/go/env", "type": "blob", "mode": "100644", "sha": "e" * 40},
                 ]
             },
             "configuration",
@@ -555,7 +580,7 @@ def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -
             {
                 "tree": [
                     *_go_root_tree_entries(),
-                    {"path": "vendor", "type": "tree", "mode": "040000"},
+                    {"path": "vendor", "type": "tree", "mode": "040000", "sha": "e" * 40},
                 ]
             },
             "vendored",
@@ -600,7 +625,9 @@ def test_go_recursive_inventory_refuses_incomplete_or_unmodelled_state(
     with pytest.raises(ValueError, match=reason):
         provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
 
-    assert not any("/contents/go.mod?ref=" in url for url in calls)
+    assert not any(
+        f"/git/blobs/{GO_ROOT_BLOB_SHAS['go.mod']}" in url for url in calls
+    )
 
 
 def test_go_recursive_inventory_requires_commit_tree_identity() -> None:
@@ -685,6 +712,14 @@ def test_go_snapshot_rejects_oversized_encoded_content_before_decode(
     small_content = base64.b64encode(b"x").decode()
     oversized_content = "A" * 128
     decoded_payloads = []
+    blob_shas = {
+        path: (
+            GO_ROOT_BLOB_SHAS[path]
+            if path == oversized_path
+            else git_blob_object_id(b"x", hash_hex_length=40)
+        )
+        for path in ("go.mod", "go.sum")
+    }
     monkeypatch.setattr(dependency_runtime, cap_name, 1)
 
     def github_get(url, token):
@@ -699,14 +734,17 @@ def test_go_snapshot_rejects_oversized_encoded_content_before_decode(
             return {
                 "sha": tree_sha,
                 "truncated": False,
-                "tree": _go_root_tree_entries(),
+                "tree": [
+                    {"path": path, "type": "blob", "mode": "100644", "sha": blob_shas[path]}
+                    for path in ("go.mod", "go.sum")
+                ],
             }
         for path in ("go.mod", "go.sum"):
-            if f"/contents/{path}?ref=" in url:
+            if f"/git/blobs/{blob_shas[path]}" in url:
                 return {
                     "encoding": "base64",
                     "content": oversized_content if path == oversized_path else small_content,
-                    "sha": GO_ROOT_BLOB_SHAS[path],
+                    "sha": blob_shas[path],
                 }
         raise AssertionError(url)
 
@@ -745,7 +783,7 @@ def test_go_snapshot_rejects_malformed_base64_content() -> None:
                 "truncated": False,
                 "tree": _go_root_tree_entries(),
             }
-        if "/contents/go.mod?ref=" in url:
+        if f"/git/blobs/{GO_ROOT_BLOB_SHAS['go.mod']}" in url:
             return {
                 "encoding": "base64",
                 "content": "%%%",
@@ -762,6 +800,61 @@ def test_sql_observation_persists_candidate_fingerprint_separately_from_observat
     sql = dependency_runtime.queue_store._SQL[dependency_runtime.RECORD_WATCH_OBSERVATION_OP]
     assert "candidate_fingerprint" in sql.split("VALUES", 1)[0]
     assert "%(candidate_fingerprint)s" in sql
+    assert "source_inventory_receipt" in sql.split("VALUES", 1)[0]
+    assert "source_inventory_receipt_sha256" in sql.split("VALUES", 1)[0]
+
+
+def test_sql_observation_persists_source_receipt_without_mutating_candidate_shape():
+    executor = Executor()
+    identity_sha256 = "e" * 64
+    receipt = DependencySourceInventoryReceipt(
+        '{"identitySha256":"' + identity_sha256 + '"}',
+        identity_sha256,
+    )
+    store = dependency_runtime.SqlWatchStore(
+        executor,
+        {"id": "watch-1", "repository_id": "repo-1"},
+    )
+
+    store.record_observation(
+        watch_id="watch-1",
+        workspace_id="ws-1",
+        observation=WatchObservation(
+            trigger=WatchTrigger.MANUAL,
+            status="unchanged",
+            observation_key=f"unchanged:source:{identity_sha256}",
+        ),
+        snapshot=DependencySnapshot(
+            {},
+            "a" * 40,
+            source_inventory_receipt=receipt,
+        ),
+        selected_file_hashes={},
+        observed_at=datetime(2026, 8, 12),
+    )
+
+    _, params = executor.executed[0]
+    assert json.loads(params["source_inventory_receipt"]) == {
+        "identitySha256": identity_sha256,
+    }
+    assert params["source_inventory_receipt_sha256"] == identity_sha256
+    assert json.loads(params["candidates"]) == []
+
+
+def test_runtime_failure_insert_passes_explicit_null_source_receipt_params():
+    executor = Executor()
+    runtime = DependencyWatchRuntime(
+        workspace_id="ws-1",
+        executor=executor,
+        token_provider=lambda workspace_id, reader: None,
+    )
+
+    result = runtime.run_once()
+
+    assert result["failed"] == 1
+    _, params = executor.executed[0]
+    assert params["source_inventory_receipt"] is None
+    assert params["source_inventory_receipt_sha256"] is None
 
 
 def test_registry_client_never_falls_back_to_npm_without_a_supported_manager():
@@ -936,6 +1029,195 @@ class RegistryResponse:
 
     def geturl(self) -> str | None:
         return self.final_url
+
+
+def test_github_source_transport_is_bounded_exact_and_uses_the_app_bearer(monkeypatch):
+    url = "https://api.github.com/repos/ada/widgets/commits/main"
+    body = b'{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    response = RegistryResponse(
+        body,
+        content_length=str(len(body)),
+        final_url=url,
+    )
+    captured = {}
+
+    def open_request(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return response
+
+    monkeypatch.setattr(dependency_runtime, "_open_github_request", open_request)
+
+    result = dependency_runtime._github_get(url, "installation-token")
+
+    assert result == {"sha": "a" * 40}
+    request = captured["request"]
+    assert request.get_header("Authorization") == "Bearer installation-token"
+    assert request.get_header("Accept") == "application/vnd.github+json"
+    assert captured["timeout"] == 8
+    encoded_go_sum_cap = 4 * ((dependency_runtime.GO_SUM_MAX_BYTES + 2) // 3)
+    assert dependency_runtime._GITHUB_MAX_RESPONSE_BYTES > encoded_go_sum_cap
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.invalid/repos/ada/widgets/commits/main",
+        "https://api.github.com.example.invalid/repos/ada/widgets/commits/main",
+        "https://api.github.com:443/repos/ada/widgets/commits/main",
+        "https://user@api.github.com/repos/ada/widgets/commits/main",
+    ),
+)
+def test_github_source_transport_never_sends_bearer_outside_exact_api_origin(
+    monkeypatch, url: str,
+) -> None:
+    contacted = []
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_github_request",
+        lambda request, timeout: contacted.append(request.full_url),
+    )
+
+    with pytest.raises(ValueError, match="exact public API origin"):
+        dependency_runtime._github_get(url, "installation-token")
+
+    assert contacted == []
+
+
+def test_github_snapshot_refuses_unbounded_ref_before_bearer_request() -> None:
+    contacted = []
+    provider = dependency_runtime.GithubSnapshotProvider(
+        "installation-token",
+        lambda url, token: contacted.append((url, token)),
+    )
+
+    with pytest.raises(ValueError, match="requested ref"):
+        provider.snapshot("ada/widgets", "main\nforged", "go.mod", "go.sum")
+
+    assert contacted == []
+
+
+def test_github_source_transport_refuses_final_url_mismatch_before_read(monkeypatch):
+    source_url = "https://api.github.com/repos/ada/widgets/commits/main"
+    response = RegistryResponse(
+        b'{"sha":"' + b"a" * 40 + b'"}',
+        content_length="50",
+        final_url="https://api.github.com/repositories/1/commits/main",
+    )
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_github_request",
+        lambda request, timeout: response,
+    )
+
+    with pytest.raises(ValueError, match="exact request"):
+        dependency_runtime._github_get(source_url, "installation-token")
+
+    assert response.read_calls == 0
+
+
+def test_github_source_transport_never_follows_a_redirect_with_the_bearer(monkeypatch):
+    source_url = "https://api.github.com/repos/ada/widgets/commits/main"
+    target_url = "https://storage.example.invalid/redirect-target"
+    requested_urls = []
+
+    class RedirectingTransport(urllib.request.BaseHandler):
+        handler_order = 100
+
+        def https_open(self, request):
+            requested_urls.append(request.full_url)
+            headers = Message()
+            if request.full_url == source_url:
+                headers["Location"] = target_url
+                response = urllib.response.addinfourl(
+                    BytesIO(b""), headers, source_url, 302,
+                )
+                response.msg = "Found"
+                return response
+            raise AssertionError("GitHub bearer reached a redirect target")
+
+    real_build_opener = urllib.request.build_opener
+
+    def build_no_network_opener(*handlers):
+        assert any(
+            isinstance(handler, dependency_runtime._GitHubNoRedirectHandler)
+            for handler in handlers
+        )
+        assert any(
+            isinstance(handler, urllib.request.ProxyHandler)
+            and handler.proxies == {}
+            for handler in handlers
+        )
+        redirect_handler = next(
+            handler
+            for handler in handlers
+            if isinstance(handler, dependency_runtime._GitHubNoRedirectHandler)
+        )
+        return real_build_opener(
+            urllib.request.ProxyHandler({}),
+            RedirectingTransport(),
+            redirect_handler,
+        )
+
+    monkeypatch.setattr(
+        dependency_runtime.urllib.request,
+        "build_opener",
+        build_no_network_opener,
+    )
+    request = urllib.request.Request(
+        source_url,
+        headers={"Authorization": "Bearer installation-token"},
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        dependency_runtime._open_github_request(request, timeout=8)
+
+    assert error.value.code == 302
+    assert requested_urls == [source_url]
+
+
+@pytest.mark.parametrize("overflow", ("declared", "chunked"))
+def test_github_source_transport_refuses_oversized_json(
+    monkeypatch, overflow: str,
+) -> None:
+    url = "https://api.github.com/repos/ada/widgets/commits/main"
+    monkeypatch.setattr(dependency_runtime, "_GITHUB_MAX_RESPONSE_BYTES", 8)
+    monkeypatch.setattr(dependency_runtime, "_GITHUB_READ_CHUNK_BYTES", 4)
+    response = RegistryResponse(
+        b'{"x":"123"}' if overflow == "chunked" else b"",
+        content_length="9" if overflow == "declared" else None,
+        final_url=url,
+    )
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_github_request",
+        lambda request, timeout: response,
+    )
+
+    with pytest.raises(ValueError, match="byte limit"):
+        dependency_runtime._github_get(url, "installation-token")
+
+    if overflow == "declared":
+        assert response.read_calls == 0
+    else:
+        assert response.read_calls > 1
+
+
+def test_github_source_transport_rejects_duplicate_json_keys(monkeypatch):
+    url = "https://api.github.com/repos/ada/widgets/commits/main"
+    body = b'{"sha":"a","sha":"b"}'
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_github_request",
+        lambda request, timeout: RegistryResponse(
+            body,
+            content_length=str(len(body)),
+            final_url=url,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        dependency_runtime._github_get(url, "installation-token")
 
 
 def test_npm_registry_transport_has_public_bounded_headers(monkeypatch):

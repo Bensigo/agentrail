@@ -688,6 +688,13 @@
       "when": 1792800000000,
       "tag": "0097_acceptance_gated_issue_approval_custody",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1792900000000,
+      "tag": "0098_dependency_watch_source_inventory_receipts",
+      "breakpoints": true
     }
   ]
 }

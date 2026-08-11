@@ -1,4 +1,5 @@
 from agentrail.dependencies.pnpm import DependencySnapshot, RegistryPackage
+from agentrail.dependencies.source_inventory import DependencySourceInventoryReceipt
 from agentrail.heartbeat.dependency_watch import (
     DependencyWatchState,
     WatchFailure,
@@ -37,6 +38,11 @@ FILES = {
     "package.json": '{"dependencies":{"react":"^1.0.0"}}',
     "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      react:\n        specifier: ^1.0.0\n        version: 1.0.0\n",
 }
+RECEIPT_SHA256 = "e" * 64
+SOURCE_RECEIPT = DependencySourceInventoryReceipt(
+    '{"identitySha256":"' + RECEIPT_SHA256 + '"}',
+    RECEIPT_SHA256,
+)
 
 
 def watch(**overrides):
@@ -114,6 +120,53 @@ def test_same_candidate_fingerprint_is_stable_for_deduplication():
     assert first.candidate_fingerprint == store.calls[0]["observation"].candidates[0].fingerprint
     assert first.candidate_fingerprint != first.observation_key
     assert store.calls[0]["observation"].candidates[0].fingerprint == store.calls[1]["observation"].candidates[0].fingerprint
+
+
+def test_absent_source_receipt_preserves_existing_candidate_observation_key_bytes():
+    result = observe_watch(
+        watch_id="watch-1", requested_workspace_id="ws-1", watch=watch(),
+        snapshot=DependencySnapshot(FILES, "sha-1"), registry=Registry(),
+        target_versions=Targets(), trigger=WatchTrigger.MANUAL, store=Store(),
+    )
+
+    assert result.observation_key == (
+        "candidates:7b5b19c6f38be250309ba65185154674847168dd4d2c174c54e7c2bf626401c2"
+    )
+
+
+def test_source_receipt_identity_is_bound_into_candidate_and_push_observation_keys():
+    receipt_snapshot = DependencySnapshot(
+        FILES,
+        "sha-1",
+        source_inventory_receipt=SOURCE_RECEIPT,
+    )
+    first = observe_watch(
+        watch_id="watch-1", requested_workspace_id="ws-1", watch=watch(),
+        snapshot=receipt_snapshot, registry=Registry(), target_versions=Targets(),
+        trigger=WatchTrigger.MANUAL, store=Store(),
+    )
+    second = observe_watch(
+        watch_id="watch-1", requested_workspace_id="ws-1", watch=watch(),
+        snapshot=receipt_snapshot, registry=Registry(), target_versions=Targets(),
+        trigger=WatchTrigger.MANUAL, store=Store(),
+    )
+    no_receipt = observe_watch(
+        watch_id="watch-1", requested_workspace_id="ws-1", watch=watch(),
+        snapshot=DependencySnapshot(FILES, "sha-1"), registry=Registry(),
+        target_versions=Targets(), trigger=WatchTrigger.MANUAL, store=Store(),
+    )
+    current = file_hashes(FILES, ("package.json", "pnpm-lock.yaml"))
+    pushed = observe_watch(
+        watch_id="watch-1", requested_workspace_id="ws-1",
+        watch=watch(selected_file_hashes=current), snapshot=receipt_snapshot,
+        registry=Registry(), target_versions=Targets(), trigger=WatchTrigger.PUSH,
+        store=Store(),
+    )
+
+    assert first.observation_key == second.observation_key
+    assert first.observation_key != no_receipt.observation_key
+    assert first.observation_key.endswith(f":source:{RECEIPT_SHA256}")
+    assert RECEIPT_SHA256 in pushed.observation_key
 
 
 def test_cross_workspace_watch_is_rejected_before_detection_or_persistence():

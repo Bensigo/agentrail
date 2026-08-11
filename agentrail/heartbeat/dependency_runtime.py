@@ -33,6 +33,14 @@ from agentrail.dependencies.pnpm import (
     DependencySnapshot,
     RegistryPackage,
 )
+from agentrail.dependencies.source_inventory import (
+    ValidatedGoGithubInventory,
+    build_go_github_source_inventory_receipt,
+    git_blob_object_id,
+    validate_github_repository_slug,
+    validate_github_requested_ref,
+    validate_go_github_source_inventory,
+)
 from agentrail.dependencies.manager import SupportedDetection, detect_dependency_manager
 from agentrail.dependencies.strict_json import loads_strict_json
 from agentrail.heartbeat.dependency_watch import (
@@ -50,11 +58,20 @@ CLAIM_WATCHES_OP = "claim_dependency_watches"
 RECORD_WATCH_OBSERVATION_OP = "record_dependency_watch_observation"
 _REGISTRY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _REGISTRY_READ_CHUNK_BYTES = 64 * 1024
+_GITHUB_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+_GITHUB_READ_CHUNK_BYTES = 64 * 1024
 _NPM_ABBREVIATED_ACCEPT = "application/vnd.npm.install-v1+json"
 
 
 class _GoProxyNoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject proxy redirects before urllib can contact their target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _GitHubNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects before a GitHub App bearer can reach another URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -66,6 +83,16 @@ def _open_go_proxy_request(request: urllib.request.Request, timeout: int) -> Any
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _GoProxyNoRedirectHandler(),
+    )
+    return opener.open(request, timeout=timeout)
+
+
+def _open_github_request(request: urllib.request.Request, timeout: int) -> Any:
+    """Open one exact public GitHub API request without redirects or env proxies."""
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _GitHubNoRedirectHandler(),
     )
     return opener.open(request, timeout=timeout)
 
@@ -130,11 +157,14 @@ queue_store._SQL.update(
             "WITH inserted AS (INSERT INTO dependency_watch_observations "
             "(workspace_id, watch_id, repository_id, trigger, baseline_sha, "
             "selected_file_hashes, observation_key, status, candidates, "
-            "error_code, error_message, observed_at, candidate_fingerprint) VALUES "
+            "error_code, error_message, observed_at, candidate_fingerprint, "
+            "source_inventory_receipt, source_inventory_receipt_sha256) VALUES "
             "(%(workspace_id)s, %(watch_id)s, %(repository_id)s, %(trigger)s, "
             "%(baseline_sha)s, %(selected_file_hashes)s::jsonb, %(observation_key)s, "
             "%(status)s, %(candidates)s::jsonb, %(error_code)s, %(error_message)s, "
-            "%(observed_at)s, %(candidate_fingerprint)s) ON CONFLICT "
+            "%(observed_at)s, %(candidate_fingerprint)s, "
+            "%(source_inventory_receipt)s::jsonb, "
+            "%(source_inventory_receipt_sha256)s) ON CONFLICT "
             "(workspace_id, repository_id, observation_key) "
             "DO NOTHING RETURNING id) UPDATE dependency_watches SET "
             "last_checked_sha = %(baseline_sha)s, selected_file_hashes = %(selected_file_hashes)s::jsonb, "
@@ -322,8 +352,9 @@ class GithubSnapshotProvider:
     def _verify_go_recursive_inventory(
         self,
         repository: str,
+        requested_ref: str,
         commit: Mapping[str, Any],
-    ) -> Mapping[str, str]:
+    ) -> ValidatedGoGithubInventory:
         """Require one complete exact-tree inventory for a root Go watch."""
 
         commit_sha = commit.get("sha") if isinstance(commit, dict) else None
@@ -342,6 +373,8 @@ class GithubSnapshotProvider:
             or any(character not in "0123456789abcdef" for character in tree_sha)
         ):
             raise ValueError("GitHub did not return the exact Go root tree SHA")
+        if len(tree_sha) != len(commit_sha):
+            raise ValueError("GitHub Go commit and tree use different hash families")
         response = self._get(
             "https://api.github.com/repos/"
             f"{repository}/git/trees/{tree_sha}?recursive=1",
@@ -356,55 +389,16 @@ class GithubSnapshotProvider:
             raise ValueError("GitHub did not return a recursive Go inventory")
         if len(entries) >= GO_GITHUB_TREE_MAX_ENTRIES:
             raise ValueError("GitHub Go recursive inventory exceeds the entry limit")
-
-        inventory: List[str] = []
-        entries_by_path: Dict[str, Dict[str, Any]] = {}
-        folded_paths: Dict[str, str] = {}
-        for item in entries:
-            if not isinstance(item, dict):
-                raise ValueError("GitHub Go recursive inventory contains a malformed entry")
-            raw_path = item.get("path")
-            kind = item.get("type")
-            if not isinstance(raw_path, str) or kind not in ("blob", "tree", "commit"):
-                raise ValueError("GitHub Go recursive inventory contains a malformed entry")
-            path = _canonical_repository_path(raw_path)
-            if path != raw_path:
-                raise ValueError("GitHub Go recursive inventory contains a non-canonical path")
-            folded = path.casefold()
-            previous = folded_paths.get(folded)
-            if previous is not None:
-                raise ValueError(
-                    "GitHub Go recursive inventory contains colliding paths: "
-                    f"{previous} and {path}"
-                )
-            folded_paths[folded] = path
-            if kind == "commit":
-                raise ValueError("GitHub Go recursive inventory contains an opaque submodule")
-            inventory.append(path)
-            entries_by_path[path] = item
-
-        refusal = go_snapshot_path_refusal(inventory)
-        if refusal is not None:
-            raise ValueError(refusal)
-        required_blob_shas: Dict[str, str] = {}
-        for required in ("go.mod", "go.sum"):
-            item = entries_by_path.get(required)
-            blob_sha = item.get("sha") if isinstance(item, dict) else None
-            if (
-                item is None
-                or item.get("type") != "blob"
-                or item.get("mode") != "100644"
-                or not isinstance(blob_sha, str)
-                or len(blob_sha) not in (40, 64)
-                or any(character not in "0123456789abcdef" for character in blob_sha)
-            ):
-                raise ValueError(
-                    f"GitHub Go recursive inventory has no exact regular root {required} blob"
-                )
-            required_blob_shas[required] = blob_sha
-        return required_blob_shas
+        return validate_go_github_source_inventory(
+            repository=repository,
+            requested_ref=requested_ref,
+            commit=commit,
+            tree_response=response,
+        )
 
     def snapshot(self, repository: str, branch: str, manifest: str, lockfile: str) -> DependencySnapshot:
+        repository = validate_github_repository_slug(repository)
+        branch = validate_github_requested_ref(branch)
         normal_manifest = _canonical_repository_path(manifest)
         normal_lockfile = _canonical_repository_path(lockfile)
         if normal_manifest == normal_lockfile and normal_manifest != "auto":
@@ -423,7 +417,7 @@ class GithubSnapshotProvider:
         root_go_watch = normal_manifest == "go.mod" and normal_lockfile == "go.sum"
         cargo_inventory = root_cargo_watch
         go_inventory = root_go_watch
-        go_root_blob_shas: Mapping[str, str] = {}
+        go_source_inventory: Optional[ValidatedGoGithubInventory] = None
         if requested_auto or root_package_watch or root_cargo_watch or root_go_watch:
             listing = self._get(
                 f"https://api.github.com/repos/{repository}/contents/?ref={urllib.parse.quote(sha, safe='')}",
@@ -454,7 +448,11 @@ class GithubSnapshotProvider:
             ):
                 raise ValueError("Cargo watch refuses repository .cargo configuration until it is modeled")
             if go_inventory:
-                go_root_blob_shas = self._verify_go_recursive_inventory(repository, commit)
+                go_source_inventory = self._verify_go_recursive_inventory(
+                    repository,
+                    branch,
+                    commit,
+                )
             if requested_auto:
                 paths = [path for path in self._AUTO_ROOT_FILES if path in available]
             elif root_cargo_watch:
@@ -468,16 +466,28 @@ class GithubSnapshotProvider:
                 paths.extend(
                     path for path in self._NODE_ROOT_MARKERS if path in available
                 )
+        go_root_bytes: Dict[str, bytes] = {}
         for path in dict.fromkeys(path for path in paths if path != "auto"):
-            body = self._get(
-                f"https://api.github.com/repos/{repository}/contents/{urllib.parse.quote(path, safe='/')}?ref={sha}",
-                self.token,
+            normal_path = _canonical_repository_path(path)
+            expected_go_blob_sha = (
+                go_source_inventory.required_blob_sha(normal_path)
+                if go_source_inventory is not None
+                else None
             )
+            if expected_go_blob_sha is not None:
+                source_url = (
+                    f"https://api.github.com/repos/{repository}/git/blobs/"
+                    f"{expected_go_blob_sha}"
+                )
+            else:
+                source_url = (
+                    f"https://api.github.com/repos/{repository}/contents/"
+                    f"{urllib.parse.quote(path, safe='/')}?ref={sha}"
+                )
+            body = self._get(source_url, self.token)
             content = body.get("content") if isinstance(body, dict) else None
             encoding = body.get("encoding") if isinstance(body, dict) else None
             if not isinstance(content, str) or encoding != "base64": raise ValueError(f"GitHub did not return {path}")
-            normal_path = _canonical_repository_path(path)
-            expected_go_blob_sha = go_root_blob_shas.get(normal_path)
             if expected_go_blob_sha is not None and (
                 not isinstance(body, dict)
                 or body.get("sha") != expected_go_blob_sha
@@ -507,14 +517,37 @@ class GithubSnapshotProvider:
                     raise ValueError(f"{normal_path} base64 content exceeds the encoded-size limit")
             compact_content = content.replace("\n", "")
             try:
-                decoded = base64.b64decode(
+                decoded_bytes = base64.b64decode(
                     compact_content,
                     validate=go_inventory,
-                ).decode("utf-8")
+                )
+                decoded = decoded_bytes.decode("utf-8")
             except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
                 raise ValueError(f"GitHub returned malformed text content for {normal_path}") from exc
+            if expected_go_blob_sha is not None:
+                actual_go_blob_sha = git_blob_object_id(
+                    decoded_bytes,
+                    hash_hex_length=len(expected_go_blob_sha),
+                )
+                if actual_go_blob_sha != expected_go_blob_sha:
+                    raise ValueError(
+                        f"GitHub Go root {normal_path} does not match its local Git blob identity"
+                    )
+                go_root_bytes[normal_path] = decoded_bytes
             files[normal_path] = decoded
-        return DependencySnapshot(files=files, baseline_sha=sha)
+        source_receipt = (
+            build_go_github_source_inventory_receipt(
+                go_source_inventory,
+                go_root_bytes,
+            )
+            if go_source_inventory is not None
+            else None
+        )
+        return DependencySnapshot(
+            files=files,
+            baseline_sha=sha,
+            source_inventory_receipt=source_receipt,
+        )
 
 
 def _legacy_candidate_payload(candidate: Any) -> Dict[str, Any]:
@@ -556,6 +589,7 @@ class SqlWatchStore(WatchStore):
         if observation.failure is WatchFailure.UNSUPPORTED: error_code = "unsupported"
         elif observation.failure is WatchFailure.INSUFFICIENT_EVIDENCE: error_code = "insufficient_evidence"
         candidates = [_legacy_candidate_payload(candidate) for candidate in observation.candidates]
+        source_receipt = snapshot.source_inventory_receipt
         self.executor.execute(RECORD_WATCH_OBSERVATION_OP, {
             "workspace_id": workspace_id,
             "watch_id": watch_id,
@@ -565,6 +599,12 @@ class SqlWatchStore(WatchStore):
             "selected_file_hashes": json.dumps(dict(selected_file_hashes), sort_keys=True),
             "observation_key": observation.observation_key,
             "candidate_fingerprint": observation.candidate_fingerprint,
+            "source_inventory_receipt": (
+                source_receipt.canonical_json if source_receipt is not None else None
+            ),
+            "source_inventory_receipt_sha256": (
+                source_receipt.identity_sha256 if source_receipt is not None else None
+            ),
             "status": observation.status,
             "candidates": json.dumps(candidates, sort_keys=True),
             "error_code": error_code,
@@ -575,9 +615,56 @@ class SqlWatchStore(WatchStore):
 
 
 def _github_get(url: str, token: str) -> Any:
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "agentrail-heartbeat"})
-    with urllib.request.urlopen(request, timeout=8) as response:
-        return json.load(response)
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "api.github.com"
+        or not parsed.path.startswith("/repos/")
+        or parsed.fragment
+    ):
+        raise ValueError("GitHub source URL is not the exact public API origin")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "agentrail-heartbeat",
+        },
+    )
+    with _open_github_request(request, timeout=8) as response:
+        final_url = response.geturl() if hasattr(response, "geturl") else None
+        if final_url != url:
+            raise ValueError("GitHub source response URL does not match the exact request")
+        headers = getattr(response, "headers", None)
+        raw_length = headers.get("Content-Length") if headers is not None else None
+        declared_length: Optional[int] = None
+        if raw_length is not None:
+            try:
+                declared_length = int(raw_length)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("GitHub source response has an invalid Content-Length") from exc
+            if declared_length < 0 or declared_length > _GITHUB_MAX_RESPONSE_BYTES:
+                raise ValueError("GitHub source response exceeds the byte limit")
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            remaining = _GITHUB_MAX_RESPONSE_BYTES + 1 - total
+            chunk = response.read(min(_GITHUB_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise ValueError("GitHub source response body is not bytes")
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _GITHUB_MAX_RESPONSE_BYTES:
+                raise ValueError("GitHub source response exceeds the byte limit")
+        if declared_length is not None and declared_length != total:
+            raise ValueError("GitHub source response Content-Length does not match its body")
+    try:
+        text = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("GitHub source response is not valid UTF-8") from exc
+    return loads_strict_json(text, document="GitHub source response")
 
 
 def _registry_get(url: str, manager_id: str) -> Any:
@@ -719,6 +806,8 @@ class DependencyWatchRuntime:
                 "workspace_id": self.workspace_id, "watch_id": row["id"], "repository_id": row["repository_id"],
                 "trigger": trigger.value, "baseline_sha": None, "selected_file_hashes": json.dumps({}),
                 "observation_key": result.observation_key, "candidate_fingerprint": None,
+                "source_inventory_receipt": None,
+                "source_inventory_receipt_sha256": None,
                 "status": "failed", "candidates": json.dumps([]),
                 "error_code": "invalid_snapshot", "error_message": str(exc), "observed_at": now,
             })

@@ -667,6 +667,13 @@
       "when": 1792500000000,
       "tag": "0094_acceptance_github_claude_acknowledgements",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1792600000000,
+      "tag": "0095_acceptance_github_claude_repair_observations",
+      "breakpoints": true
     }
   ]
 }

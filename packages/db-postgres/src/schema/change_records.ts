@@ -1023,6 +1023,135 @@ export const acceptanceCorrectionDispatchGithubClaudeAckReceipts = pgTable(
 );
 
 /**
+ * One immutable, OIDC-authenticated exact-head observation made by the same
+ * pinned GitHub Actions run that produced a verified Claude acknowledgement.
+ * This row deliberately does not claim commit authorship: a reader must still
+ * join it to GitHub's independently signed synchronize custody before calling
+ * the observed successor a repair head. Only hashes of the provider session,
+ * OIDC subject, and token jti are retained.
+ */
+export const acceptanceCorrectionDispatchGithubClaudeRepairObservations = pgTable(
+  "acceptance_correction_dispatch_github_claude_repair_obs",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    dispatchId: uuid("dispatch_id").notNull()
+      .references(() => acceptanceCorrectionDispatches.id, { onDelete: "restrict" }),
+    activationId: uuid("activation_id").notNull()
+      .references(() => acceptanceCorrectionDispatchGithubActivations.id, { onDelete: "restrict" }),
+    acknowledgementReceiptId: uuid("acknowledgement_receipt_id").notNull()
+      .references(() => acceptanceCorrectionDispatchGithubClaudeAckReceipts.id, { onDelete: "restrict" }),
+    acknowledgementReceiptIdentitySha256: text("acknowledgement_receipt_identity_sha256").notNull(),
+    recordId: uuid("record_id").notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    originalHeadSha: text("original_head_sha").notNull(),
+    originalHeadCycleId: uuid("original_head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    activationIdentitySha256: text("activation_identity_sha256").notNull(),
+    activationGithubCommentId: text("activation_github_comment_id").notNull(),
+    activationBodySha256: text("activation_body_sha256").notNull(),
+    routeId: uuid("route_id").notNull()
+      .references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    capabilityProfileId: uuid("capability_profile_id").notNull()
+      .references(() => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }),
+    acknowledgementProfileId: uuid("acknowledgement_profile_id").notNull()
+      .references(() => acceptanceBuilderRouteGithubClaudeAckProfiles.id, { onDelete: "restrict" }),
+    acknowledgementProfileSnapshotSha256: text("acknowledgement_profile_snapshot_sha256").notNull(),
+    observationProtocolVersion: integer("observation_protocol_version").notNull().default(1),
+    provider: text("provider").notNull(),
+    providerSessionIdSha256: text("provider_session_id_sha256").notNull(),
+    beforeHeadSha: text("before_head_sha").notNull(),
+    afterHeadSha: text("after_head_sha").notNull(),
+    oidcIssuer: text("oidc_issuer").notNull(),
+    oidcAudience: text("oidc_audience").notNull(),
+    oidcSubjectSha256: text("oidc_subject_sha256").notNull(),
+    oidcRepository: text("oidc_repository").notNull(),
+    oidcRepositoryId: text("oidc_repository_id").notNull(),
+    oidcRepositoryOwner: text("oidc_repository_owner").notNull(),
+    oidcRepositoryOwnerId: text("oidc_repository_owner_id").notNull(),
+    oidcActorId: text("oidc_actor_id").notNull(),
+    oidcActor: text("oidc_actor").notNull(),
+    oidcEventName: text("oidc_event_name").notNull(),
+    oidcRef: text("oidc_ref").notNull(),
+    oidcWorkflowRef: text("oidc_workflow_ref").notNull(),
+    oidcWorkflowSha: text("oidc_workflow_sha").notNull(),
+    oidcJobWorkflowRef: text("oidc_job_workflow_ref").notNull(),
+    oidcJobWorkflowSha: text("oidc_job_workflow_sha").notNull(),
+    oidcRunId: text("oidc_run_id").notNull(),
+    oidcRunAttempt: integer("oidc_run_attempt").notNull(),
+    oidcCheckRunId: text("oidc_check_run_id").notNull(),
+    oidcTokenIssuedAt: timestamp("oidc_token_issued_at", { withTimezone: true }).notNull(),
+    oidcTokenNotBefore: timestamp("oidc_token_not_before", { withTimezone: true }).notNull(),
+    oidcTokenExpiresAt: timestamp("oidc_token_expires_at", { withTimezone: true }).notNull(),
+    oidcJtiSha256: text("oidc_jti_sha256").notNull(),
+    observationIdentitySha256: text("observation_identity_sha256").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dispatch: uniqueIndex("acceptance_claude_repair_observations_dispatch_key").on(t.dispatchId),
+    activation: uniqueIndex("acceptance_claude_repair_observations_activation_key").on(t.activationId),
+    acknowledgementReceipt: uniqueIndex("acceptance_claude_repair_observations_ack_key")
+      .on(t.acknowledgementReceiptId),
+    oidcJti: uniqueIndex("acceptance_claude_repair_observations_oidc_jti_key").on(t.oidcJtiSha256),
+    bindingCheck: check(
+      "acceptance_claude_repair_observations_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND ${t.prNumber} > 0
+        AND ${t.originalHeadSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.beforeHeadSha} = ${t.originalHeadSha}
+        AND ${t.afterHeadSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND lower(${t.afterHeadSha}) <> lower(${t.beforeHeadSha})
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.activationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.activationGithubCommentId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.activationBodySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.acknowledgementReceiptIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.acknowledgementProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.observationProtocolVersion} = 1
+        AND ${t.provider} = 'anthropic_claude_code_action'
+        AND ${t.providerSessionIdSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.oidcIssuer} = 'https://token.actions.githubusercontent.com'
+        AND ${t.oidcAudience} ~ '^agentrail://correction-dispatch/github-claude/repair-observation/v1/[A-Fa-f0-9]{64}$'
+        AND ${t.oidcSubjectSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.oidcRepository} = ${t.repo}
+        AND ${t.oidcRepositoryId} ~ '^[1-9][0-9]{0,39}$'
+        AND char_length(${t.oidcRepositoryOwner}) BETWEEN 1 AND 100
+        AND ${t.oidcRepositoryOwner} ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,99}$'
+        AND ${t.oidcRepositoryOwnerId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcActorId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcActor} = 'jace[bot]'
+        AND ${t.oidcEventName} = 'issue_comment'
+        AND char_length(${t.oidcRef}) BETWEEN 12 AND 512
+        AND ${t.oidcRef} LIKE 'refs/heads/%'
+        AND ${t.oidcRef} !~ '[[:cntrl:]]'
+        AND char_length(${t.oidcWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.oidcWorkflowRef} !~ '[[:cntrl:]]'
+        AND ${t.oidcWorkflowSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND char_length(${t.oidcJobWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.oidcJobWorkflowRef} !~ '[[:cntrl:]]'
+        AND ${t.oidcJobWorkflowSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.oidcRunId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcRunAttempt} = 1
+        AND ${t.oidcCheckRunId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcTokenNotBefore} <= ${t.oidcTokenExpiresAt}
+        AND ${t.oidcTokenIssuedAt} <= ${t.oidcTokenExpiresAt}
+        AND ${t.oidcJtiSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.observationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -1134,5 +1263,6 @@ export type AcceptanceCorrectionDispatchGithubPreflightRow = typeof acceptanceCo
 export type AcceptanceCorrectionDispatchGithubFindingPublicationRow = typeof acceptanceCorrectionDispatchGithubFindingPublications.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceCorrectionDispatchGithubActivations.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow = typeof acceptanceCorrectionDispatchGithubClaudeAckReceipts.$inferSelect;
+export type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow = typeof acceptanceCorrectionDispatchGithubClaudeRepairObservations.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

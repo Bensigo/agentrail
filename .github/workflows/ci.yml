@@ -141,6 +141,7 @@ jobs:
           app/api/v1/connectors/jace/inbound
           app/api/v1/webhooks/github-app/route.test.ts
           app/api/v1/webhooks/github-actions/claude-ack/route.test.ts
+          app/api/v1/webhooks/github-actions/claude-repair-observation/route.test.ts
           app/api/v1/runner/pr-review/route.test.ts
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots

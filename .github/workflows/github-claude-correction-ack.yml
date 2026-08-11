@@ -12,8 +12,128 @@ on:
         required: true
 
 jobs:
-  claude:
+  observe_before:
     if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.comment.user.login == 'jace[bot]' &&
+      contains(github.event.comment.body, '@claude') &&
+      contains(github.event.comment.body, '- Dispatch ID:')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.observe.outputs.head_sha }}
+    steps:
+      - name: Observe the exact PR head before Claude
+        id: observe
+        shell: bash
+        env:
+          ACTIVATION_COMMENT_BODY: ${{ github.event.comment.body }}
+          GITHUB_TOKEN_VALUE: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_VALUE: ${{ github.repository }}
+          PR_NUMBER_VALUE: ${{ github.event.issue.number }}
+        run: |
+          node <<'NODE'
+          const { appendFileSync } = require("node:fs");
+
+          (async () => {
+            const required = (name) => {
+              const value = process.env[name];
+              if (!value) throw new Error(`missing ${name}`);
+              return value;
+            };
+            const positive = /^[1-9][0-9]{0,39}$/;
+            const repositoryPattern = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+            const sha = /^[0-9a-f]{40}$/i;
+            const repository = required("GITHUB_REPOSITORY_VALUE");
+            const prNumber = required("PR_NUMBER_VALUE");
+            const activationHeadMatches = [
+              ...required("ACTIVATION_COMMENT_BODY").matchAll(
+                /^- Original exact head: ([0-9a-f]{40})$/gm
+              ),
+            ];
+            if (!repositoryPattern.test(repository)
+              || repository.split("/").some((segment) => segment === "." || segment === "..")
+              || !positive.test(prNumber)
+              || activationHeadMatches.length !== 1) {
+              throw new Error("invalid pull request identity");
+            }
+            const activationHeadSha = activationHeadMatches[0][1];
+
+            const api = new URL(`https://api.github.com/repos/${repository}/pulls/${prNumber}`);
+            if (api.protocol !== "https:" || api.hostname !== "api.github.com"
+              || api.port || api.username || api.password || api.search || api.hash) {
+              throw new Error("invalid GitHub API URL");
+            }
+            const response = await fetch(api, {
+              headers: {
+                Authorization: `Bearer ${required("GITHUB_TOKEN_VALUE")}`,
+                Accept: "application/vnd.github+json",
+                "User-Agent": "agentrail-claude-repair-observation",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+              redirect: "error",
+              signal: AbortSignal.timeout(8_000),
+            });
+            if (!response.ok) throw new Error("GitHub PR request failed");
+
+            const maxBytes = 256 * 1024;
+            const contentLength = response.headers.get("content-length");
+            if (contentLength !== null
+              && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)) {
+              throw new Error("GitHub PR response was invalid");
+            }
+            if (!response.body) throw new Error("GitHub PR response was invalid");
+            const reader = response.body.getReader();
+            const chunks = [];
+            let total = 0;
+            try {
+              while (true) {
+                const next = await reader.read();
+                if (next.done) break;
+                total += next.value.byteLength;
+                if (total > maxBytes) {
+                  try { await reader.cancel(); } catch { /* bounded failure */ }
+                  throw new Error("GitHub PR response was invalid");
+                }
+                chunks.push(next.value);
+              }
+            } finally {
+              reader.releaseLock();
+            }
+            const bytes = new Uint8Array(total);
+            let offset = 0;
+            for (const chunk of chunks) {
+              bytes.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            let pr;
+            try {
+              pr = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+            } catch {
+              throw new Error("GitHub PR response was invalid");
+            }
+            const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+            const expectedUrl = `https://github.com/${repository}/pull/${prNumber}`;
+            if (!record(pr) || pr.number !== Number(prNumber) || pr.html_url !== expectedUrl
+              || !record(pr.head) || typeof pr.head.sha !== "string" || !sha.test(pr.head.sha)
+              || !record(pr.base) || !record(pr.base.repo) || pr.base.repo.full_name !== repository
+              || pr.state !== "open" || pr.draft !== false || pr.merged !== false
+              || pr.head.sha.toLowerCase() !== activationHeadSha) {
+              throw new Error("GitHub PR response was invalid");
+            }
+            appendFileSync(required("GITHUB_OUTPUT"), `head_sha=${activationHeadSha}\n`, "utf8");
+          })().catch(() => {
+            process.stderr.write("AgentRail pre-Claude PR observation failed\n");
+            process.exitCode = 1;
+          });
+          NODE
+
+  claude:
+    needs: observe_before
+    if: >-
+      needs.observe_before.result == 'success' &&
       github.event_name == 'issue_comment' &&
       github.event.comment.user.login == 'jace[bot]' &&
       contains(github.event.comment.body, '@claude') &&
@@ -36,14 +156,16 @@ jobs:
           allowed_bots: jace[bot]
 
   acknowledge:
-    needs: claude
+    needs: [observe_before, claude]
     if: >-
+      needs.observe_before.result == 'success' &&
       needs.claude.result == 'success' &&
       needs.claude.outputs.conclusion == 'success' &&
       needs.claude.outputs.session_id != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
       id-token: write
     steps:
       - name: Submit the bounded AgentRail acknowledgement receipt
@@ -52,78 +174,189 @@ jobs:
           AGENTRAIL_ACK_URL: ${{ inputs.agentrail_ack_url }}
           ACTIVATION_COMMENT_ID: ${{ github.event.comment.id }}
           ACTIVATION_COMMENT_BODY: ${{ github.event.comment.body }}
+          BEFORE_HEAD_SHA: ${{ needs.observe_before.outputs.head_sha }}
           CLAUDE_SESSION_ID: ${{ needs.claude.outputs.session_id }}
+          GITHUB_REPOSITORY_VALUE: ${{ github.repository }}
+          GITHUB_TOKEN_VALUE: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER_VALUE: ${{ github.event.issue.number }}
           GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
         run: |
           node <<'NODE'
           const { createHash } = require("node:crypto");
 
-          const required = (name) => {
-            const value = process.env[name];
-            if (!value) throw new Error(`missing ${name}`);
-            return value;
-          };
-          const positive = /^[1-9][0-9]{0,39}$/;
-          const activationCommentId = required("ACTIVATION_COMMENT_ID");
-          const runId = required("GITHUB_RUN_ID_VALUE");
-          const runAttempt = required("GITHUB_RUN_ATTEMPT_VALUE");
-          if (!positive.test(activationCommentId) || !positive.test(runId) || runAttempt !== "1") {
-            throw new Error("acknowledgement requires canonical first-attempt identifiers");
-          }
+          (async () => {
+            const required = (name) => {
+              const value = process.env[name];
+              if (!value) throw new Error(`missing ${name}`);
+              return value;
+            };
+            const positive = /^[1-9][0-9]{0,39}$/;
+            const sha = /^[0-9a-f]{40}$/;
+            const sha256Pattern = /^[0-9a-f]{64}$/;
+            const repositoryPattern = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+            const activationCommentId = required("ACTIVATION_COMMENT_ID");
+            const runId = required("GITHUB_RUN_ID_VALUE");
+            const runAttempt = required("GITHUB_RUN_ATTEMPT_VALUE");
+            const beforeHeadSha = required("BEFORE_HEAD_SHA");
+            const repository = required("GITHUB_REPOSITORY_VALUE");
+            const prNumber = required("PR_NUMBER_VALUE");
+            if (!positive.test(activationCommentId) || !positive.test(runId) || runAttempt !== "1"
+              || !sha.test(beforeHeadSha) || !positive.test(prNumber)
+              || !repositoryPattern.test(repository)
+              || repository.split("/").some((segment) => segment === "." || segment === "..")) {
+              throw new Error("acknowledgement requires canonical identifiers");
+            }
 
-          const callback = new URL(required("AGENTRAIL_ACK_URL"));
-          if (callback.protocol !== "https:"
-            || !["heyjace.com", "www.heyjace.com"].includes(callback.hostname)
-            || callback.port
-            || callback.pathname !== "/api/v1/webhooks/github-actions/claude-ack"
-            || callback.username || callback.password || callback.search || callback.hash) {
-            throw new Error("invalid AgentRail acknowledgement URL");
-          }
+            const callback = new URL(required("AGENTRAIL_ACK_URL"));
+            if (callback.protocol !== "https:"
+              || !["heyjace.com", "www.heyjace.com"].includes(callback.hostname)
+              || callback.port
+              || callback.pathname !== "/api/v1/webhooks/github-actions/claude-ack"
+              || callback.username || callback.password || callback.search || callback.hash) {
+              throw new Error("invalid AgentRail acknowledgement URL");
+            }
 
-          const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
-          const audienceBinding = [
-            "github_claude_ack", "1", activationCommentId, runId, runAttempt,
-          ].join(":");
-          const audience =
-            `agentrail://correction-dispatch/github-claude/ack/v1/${sha256(audienceBinding)}`;
-          const oidcUrl = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));
-          if (oidcUrl.protocol !== "https:" || oidcUrl.hostname !== "token.actions.githubusercontent.com") {
-            throw new Error("invalid GitHub OIDC request URL");
-          }
-          oidcUrl.searchParams.set("audience", audience);
+            const cappedJson = async (response, maxBytes, failure) => {
+              const contentLength = response.headers.get("content-length");
+              if (contentLength !== null
+                && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)) {
+                throw new Error(failure);
+              }
+              if (!response.body) throw new Error(failure);
+              const reader = response.body.getReader();
+              const chunks = [];
+              let total = 0;
+              try {
+                while (true) {
+                  const next = await reader.read();
+                  if (next.done) break;
+                  total += next.value.byteLength;
+                  if (total > maxBytes) {
+                    try { await reader.cancel(); } catch { /* bounded failure */ }
+                    throw new Error(failure);
+                  }
+                  chunks.push(next.value);
+                }
+              } finally {
+                reader.releaseLock();
+              }
+              const bytes = new Uint8Array(total);
+              let offset = 0;
+              for (const chunk of chunks) {
+                bytes.set(chunk, offset);
+                offset += chunk.byteLength;
+              }
+              try {
+                return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+              } catch {
+                throw new Error(failure);
+              }
+            };
+            const mintOidcToken = async (audience) => {
+              const oidcUrl = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));
+              if (oidcUrl.protocol !== "https:"
+                || oidcUrl.hostname !== "token.actions.githubusercontent.com"
+                || oidcUrl.port || oidcUrl.username || oidcUrl.password || oidcUrl.hash) {
+                throw new Error("invalid GitHub OIDC request URL");
+              }
+              oidcUrl.searchParams.set("audience", audience);
+              const response = await fetch(oidcUrl, {
+                headers: { Authorization: `Bearer ${required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}` },
+                redirect: "error",
+                signal: AbortSignal.timeout(8_000),
+              });
+              if (!response.ok) throw new Error("GitHub OIDC token request failed");
+              const payload = await cappedJson(
+                response, 32 * 1024, "GitHub OIDC token response was invalid"
+              );
+              if (!payload || typeof payload.value !== "string"
+                || payload.value.length > 16_384 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(payload.value)) {
+                throw new Error("GitHub OIDC token response was invalid");
+              }
+              return payload.value;
+            };
+            const postReceipt = async (target, token, value, failure) => {
+              const response = await fetch(target, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body: JSON.stringify(value),
+                redirect: "error",
+                signal: AbortSignal.timeout(8_000),
+              });
+              if (response.status !== 200 && response.status !== 201) throw new Error(failure);
+            };
+            const readCurrentPrHead = async () => {
+              const api = new URL(`https://api.github.com/repos/${repository}/pulls/${prNumber}`);
+              if (api.protocol !== "https:" || api.hostname !== "api.github.com"
+                || api.port || api.username || api.password || api.search || api.hash) {
+                throw new Error("invalid GitHub API URL");
+              }
+              const response = await fetch(api, {
+                headers: {
+                  Authorization: `Bearer ${required("GITHUB_TOKEN_VALUE")}`,
+                  Accept: "application/vnd.github+json",
+                  "User-Agent": "agentrail-claude-repair-observation",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                redirect: "error",
+                signal: AbortSignal.timeout(8_000),
+              });
+              if (!response.ok) throw new Error("GitHub PR request failed");
+              const pr = await cappedJson(response, 256 * 1024, "GitHub PR response was invalid");
+              const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+              const expectedUrl = `https://github.com/${repository}/pull/${prNumber}`;
+              if (!record(pr) || pr.number !== Number(prNumber) || pr.html_url !== expectedUrl
+                || !record(pr.head) || typeof pr.head.sha !== "string" || !/^[0-9a-f]{40}$/i.test(pr.head.sha)
+                || !record(pr.base) || !record(pr.base.repo) || pr.base.repo.full_name !== repository
+                || pr.state !== "open" || pr.draft !== false || pr.merged !== false) {
+                throw new Error("GitHub PR response was invalid");
+              }
+              return pr.head.sha.toLowerCase();
+            };
 
-          const oidcResponse = await fetch(oidcUrl, {
-            headers: { Authorization: `Bearer ${required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}` },
-            redirect: "error",
-            signal: AbortSignal.timeout(8_000),
+            const digest = (value) => createHash("sha256").update(value, "utf8").digest("hex");
+            const activationBodySha256 = digest(required("ACTIVATION_COMMENT_BODY"));
+            if (!sha256Pattern.test(activationBodySha256)) throw new Error("invalid activation digest");
+            const acknowledgementAudience =
+              `agentrail://correction-dispatch/github-claude/ack/v1/${digest([
+                "github_claude_ack", "1", activationCommentId, runId, runAttempt,
+              ].join(":"))}`;
+            const acknowledgementToken = await mintOidcToken(acknowledgementAudience);
+            await postReceipt(callback, acknowledgementToken, {
+              version: 1,
+              activationCommentId,
+              activationBodySha256,
+              conclusion: "success",
+              sessionId: required("CLAUDE_SESSION_ID"),
+              runId,
+              runAttempt: 1,
+            }, "AgentRail acknowledgement was not accepted");
+
+            const afterHeadSha = await readCurrentPrHead();
+            if (beforeHeadSha !== afterHeadSha) {
+              const repairAudience =
+                `agentrail://correction-dispatch/github-claude/repair-observation/v1/${digest([
+                  "github_claude_repair_observation", "1", activationCommentId,
+                  activationBodySha256, beforeHeadSha, afterHeadSha, runId, runAttempt,
+                ].join(":"))}`;
+              const repairToken = await mintOidcToken(repairAudience);
+              const repairCallback = new URL(callback);
+              repairCallback.pathname =
+                "/api/v1/webhooks/github-actions/claude-repair-observation";
+              await postReceipt(repairCallback, repairToken, {
+                version: 1,
+                activationCommentId,
+                activationBodySha256,
+                beforeHeadSha,
+                afterHeadSha,
+                sessionId: required("CLAUDE_SESSION_ID"),
+                runId,
+                runAttempt: 1,
+              }, "AgentRail repair observation was not accepted");
+            }
+          })().catch(() => {
+            process.stderr.write("AgentRail Claude acknowledgement workflow failed\n");
+            process.exitCode = 1;
           });
-          if (!oidcResponse.ok) throw new Error("GitHub OIDC token request failed");
-          const oidcPayload = await oidcResponse.json();
-          if (!oidcPayload || typeof oidcPayload.value !== "string" || oidcPayload.value.length > 16_384) {
-            throw new Error("GitHub OIDC token response was invalid");
-          }
-
-          const body = JSON.stringify({
-            version: 1,
-            activationCommentId,
-            activationBodySha256: sha256(required("ACTIVATION_COMMENT_BODY")),
-            conclusion: "success",
-            sessionId: required("CLAUDE_SESSION_ID"),
-            runId,
-            runAttempt: 1,
-          });
-          const callbackResponse = await fetch(callback, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${oidcPayload.value}`,
-              "Content-Type": "application/json",
-            },
-            body,
-            redirect: "error",
-            signal: AbortSignal.timeout(8_000),
-          });
-          if (callbackResponse.status !== 200 && callbackResponse.status !== 201) {
-            throw new Error("AgentRail acknowledgement was not accepted");
-          }
           NODE

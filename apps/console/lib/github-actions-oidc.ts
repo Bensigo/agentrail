@@ -16,6 +16,8 @@ export const GITHUB_ACTIONS_OIDC_JWKS =
   "https://token.actions.githubusercontent.com/.well-known/jwks";
 export const GITHUB_CLAUDE_ACK_AUDIENCE_PREFIX =
   "agentrail://correction-dispatch/github-claude/ack/v1";
+export const GITHUB_CLAUDE_REPAIR_OBSERVATION_AUDIENCE_PREFIX =
+  "agentrail://correction-dispatch/github-claude/repair-observation/v1";
 export const MAX_GITHUB_ACTIONS_OIDC_TOKEN_BYTES = 16 * 1024;
 
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -141,16 +143,18 @@ export function githubClaudeAcknowledgementAudience(input: {
  * workflow, route, activation, or head is authoritative; Postgres compares
  * this signed projection with the server-owned acknowledgement profile.
  */
-export async function verifyGithubClaudeAcknowledgementOidcToken(
+async function verifyGithubClaudeOidcTokenForPurpose(
   input: { token: string; audience: string },
+  expectedAudiencePrefix: string,
   verifyJwt: GithubActionsJwtVerifier = verifyWithGithubJwks
 ): Promise<GithubActionsOidcVerificationResult> {
   if (typeof input.token !== "string"
     || Buffer.byteLength(input.token, "utf8") > MAX_GITHUB_ACTIONS_OIDC_TOKEN_BYTES
     || !JWT.test(input.token)
     || typeof input.audience !== "string"
-    || !input.audience.startsWith(`${GITHUB_CLAUDE_ACK_AUDIENCE_PREFIX}/`)
-    || input.audience.length !== GITHUB_CLAUDE_ACK_AUDIENCE_PREFIX.length + 1 + 64) {
+    || !input.audience.startsWith(`${expectedAudiencePrefix}/`)
+    || input.audience.length !== expectedAudiencePrefix.length + 1 + 64
+    || !/^[0-9a-f]{64}$/.test(input.audience.slice(expectedAudiencePrefix.length + 1))) {
     return { ok: false, reason: "invalid_token" };
   }
 
@@ -233,4 +237,28 @@ export async function verifyGithubClaudeAcknowledgementOidcToken(
   } catch {
     return { ok: false, reason: "invalid_token" };
   }
+}
+
+/** Verifies only the acknowledgement protocol audience. */
+export function verifyGithubClaudeAcknowledgementOidcToken(
+  input: { token: string; audience: string },
+  verifyJwt: GithubActionsJwtVerifier = verifyWithGithubJwks
+): Promise<GithubActionsOidcVerificationResult> {
+  return verifyGithubClaudeOidcTokenForPurpose(
+    input,
+    GITHUB_CLAUDE_ACK_AUDIENCE_PREFIX,
+    verifyJwt
+  );
+}
+
+/** Verifies only the repair-observation protocol audience. */
+export function verifyGithubClaudeRepairObservationOidcToken(
+  input: { token: string; audience: string },
+  verifyJwt: GithubActionsJwtVerifier = verifyWithGithubJwks
+): Promise<GithubActionsOidcVerificationResult> {
+  return verifyGithubClaudeOidcTokenForPurpose(
+    input,
+    GITHUB_CLAUDE_REPAIR_OBSERVATION_AUDIENCE_PREFIX,
+    verifyJwt
+  );
 }

@@ -66,6 +66,21 @@ export type DependencyObservationAcceptanceRecordDraft = AcceptanceRecordDraft &
   created: boolean;
 };
 
+type PnpmObservationProposalCandidate = Omit<
+  DependencyUpgradeCandidate,
+  | "ecosystem"
+  | "package_manager"
+  | "package_manager_version"
+  | "verification_commands"
+  | "manager_commands"
+> & {
+  ecosystem: "node";
+  package_manager: "pnpm";
+  package_manager_version: null;
+  verification_commands: [string, string];
+  manager_commands: { version: string; install: string; update: string };
+};
+
 type Custody = {
   watchId: string;
   repositoryId: string;
@@ -74,7 +89,7 @@ type Custody = {
   observationKey: string;
   baselineSha: string;
   selectedFileHashes: { "package.json": string; "pnpm-lock.yaml": string };
-  candidate: DependencyUpgradeCandidate;
+  candidate: PnpmObservationProposalCandidate;
 };
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -175,7 +190,7 @@ export function pnpmObservationCandidateFingerprint(
 /** Parse exactly the asdict shape serialized by the live pnpm watch producer. */
 export function validatePnpmObservationProposalCandidate(
   value: unknown,
-): DependencyUpgradeCandidate | null {
+): PnpmObservationProposalCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   if (!candidateRaw(raw) || PNPM_CANDIDATE_KEYS.some((key) => !(key in raw))) return null;
@@ -204,10 +219,11 @@ export function validatePnpmObservationProposalCandidate(
     || verification[0] !== "pnpm install --frozen-lockfile"
     || verification[1] !== "pnpm test") return null;
 
-  const candidate: DependencyUpgradeCandidate = {
+  const candidate: PnpmObservationProposalCandidate = {
     package: raw.package,
     ecosystem: "node",
     package_manager: "pnpm",
+    package_manager_version: null,
     dependency_kind: raw.dependency_kind,
     specifier: raw.specifier,
     current_version: raw.current_version,

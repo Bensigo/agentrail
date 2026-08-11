@@ -156,18 +156,12 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — Outcomes: sticky cards that deck over each other as the visitor
-          scrolls. Each card names the team outcome first and shows the
-          mechanism only in its supporting detail. */}
+      {/* 3 — Use cases: a paper-card bento of the concrete ways Jace gives a
+          team control over coding-agent work. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">What your team gets from Jace</h2>
-          </Reveal>
-          <Reveal delay={70}>
-            <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Clearer work, focused changes, and the evidence to make the call.
-            </p>
           </Reveal>
         </div>
         <div className="mt-12">
@@ -247,18 +241,6 @@ export default async function LandingPage() {
             Review the agreed criteria, the exact change, and the evidence for each claim before deciding what happens next.
           </p>
         </div>
-        <Reveal delay={100}>
-          <div className="mx-auto mt-12 max-w-[860px] border-t-2 border-[var(--gray-13)] pt-8 sm:pt-10">
-            <p className="text-mono-data text-[var(--gray-11)]">ONE USE CASE</p>
-            <h3 className="mt-3 text-heading-2">Keep dependency upgrades moving safely</h3>
-            <p className="mt-3 max-w-[58ch] text-[var(--gray-11)]">
-              Jace watches the dependencies your team selects, evaluates available updates and compatibility evidence, and prepares a proposal for human approval.
-            </p>
-            <p className="mt-3 max-w-[58ch] text-[var(--gray-11)]">
-              After approval, Jace gives the selected external coding agent a bounded dependency-upgrade Pack. The coding agent makes the code change; Jace verifies the evidence or refuses success.
-            </p>
-          </div>
-        </Reveal>
       </section>
 
       {/* 6b — Billing: company subscriptions (subscription-platform slice

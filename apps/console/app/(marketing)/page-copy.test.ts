@@ -9,11 +9,11 @@ const landingSource = readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8");
 const useCasesSource = readFileSync(resolve(MARKETING_DIR, "_use-cases.tsx"), "utf8");
 
 describe("landing story", () => {
-  it("leads with team outcomes and keeps the dependency use case out of that stack", () => {
+  it("uses one bento grid for the concrete Jace use cases", () => {
     expect(landingSource).toContain("What your team gets from Jace");
-    expect(landingSource).toContain(
-      "Clearer work, focused changes, and the evidence to make the call.",
-    );
+    expect(useCasesSource).toContain("lg:grid-cols-6");
+    expect(useCasesSource).toContain("lg:col-span-2");
+    expect(useCasesSource).toContain("lg:col-span-3");
 
     for (const outcome of [
       "Start with a clear definition of done",
@@ -24,11 +24,9 @@ describe("landing story", () => {
       expect(useCasesSource).toContain(outcome);
     }
 
-    expect(useCasesSource).not.toContain("dependency");
-    expect(landingSource).toContain("ONE USE CASE");
-    expect(landingSource).toContain(
-      "Keep dependency upgrades moving safely",
-    );
+    expect(useCasesSource).toContain("Keep dependency upgrades moving safely");
+    expect(landingSource).not.toContain("ONE USE CASE");
+    expect(landingSource).not.toContain("Keep dependency upgrades moving safely");
   });
 
   it("makes the team, coding agent, and Jace roles explicit in order", () => {

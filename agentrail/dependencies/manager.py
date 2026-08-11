@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 
+from agentrail.dependencies.strict_json import loads_strict_json
+
 
 class DetectionStatus(str, Enum):
     SUPPORTED = "supported"
@@ -57,6 +59,55 @@ class ManagerId(str, Enum):
 Command = Tuple[str, ...]
 
 
+class AdapterCapability(str, Enum):
+    """The strongest R10 capability implemented for a detected manager.
+
+    Detection is not a capability claim. ``OBSERVATION_PROPOSAL`` admits a
+    bounded candidate and descriptive external-builder argv but never managed
+    execution. ``MANAGED_EXECUTION`` additionally has an in-process executor.
+    ``UNSUPPORTED`` remains detected-only and must not produce a candidate.
+    """
+
+    MANAGED_EXECUTION = "managed_execution"
+    OBSERVATION_PROPOSAL = "observation_proposal"
+    UNSUPPORTED = "unsupported"
+
+
+# These IDs are the closed adapter identities already persisted by the
+# Console/database proposal boundary.  They are data custody, not aliases that
+# may be inferred from a lockfile name at execution time.
+PNPM_ADAPTER_PROFILE = "pnpm_lockfile_only_v1"
+NPM_ADAPTER_PROFILE = "npm_package_lock_only_v1"
+ADAPTER_PROFILE_IDS: Mapping[Tuple[str, str], str] = {
+    (Ecosystem.NODE.value, ManagerId.PNPM.value): PNPM_ADAPTER_PROFILE,
+    (Ecosystem.NODE.value, ManagerId.NPM.value): NPM_ADAPTER_PROFILE,
+}
+
+
+# This is deliberately a closed registry. A detector or command template does
+# not make a manager candidate-capable or executable.
+_NODE_ADAPTER_CAPABILITIES: Dict[ManagerId, AdapterCapability] = {
+    ManagerId.NPM: AdapterCapability.OBSERVATION_PROPOSAL,
+    ManagerId.PNPM: AdapterCapability.MANAGED_EXECUTION,
+    ManagerId.YARN: AdapterCapability.UNSUPPORTED,
+    ManagerId.BUN: AdapterCapability.UNSUPPORTED,
+}
+
+
+def node_adapter_capability(manager: ManagerId) -> AdapterCapability:
+    """Return the R10 capability for a Node manager, never inferring npm."""
+
+    return _NODE_ADAPTER_CAPABILITIES.get(manager, AdapterCapability.UNSUPPORTED)
+
+
+def node_adapter_can_observe(manager: ManagerId) -> bool:
+    return node_adapter_capability(manager) is not AdapterCapability.UNSUPPORTED
+
+
+def node_adapter_has_managed_execution(manager: ManagerId) -> bool:
+    return node_adapter_capability(manager) is AdapterCapability.MANAGED_EXECUTION
+
+
 @dataclass(frozen=True)
 class RepositorySnapshot:
     """Files made available to detection by the caller."""
@@ -74,9 +125,9 @@ DependencyManagerSnapshot = RepositorySnapshot
 class CommandPlan:
     """Shell-free command templates for a manager adapter.
 
-    Commands are argv tuples, never shell strings.  ``{dependency}`` and
-    ``{version}`` are placeholders for a later adapter; detection itself does
-    not interpolate or execute them.
+    Commands are argv tuples, never shell strings.  ``{dependency}``,
+    ``{version}``, and the npm-only ``{save_flag}`` are placeholders for a
+    later adapter; detection itself does not interpolate or execute them.
     """
 
     install: Command
@@ -140,7 +191,7 @@ class _Candidate:
 
 
 _NODE_LOCKFILES: Dict[ManagerId, Tuple[str, ...]] = {
-    ManagerId.NPM: ("package-lock.json", "npm-shrinkwrap.json"),
+    ManagerId.NPM: ("package-lock.json",),
     ManagerId.PNPM: ("pnpm-lock.yaml",),
     ManagerId.YARN: ("yarn.lock",),
     ManagerId.BUN: ("bun.lock", "bun.lockb"),
@@ -149,8 +200,40 @@ _NODE_MANAGER_NAMES = {manager.value: manager for manager in _NODE_LOCKFILES}
 _NODE_PACKAGE_MANAGER_RE = re.compile(r"^(npm|pnpm|yarn|bun)(?:@.+)?$")
 
 
+NPM_DEPENDENCY_KINDS: Tuple[str, ...] = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
+_NPM_SAVE_FLAGS: Dict[str, str] = {
+    "dependencies": "--save-prod",
+    "devDependencies": "--save-dev",
+    "optionalDependencies": "--save-optional",
+    "peerDependencies": "--save-peer",
+}
+
+
+def npm_save_flag(dependency_kind: str) -> Optional[str]:
+    """Return the exact #1688 npm save flag for an admitted dependency kind."""
+
+    return _NPM_SAVE_FLAGS.get(dependency_kind)
+
+
 COMMAND_PLANS: Dict[ManagerId, CommandPlan] = {
-    ManagerId.NPM: CommandPlan(("npm", "ci"), ("npm", "install", "{dependency}@{version}", "--package-lock-only"), ("npm", "test")),
+    ManagerId.NPM: CommandPlan(
+        ("npm", "ci", "--ignore-scripts"),
+        (
+            "npm",
+            "install",
+            "{dependency}@{version}",
+            "--package-lock-only",
+            "--ignore-scripts",
+            "--no-audit",
+            "{save_flag}",
+        ),
+        ("npm", "test"),
+    ),
     ManagerId.PNPM: CommandPlan(("pnpm", "install", "--frozen-lockfile"), ("pnpm", "update", "{dependency}@{version}", "--lockfile-only"), ("pnpm", "test")),
     ManagerId.YARN: CommandPlan(("yarn", "install", "--immutable"), ("yarn", "up", "{dependency}@{version}"), ("yarn", "test")),
     ManagerId.BUN: CommandPlan(("bun", "install", "--frozen-lockfile"), ("bun", "add", "{dependency}@{version}"), ("bun", "test")),
@@ -227,6 +310,10 @@ def detect_dependency_manager(
         return _unsupported(f"multiple dependency managers detected: {managers}")
 
     candidate = candidates[0]
+    if candidate.ecosystem is Ecosystem.NODE and not node_adapter_can_observe(candidate.manager_id):
+        return _unsupported(
+            f"{candidate.manager_id.value} was detected but its Node dependency adapter is unsupported"
+        )
     return SupportedDetection(
         ecosystem=candidate.ecosystem,
         manager_id=candidate.manager_id,
@@ -259,6 +346,15 @@ def _normalise_snapshot(
         path = raw_path.replace("\\", "/")
         while path.startswith("./"):
             path = path[2:]
+        if (
+            not path
+            or path.startswith("/")
+            or re.match(r"^[A-Za-z]:/", path)
+            or ".." in path.split("/")
+        ):
+            return {}, f"file snapshot contains an unsafe path: {raw_path}"
+        if path in files:
+            return {}, f"file snapshot path collision after normalization: {path}"
         files[path] = content
     return files, None
 
@@ -306,8 +402,10 @@ def _find_candidates(files: Mapping[str, str]) -> Tuple[Tuple[_Candidate, ...], 
 def _node_candidate(files: Mapping[str, str]) -> Tuple[Optional[_Candidate], Optional[str]]:
     if "package.json" not in files:
         return None, None
+    if "npm-shrinkwrap.json" in files:
+        return None, "npm-shrinkwrap.json was detected but the npm adapter supports package-lock.json v3 only"
     try:
-        manifest = json.loads(files["package.json"])
+        manifest = loads_strict_json(files["package.json"], document="package.json")
     except (TypeError, ValueError) as exc:
         return None, f"package.json is malformed: {exc}"
     if not isinstance(manifest, dict):
@@ -469,16 +567,23 @@ def _swift_candidate(files: Mapping[str, str]) -> Tuple[Optional[_Candidate], Op
 __all__ = [
     "Command",
     "CommandPlan",
+    "AdapterCapability",
+    "ADAPTER_PROFILE_IDS",
     "DependencyManagerSnapshot",
     "DetectionResult",
     "DetectionStatus",
     "Ecosystem",
     "FileSnapshot",
     "ManagerId",
+    "NPM_ADAPTER_PROFILE",
+    "PNPM_ADAPTER_PROFILE",
     "RepositorySnapshot",
     "SupportedDetection",
     "UnsupportedDetection",
     "detect",
     "detect_dependency_manager",
     "detect_manager",
+    "node_adapter_can_observe",
+    "node_adapter_capability",
+    "node_adapter_has_managed_execution",
 ]

@@ -8,16 +8,26 @@ package, or create an approval.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol
 
 from agentrail.afk import queue_store
 from agentrail.dependencies.cargo import (
     CARGO_LOCK_MAX_BYTES,
     CARGO_MANIFEST_MAX_BYTES,
+)
+from agentrail.dependencies.go_modules import (
+    GO_GITHUB_TREE_MAX_ENTRIES,
+    GO_MOD_MAX_BYTES,
+    GO_PROXY_LIST_MAX_BYTES,
+    GO_SUM_MAX_BYTES,
+    go_proxy_list_url,
+    go_snapshot_path_refusal,
+    parse_go_proxy_list,
 )
 from agentrail.dependencies.pnpm import (
     DependencySnapshot,
@@ -41,6 +51,23 @@ RECORD_WATCH_OBSERVATION_OP = "record_dependency_watch_observation"
 _REGISTRY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _REGISTRY_READ_CHUNK_BYTES = 64 * 1024
 _NPM_ABBREVIATED_ACCEPT = "application/vnd.npm.install-v1+json"
+
+
+class _GoProxyNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject proxy redirects before urllib can contact their target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_go_proxy_request(request: urllib.request.Request, timeout: int) -> Any:
+    """Open the canonical public Go proxy request without redirects or env proxies."""
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _GoProxyNoRedirectHandler(),
+    )
+    return opener.open(request, timeout=timeout)
 
 
 def _cargo_base64_content_limits(decoded_byte_limit: int) -> tuple[int, int]:
@@ -185,6 +212,14 @@ class RegistryClient:
         self._get_json = get_json
         self.manager_id = manager_id
 
+    def package_metadata_source_url(self, package: str) -> Optional[str]:
+        if self.manager_id != "go-modules":
+            return None
+        try:
+            return go_proxy_list_url(package)
+        except ValueError:
+            return None
+
     def package_metadata(self, package: str) -> Optional[RegistryPackage]:
         try:
             encoded = urllib.parse.quote(package, safe="@/:")
@@ -232,10 +267,10 @@ class RegistryClient:
                         yanked.append(version)
                 return RegistryPackage(tuple(values), tuple(yanked))
             if self.manager_id == "go-modules":
-                raw = self._get_json("https://proxy.golang.org/" + encoded + "/@v/list")
+                raw = self._get_json(go_proxy_list_url(package))
                 if not isinstance(raw, str):
                     return None
-                return RegistryPackage(tuple(line.strip() for line in raw.splitlines() if line.strip()))
+                return RegistryPackage(parse_go_proxy_list(package, raw))
             return None
         except Exception:
             return None
@@ -284,6 +319,91 @@ class GithubSnapshotProvider:
         self.token = token
         self._get = http_get
 
+    def _verify_go_recursive_inventory(
+        self,
+        repository: str,
+        commit: Mapping[str, Any],
+    ) -> Mapping[str, str]:
+        """Require one complete exact-tree inventory for a root Go watch."""
+
+        commit_sha = commit.get("sha") if isinstance(commit, dict) else None
+        if (
+            not isinstance(commit_sha, str)
+            or len(commit_sha) not in (40, 64)
+            or any(character not in "0123456789abcdef" for character in commit_sha)
+        ):
+            raise ValueError("GitHub did not return an exact Go commit SHA")
+        commit_data = commit.get("commit") if isinstance(commit, dict) else None
+        tree_data = commit_data.get("tree") if isinstance(commit_data, dict) else None
+        tree_sha = tree_data.get("sha") if isinstance(tree_data, dict) else None
+        if (
+            not isinstance(tree_sha, str)
+            or len(tree_sha) not in (40, 64)
+            or any(character not in "0123456789abcdef" for character in tree_sha)
+        ):
+            raise ValueError("GitHub did not return the exact Go root tree SHA")
+        response = self._get(
+            "https://api.github.com/repos/"
+            f"{repository}/git/trees/{tree_sha}?recursive=1",
+            self.token,
+        )
+        if not isinstance(response, dict) or response.get("sha") != tree_sha:
+            raise ValueError("GitHub Go inventory is not bound to the exact root tree SHA")
+        if response.get("truncated") is not False:
+            raise ValueError("GitHub Go recursive inventory is truncated")
+        entries = response.get("tree")
+        if not isinstance(entries, list):
+            raise ValueError("GitHub did not return a recursive Go inventory")
+        if len(entries) >= GO_GITHUB_TREE_MAX_ENTRIES:
+            raise ValueError("GitHub Go recursive inventory exceeds the entry limit")
+
+        inventory: List[str] = []
+        entries_by_path: Dict[str, Dict[str, Any]] = {}
+        folded_paths: Dict[str, str] = {}
+        for item in entries:
+            if not isinstance(item, dict):
+                raise ValueError("GitHub Go recursive inventory contains a malformed entry")
+            raw_path = item.get("path")
+            kind = item.get("type")
+            if not isinstance(raw_path, str) or kind not in ("blob", "tree", "commit"):
+                raise ValueError("GitHub Go recursive inventory contains a malformed entry")
+            path = _canonical_repository_path(raw_path)
+            if path != raw_path:
+                raise ValueError("GitHub Go recursive inventory contains a non-canonical path")
+            folded = path.casefold()
+            previous = folded_paths.get(folded)
+            if previous is not None:
+                raise ValueError(
+                    "GitHub Go recursive inventory contains colliding paths: "
+                    f"{previous} and {path}"
+                )
+            folded_paths[folded] = path
+            if kind == "commit":
+                raise ValueError("GitHub Go recursive inventory contains an opaque submodule")
+            inventory.append(path)
+            entries_by_path[path] = item
+
+        refusal = go_snapshot_path_refusal(inventory)
+        if refusal is not None:
+            raise ValueError(refusal)
+        required_blob_shas: Dict[str, str] = {}
+        for required in ("go.mod", "go.sum"):
+            item = entries_by_path.get(required)
+            blob_sha = item.get("sha") if isinstance(item, dict) else None
+            if (
+                item is None
+                or item.get("type") != "blob"
+                or item.get("mode") != "100644"
+                or not isinstance(blob_sha, str)
+                or len(blob_sha) not in (40, 64)
+                or any(character not in "0123456789abcdef" for character in blob_sha)
+            ):
+                raise ValueError(
+                    f"GitHub Go recursive inventory has no exact regular root {required} blob"
+                )
+            required_blob_shas[required] = blob_sha
+        return required_blob_shas
+
     def snapshot(self, repository: str, branch: str, manifest: str, lockfile: str) -> DependencySnapshot:
         normal_manifest = _canonical_repository_path(manifest)
         normal_lockfile = _canonical_repository_path(lockfile)
@@ -297,10 +417,14 @@ class GithubSnapshotProvider:
         if not isinstance(sha, str) or not sha: raise ValueError("GitHub did not return a commit SHA")
         files: Dict[str, str] = {}
         paths = [normal_manifest, normal_lockfile]
+        requested_auto = "auto" in paths
         root_package_watch = normal_manifest == "package.json"
         root_cargo_watch = normal_manifest == "Cargo.toml" and normal_lockfile == "Cargo.lock"
+        root_go_watch = normal_manifest == "go.mod" and normal_lockfile == "go.sum"
         cargo_inventory = root_cargo_watch
-        if "auto" in paths or root_package_watch or root_cargo_watch:
+        go_inventory = root_go_watch
+        go_root_blob_shas: Mapping[str, str] = {}
+        if requested_auto or root_package_watch or root_cargo_watch or root_go_watch:
             listing = self._get(
                 f"https://api.github.com/repos/{repository}/contents/?ref={urllib.parse.quote(sha, safe='')}",
                 self.token,
@@ -318,7 +442,10 @@ class GithubSnapshotProvider:
                 if isinstance(item, dict) and item.get("type") == "file"
             }
             cargo_inventory = root_cargo_watch or (
-                "auto" in paths and {"Cargo.toml", "Cargo.lock"}.issubset(available)
+                requested_auto and {"Cargo.toml", "Cargo.lock"}.issubset(available)
+            )
+            go_inventory = root_go_watch or (
+                requested_auto and {"go.mod", "go.sum"}.issubset(available)
             )
             if cargo_inventory and any(
                 isinstance(item, dict)
@@ -326,9 +453,13 @@ class GithubSnapshotProvider:
                 for item in listing
             ):
                 raise ValueError("Cargo watch refuses repository .cargo configuration until it is modeled")
-            if "auto" in paths:
+            if go_inventory:
+                go_root_blob_shas = self._verify_go_recursive_inventory(repository, commit)
+            if requested_auto:
                 paths = [path for path in self._AUTO_ROOT_FILES if path in available]
             elif root_cargo_watch:
+                paths.extend(path for path in self._AUTO_ROOT_FILES if path in available)
+            elif root_go_watch:
                 paths.extend(path for path in self._AUTO_ROOT_FILES if path in available)
             else:
                 # Explicit/legacy root package.json watches must see the same-SHA
@@ -346,6 +477,14 @@ class GithubSnapshotProvider:
             encoding = body.get("encoding") if isinstance(body, dict) else None
             if not isinstance(content, str) or encoding != "base64": raise ValueError(f"GitHub did not return {path}")
             normal_path = _canonical_repository_path(path)
+            expected_go_blob_sha = go_root_blob_shas.get(normal_path)
+            if expected_go_blob_sha is not None and (
+                not isinstance(body, dict)
+                or body.get("sha") != expected_go_blob_sha
+            ):
+                raise ValueError(
+                    f"GitHub Go root {normal_path} body is not bound to its exact tree blob SHA"
+                )
             cargo_byte_limit = (
                 CARGO_MANIFEST_MAX_BYTES
                 if cargo_inventory and normal_path == "Cargo.toml"
@@ -353,12 +492,28 @@ class GithubSnapshotProvider:
                 if cargo_inventory and normal_path == "Cargo.lock"
                 else None
             )
-            if cargo_byte_limit is not None:
-                compact_limit, wrapped_limit = _cargo_base64_content_limits(cargo_byte_limit)
+            go_byte_limit = (
+                GO_MOD_MAX_BYTES
+                if go_inventory and normal_path == "go.mod"
+                else GO_SUM_MAX_BYTES
+                if go_inventory and normal_path == "go.sum"
+                else None
+            )
+            byte_limit = cargo_byte_limit or go_byte_limit
+            if byte_limit is not None:
+                compact_limit, wrapped_limit = _cargo_base64_content_limits(byte_limit)
                 compact_length = len(content) - content.count("\n")
                 if len(content) > wrapped_limit or compact_length > compact_limit:
                     raise ValueError(f"{normal_path} base64 content exceeds the encoded-size limit")
-            files[normal_path] = base64.b64decode(content.replace("\n", "")).decode("utf-8")
+            compact_content = content.replace("\n", "")
+            try:
+                decoded = base64.b64decode(
+                    compact_content,
+                    validate=go_inventory,
+                ).decode("utf-8")
+            except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+                raise ValueError(f"GitHub returned malformed text content for {normal_path}") from exc
+            files[normal_path] = decoded
         return DependencySnapshot(files=files, baseline_sha=sha)
 
 
@@ -433,6 +588,11 @@ def _registry_get(url: str, manager_id: str) -> Any:
     still refuses a body beyond the fixed cap.
     """
 
+    response_limit = (
+        GO_PROXY_LIST_MAX_BYTES
+        if manager_id == "go-modules"
+        else _REGISTRY_MAX_RESPONSE_BYTES
+    )
     accept = (
         _NPM_ABBREVIATED_ACCEPT
         if manager_id in ("npm", "pnpm")
@@ -442,7 +602,16 @@ def _registry_get(url: str, manager_id: str) -> Any:
         url,
         headers={"Accept": accept, "User-Agent": "agentrail-heartbeat"},
     )
-    with urllib.request.urlopen(request, timeout=8) as response:
+    open_request = (
+        _open_go_proxy_request
+        if manager_id == "go-modules"
+        else urllib.request.urlopen
+    )
+    with open_request(request, timeout=8) as response:
+        if manager_id == "go-modules":
+            final_url = response.geturl() if hasattr(response, "geturl") else None
+            if final_url != url:
+                raise ValueError("Go proxy response URL does not match the canonical request")
         headers = getattr(response, "headers", None)
         raw_length = headers.get("Content-Length") if headers is not None else None
         declared_length: Optional[int] = None
@@ -451,13 +620,13 @@ def _registry_get(url: str, manager_id: str) -> Any:
                 declared_length = int(raw_length)
             except (TypeError, ValueError) as exc:
                 raise ValueError("registry response has an invalid Content-Length") from exc
-            if declared_length < 0 or declared_length > _REGISTRY_MAX_RESPONSE_BYTES:
+            if declared_length < 0 or declared_length > response_limit:
                 raise ValueError("registry response exceeds the byte limit")
 
         chunks: List[bytes] = []
         total = 0
         while True:
-            remaining = _REGISTRY_MAX_RESPONSE_BYTES + 1 - total
+            remaining = response_limit + 1 - total
             chunk = response.read(min(_REGISTRY_READ_CHUNK_BYTES, remaining))
             if not chunk:
                 break
@@ -465,7 +634,7 @@ def _registry_get(url: str, manager_id: str) -> Any:
                 raise ValueError("registry response body is not bytes")
             chunks.append(chunk)
             total += len(chunk)
-            if total > _REGISTRY_MAX_RESPONSE_BYTES:
+            if total > response_limit:
                 raise ValueError("registry response exceeds the byte limit")
         if declared_length is not None and total != declared_length:
             raise ValueError("registry response Content-Length does not match its body")

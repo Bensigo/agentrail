@@ -8274,7 +8274,6 @@ const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
-const ACCEPTANCE_DEPENDENCY_GO_PROFILE = "go_1_26_root_mod_sum_public_proxy_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
@@ -8287,16 +8286,8 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
 };
-const ACCEPTANCE_DEPENDENCY_GO_IDENTITY: AcceptanceDependencyProfileIdentity = {
-  ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_PROFILE,
-};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const NORMALIZED_PYPI_PACKAGE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const GO_MODULE_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const GO_MODULE_SEGMENT = /^[a-z0-9](?:[a-z0-9._~-]{0,126}[a-z0-9])?$/;
-const GO_MODULE_RESERVED_PATH_ELEMENT_PREFIX = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
-const GO_MODULE_SHORTNAME_PATH_ELEMENT_PREFIX = /~[0-9]+$/u;
-const GO_MODULE_NUMERIC_MAJOR_SUFFIX = /^v[0-9.]+$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
@@ -8379,47 +8370,6 @@ function uvCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
     && compareStableReleaseTuples(target, current) > 0;
 }
 
-function stableGoModuleVersion(value: string): [number, number, number] | null {
-  if (!value.startsWith("v")) return null;
-  return stableSemverTuple(value.slice(1));
-}
-
-function portableGoModulePathElement(value: string): boolean {
-  const prefix = value.split(".", 1)[0] ?? "";
-  return !GO_MODULE_RESERVED_PATH_ELEMENT_PREFIX.test(prefix)
-    && !GO_MODULE_SHORTNAME_PATH_ELEMENT_PREFIX.test(prefix);
-}
-
-function canonicalPublicGoModulePath(value: string, major: number): boolean {
-  const [host, ...segments] = value.split("/");
-  if (!host || segments.length === 0 || !GO_MODULE_HOST.test(host)
-    || !portableGoModulePathElement(host)
-    || !segments.every((segment) => GO_MODULE_SEGMENT.test(segment)
-      && portableGoModulePathElement(segment))) return false;
-  const terminalSegment = segments.at(-1) ?? "";
-  const semanticSuffix = /^v(0|[1-9][0-9]*)$/u.exec(terminalSegment);
-  const gopkgSuffix = host === "gopkg.in" && segments.length === 1
-    ? /\.v(0|[1-9][0-9]*)$/u.exec(segments[0]!)
-    : null;
-  if (host === "gopkg.in") {
-    return major >= 2 && gopkgSuffix?.[1] === String(major);
-  }
-  if (major >= 2) {
-    return semanticSuffix?.[1] === String(major);
-  }
-  return !GO_MODULE_NUMERIC_MAJOR_SUFFIX.test(terminalSegment);
-}
-
-function goModuleCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
-  if (candidate.dependencyKind !== "dependencies"
-    || candidate.specifier !== candidate.currentVersion) return false;
-  const current = stableGoModuleVersion(candidate.currentVersion);
-  const target = stableGoModuleVersion(candidate.targetVersion);
-  return current !== null && target !== null && current[0] === target[0]
-    && compareStableReleaseTuples(target, current) > 0
-    && canonicalPublicGoModulePath(candidate.package, target[0]);
-}
-
 function yarnCandidateSpecifierIsValid(value: string): boolean {
   const exact = value.startsWith("^") || value.startsWith("~") ? value.slice(1) : value;
   return EXACT_SEMVER.test(exact);
@@ -8447,7 +8397,6 @@ function sameAcceptanceDependencyProfile(
 
 type AcceptanceDependencyObservationProfile = {
   identity: AcceptanceDependencyProfileIdentity;
-  packageManagerName: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -8461,7 +8410,6 @@ type AcceptanceDependencyObservationProfile = {
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
-    packageManagerName: "pnpm",
     candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
       && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
       && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
@@ -8481,7 +8429,6 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
   }],
   ["node:npm:npm_package_lock_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_NPM_IDENTITY,
-    packageManagerName: "npm",
     candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
       && !UNSAFE_NPM_SPECIFIER.test(candidate.specifier)
       && !NPM_ALIAS_SPECIFIER.test(candidate.specifier)
@@ -8505,7 +8452,6 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
   }],
   ["node:yarn:yarn_berry_v4_root_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_YARN_IDENTITY,
-    packageManagerName: "yarn",
     candidateIsValid: (candidate) => NPM_PACKAGE_NAME.test(candidate.package)
       && yarnCandidateSpecifierIsValid(candidate.specifier)
       && EXACT_SEMVER.test(candidate.currentVersion) && EXACT_SEMVER.test(candidate.targetVersion)
@@ -8531,7 +8477,6 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
   }],
   ["python:uv:uv_project_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_UV_IDENTITY,
-    packageManagerName: "uv",
     candidateIsValid: uvCandidateIsValid,
     runtimeVersionIsValid: (version) => stableSemverTuple(version)?.[0] === 3,
     packageManagerVersionIsValid: (version) => {
@@ -8548,26 +8493,6 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       `${candidate.package}==${candidate.targetVersion}`,
     ],
   }],
-  ["go:go-modules:go_1_26_root_mod_sum_public_proxy_v1", {
-    identity: ACCEPTANCE_DEPENDENCY_GO_IDENTITY,
-    packageManagerName: "go",
-    candidateIsValid: goModuleCandidateIsValid,
-    runtimeVersionIsValid: (version) => {
-      const parsed = stableSemverTuple(version);
-      return parsed?.[0] === 1 && parsed[1] === 26;
-    },
-    packageManagerVersionIsValid: (version) => {
-      const parsed = stableSemverTuple(version);
-      return parsed?.[0] === 1 && parsed[1] === 26;
-    },
-    manifestPathIsValid: (path) => path === "go.mod",
-    lockfilePathIsValid: (path) => path === "go.sum",
-    securityIsValid: (security, candidate) => security.provider === "osv"
-      && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion.slice(1)}`,
-    expectedArgv: (candidate) => [
-      "go", "get", "-mod=mod", `${candidate.package}@${candidate.targetVersion}`,
-    ],
-  }],
 ]);
 
 function isStrictCurrentAcceptanceDependencyProfile(
@@ -8575,8 +8500,7 @@ function isStrictCurrentAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_GO_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
 }
 
 function isFrozenReplayEligibleAcceptanceDependencyProfile(
@@ -8584,8 +8508,7 @@ function isFrozenReplayEligibleAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_GO_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
 }
 
 function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {
@@ -8927,7 +8850,7 @@ function acceptanceDependencyObservationDisposition(input: {
     add("package_manager_evidence_ambiguous");
   }
   if (supportedProfile && evidence.packageManager.disposition === "safe") {
-    if (evidence.packageManager.name !== profile.packageManagerName) add("unsafe_package_manager");
+    if (evidence.packageManager.name !== profile.identity.manager) add("unsafe_package_manager");
     if (evidence.packageManager.profile !== profile.identity.profile) {
       add("unsafe_package_manager_profile");
     }
@@ -8936,7 +8859,7 @@ function acceptanceDependencyObservationDisposition(input: {
     }
   }
   if (supportedProfile && (
-    evidence.packageManager.name !== profile.packageManagerName
+    evidence.packageManager.name !== profile.identity.manager
     || evidence.packageManager.profile !== profile.identity.profile
     || (evidence.packageManager.disposition === "safe"
       && (!evidence.packageManager.version

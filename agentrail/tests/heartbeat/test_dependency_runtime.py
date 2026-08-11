@@ -1,6 +1,10 @@
 import base64
 import json
+import urllib.error
+import urllib.response
 from datetime import datetime
+from email.message import Message
+from io import BytesIO
 
 import pytest
 
@@ -12,6 +16,19 @@ FILES = {
     "package.json": '{"dependencies":{"react":"^1.0.0"}}',
     "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      react:\n        specifier: ^1.0.0\n        version: 1.0.0\n",
 }
+GO_ROOT_BLOB_SHAS = {"go.mod": "c" * 40, "go.sum": "d" * 40}
+
+
+def _go_root_tree_entries():
+    return [
+        {
+            "path": path,
+            "type": "blob",
+            "mode": "100644",
+            "sha": blob_sha,
+        }
+        for path, blob_sha in GO_ROOT_BLOB_SHAS.items()
+    ]
 
 
 class Executor:
@@ -422,6 +439,325 @@ def test_root_inventory_at_github_contents_limit_refuses_as_incomplete():
     assert len(calls) == 2
 
 
+def test_explicit_go_snapshot_binds_complete_recursive_exact_tree_before_file_reads():
+    tree_sha = "b" * 40
+    go_mod = "module example.com/root\n\ngo 1.26\n\nrequire github.com/acme/lib v1.2.3\n"
+    checksum = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    go_sum = (
+        f"github.com/acme/lib v1.2.3 {checksum}\n"
+        f"github.com/acme/lib v1.2.3/go.mod {checksum}\n"
+    )
+    root_files = {"go.mod": go_mod, "go.sum": go_sum}
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [{"path": path, "type": "file"} for path in root_files]
+        if f"/git/trees/{tree_sha}?recursive=1" in url:
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": _go_root_tree_entries(),
+            }
+        for path, content in root_files.items():
+            if f"/contents/{path}?ref=" in url:
+                return {
+                    "encoding": "base64",
+                    "content": base64.b64encode(content.encode()).decode(),
+                    "sha": GO_ROOT_BLOB_SHAS[path],
+                }
+        raise AssertionError(f"unexpected GitHub URL: {url}")
+
+    snapshot = dependency_runtime.GithubSnapshotProvider("token", github_get).snapshot(
+        "ada/widgets", "main", "go.mod", "go.sum",
+    )
+
+    assert snapshot.files == root_files
+    tree_call = next(url for url in calls if "/git/trees/" in url)
+    mod_call = next(url for url in calls if "/contents/go.mod?ref=" in url)
+    assert calls.index(tree_call) < calls.index(mod_call)
+    assert tree_call.endswith(f"/git/trees/{tree_sha}?recursive=1")
+
+
+@pytest.mark.parametrize("body_sha", (None, "e" * 40))
+def test_go_snapshot_refuses_missing_or_mismatched_contents_blob_sha(body_sha) -> None:
+    tree_sha = "b" * 40
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        if "/git/trees/" in url:
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": _go_root_tree_entries(),
+            }
+        if "/contents/go.mod?ref=" in url:
+            body = {
+                "encoding": "base64",
+                "content": base64.b64encode(b"not decoded").decode(),
+            }
+            if body_sha is not None:
+                body["sha"] = body_sha
+            return body
+        raise AssertionError(url)
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="exact tree blob SHA"):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+    assert not any("/contents/go.sum?ref=" in url for url in calls)
+
+
+@pytest.mark.parametrize(
+    ("tree_mutation", "reason"),
+    (
+        ({"truncated": True}, "truncated"),
+        ({"sha": "c" * 40}, "exact root tree SHA"),
+        (
+            {
+                "tree": [
+                    *_go_root_tree_entries(),
+                    {"path": "go.work", "type": "blob", "mode": "100644"},
+                ]
+            },
+            "go.work",
+        ),
+        (
+            {
+                "tree": [
+                    *_go_root_tree_entries(),
+                    {"path": "tools/go.mod", "type": "blob", "mode": "100644"},
+                ]
+            },
+            "nested",
+        ),
+        (
+            {
+                "tree": [
+                    *_go_root_tree_entries(),
+                    {"path": ".config/go/env", "type": "blob", "mode": "100644"},
+                ]
+            },
+            "configuration",
+        ),
+        (
+            {
+                "tree": [
+                    *_go_root_tree_entries(),
+                    {"path": "vendor", "type": "tree", "mode": "040000"},
+                ]
+            },
+            "vendored",
+        ),
+        (
+            {
+                "tree": [
+                    *_go_root_tree_entries(),
+                    {"path": "opaque", "type": "commit", "mode": "160000"},
+                ]
+            },
+            "opaque submodule",
+        ),
+    ),
+)
+def test_go_recursive_inventory_refuses_incomplete_or_unmodelled_state(
+    tree_mutation, reason,
+) -> None:
+    tree_sha = "b" * 40
+    calls = []
+    tree = {
+        "sha": tree_sha,
+        "truncated": False,
+        "tree": _go_root_tree_entries(),
+    }
+    tree.update(tree_mutation)
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        if "/git/trees/" in url:
+            return tree
+        raise AssertionError(f"Go inventory refusal reached file fetch: {url}")
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match=reason):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+    assert not any("/contents/go.mod?ref=" in url for url in calls)
+
+
+def test_go_recursive_inventory_requires_commit_tree_identity() -> None:
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "a" * 40}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        raise AssertionError(f"missing tree identity reached another request: {url}")
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="exact Go root tree SHA"):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+    assert len(calls) == 2
+
+
+def test_go_recursive_inventory_requires_canonical_exact_commit_sha() -> None:
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {
+                "sha": "branch-shaped-not-a-sha",
+                "commit": {"tree": {"sha": "b" * 40}},
+            }
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        raise AssertionError(url)
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="exact Go commit SHA"):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+    assert len(calls) == 2
+
+
+def test_go_recursive_inventory_entry_cap_fails_closed(monkeypatch) -> None:
+    tree_sha = "b" * 40
+    monkeypatch.setattr(dependency_runtime, "GO_GITHUB_TREE_MAX_ENTRIES", 2)
+
+    def github_get(url, token):
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        if "/git/trees/" in url:
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": _go_root_tree_entries(),
+            }
+        raise AssertionError(url)
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="entry limit"):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+
+@pytest.mark.parametrize(
+    ("oversized_path", "cap_name"),
+    (("go.mod", "GO_MOD_MAX_BYTES"), ("go.sum", "GO_SUM_MAX_BYTES")),
+)
+def test_go_snapshot_rejects_oversized_encoded_content_before_decode(
+    monkeypatch, oversized_path: str, cap_name: str,
+) -> None:
+    tree_sha = "b" * 40
+    real_decode = base64.b64decode
+    small_content = base64.b64encode(b"x").decode()
+    oversized_content = "A" * 128
+    decoded_payloads = []
+    monkeypatch.setattr(dependency_runtime, cap_name, 1)
+
+    def github_get(url, token):
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        if "/git/trees/" in url:
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": _go_root_tree_entries(),
+            }
+        for path in ("go.mod", "go.sum"):
+            if f"/contents/{path}?ref=" in url:
+                return {
+                    "encoding": "base64",
+                    "content": oversized_content if path == oversized_path else small_content,
+                    "sha": GO_ROOT_BLOB_SHAS[path],
+                }
+        raise AssertionError(url)
+
+    def track_decode(value, *args, **kwargs):
+        decoded_payloads.append(value)
+        if value == oversized_content:
+            raise AssertionError("oversized Go content reached base64 decoding")
+        return real_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr(dependency_runtime.base64, "b64decode", track_decode)
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+
+    with pytest.raises(
+        ValueError,
+        match=f"{oversized_path} base64 content exceeds the encoded-size limit",
+    ):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+    assert oversized_content not in decoded_payloads
+
+
+def test_go_snapshot_rejects_malformed_base64_content() -> None:
+    tree_sha = "b" * 40
+
+    def github_get(url, token):
+        if "/commits/" in url:
+            return {"sha": "a" * 40, "commit": {"tree": {"sha": tree_sha}}}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "go.mod", "type": "file"},
+                {"path": "go.sum", "type": "file"},
+            ]
+        if "/git/trees/" in url:
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": _go_root_tree_entries(),
+            }
+        if "/contents/go.mod?ref=" in url:
+            return {
+                "encoding": "base64",
+                "content": "%%%",
+                "sha": GO_ROOT_BLOB_SHAS["go.mod"],
+            }
+        raise AssertionError(url)
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="malformed text content for go.mod"):
+        provider.snapshot("ada/widgets", "main", "go.mod", "go.sum")
+
+
 def test_sql_observation_persists_candidate_fingerprint_separately_from_observation_key():
     sql = dependency_runtime.queue_store._SQL[dependency_runtime.RECORD_WATCH_OBSERVATION_OP]
     assert "candidate_fingerprint" in sql.split("VALUES", 1)[0]
@@ -453,6 +789,38 @@ def test_cargo_registry_client_preserves_yanked_versions_for_the_profile() -> No
     assert metadata is not None
     assert metadata.available_versions == ("1.0.203", "1.0.204")
     assert metadata.yanked_versions == ("1.0.204",)
+
+
+def test_go_registry_client_uses_exact_public_proxy_path_and_strict_rows() -> None:
+    calls = []
+    client = RegistryClient(
+        lambda url: calls.append(url) or "v1.2.3\nv1.3.0\n",
+        manager_id="go-modules",
+    )
+
+    metadata = client.package_metadata("github.com/acme/lib")
+
+    assert metadata is not None
+    assert metadata.available_versions == ("v1.2.3", "v1.3.0")
+    assert calls == [
+        "https://proxy.golang.org/github.com/acme/lib/@v/list"
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "v1.2.3\nv1.2.3\n",
+        "v1.2.3\n\nv1.3.0\n",
+        "v1.2.3-rc.1\n",
+        "v0.0.0-20260101000000-abcdefabcdef\n",
+        {"versions": ["v1.2.3"]},
+    ),
+)
+def test_go_registry_client_rejects_malformed_or_duplicate_proxy_rows(body) -> None:
+    client = RegistryClient(lambda url: body, manager_id="go-modules")
+
+    assert client.package_metadata("github.com/acme/lib") is None
 
 
 @pytest.mark.parametrize(
@@ -539,10 +907,17 @@ def test_cargo_snapshot_rejects_oversized_encoded_content_before_base64_decode(
 
 
 class RegistryResponse:
-    def __init__(self, body: bytes, *, content_length: str | None) -> None:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        content_length: str | None,
+        final_url: str | None = None,
+    ) -> None:
         self.body = body
         self.offset = 0
         self.headers = {}
+        self.final_url = final_url
         if content_length is not None:
             self.headers["Content-Length"] = content_length
         self.read_calls = 0
@@ -558,6 +933,9 @@ class RegistryResponse:
         chunk = self.body[self.offset : self.offset + size]
         self.offset += len(chunk)
         return chunk
+
+    def geturl(self) -> str | None:
+        return self.final_url
 
 
 def test_npm_registry_transport_has_public_bounded_headers(monkeypatch):
@@ -584,6 +962,148 @@ def test_npm_registry_transport_has_public_bounded_headers(monkeypatch):
     assert request.get_header("Accept") == "application/vnd.npm.install-v1+json"
     assert request.get_header("Accept") != "application/vnd.github+json"
     assert captured["timeout"] == 8
+
+
+def test_go_proxy_transport_has_no_credentials_and_uses_go_byte_cap(monkeypatch):
+    body = b"v1.2.3\nv1.3.0\n"
+    canonical_url = "https://proxy.golang.org/github.com/acme/lib/@v/list"
+    response = RegistryResponse(
+        body,
+        content_length=str(len(body)),
+        final_url=canonical_url,
+    )
+    captured = {}
+
+    def open_request(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return response
+
+    monkeypatch.setattr(dependency_runtime, "_open_go_proxy_request", open_request)
+    client = RegistryClient(
+        lambda url: dependency_runtime._registry_get(url, "go-modules"),
+        manager_id="go-modules",
+    )
+
+    metadata = client.package_metadata("github.com/acme/lib")
+
+    assert metadata is not None
+    request = captured["request"]
+    assert request.full_url == canonical_url
+    assert request.get_header("Authorization") is None
+    assert request.get_header("Accept") == "text/plain"
+    assert captured["timeout"] == 8
+
+
+def test_go_proxy_transport_refuses_redirected_final_url_before_read(monkeypatch):
+    canonical_url = "https://proxy.golang.org/github.com/acme/lib/@v/list"
+    response = RegistryResponse(
+        b"v1.2.3\nv1.3.0\n",
+        content_length="16",
+        final_url="https://storage.example.invalid/forged-list",
+    )
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_go_proxy_request",
+        lambda request, timeout: response,
+    )
+    client = RegistryClient(
+        lambda url: dependency_runtime._registry_get(url, "go-modules"),
+        manager_id="go-modules",
+    )
+
+    assert client.package_metadata("github.com/acme/lib") is None
+    assert response.read_calls == 0
+
+
+def test_go_proxy_transport_never_opens_a_redirect_target(monkeypatch):
+    source_url = "https://proxy.golang.org/github.com/acme/lib/@v/list"
+    target_url = "https://storage.example.invalid/redirect-target"
+    requested_urls = []
+
+    class RedirectingTransport(urllib.request.BaseHandler):
+        handler_order = 100
+
+        def https_open(self, request):
+            requested_urls.append(request.full_url)
+            headers = Message()
+            if request.full_url == source_url:
+                headers["Location"] = target_url
+                response = urllib.response.addinfourl(
+                    BytesIO(b""), headers, source_url, 302,
+                )
+                response.msg = "Found"
+                return response
+            headers["Content-Length"] = "7"
+            response = urllib.response.addinfourl(
+                BytesIO(b"v1.2.3\n"), headers, target_url, 200,
+            )
+            response.msg = "OK"
+            return response
+
+    real_build_opener = urllib.request.build_opener
+
+    def build_no_network_opener(*handlers):
+        assert any(
+            isinstance(handler, dependency_runtime._GoProxyNoRedirectHandler)
+            for handler in handlers
+        )
+        assert any(
+            isinstance(handler, urllib.request.ProxyHandler)
+            and handler.proxies == {}
+            for handler in handlers
+        )
+        redirect_handler = next(
+            handler
+            for handler in handlers
+            if isinstance(handler, dependency_runtime._GoProxyNoRedirectHandler)
+        )
+        return real_build_opener(
+            urllib.request.ProxyHandler({}),
+            RedirectingTransport(),
+            redirect_handler,
+        )
+
+    monkeypatch.setattr(
+        dependency_runtime.urllib.request,
+        "build_opener",
+        build_no_network_opener,
+    )
+    request = urllib.request.Request(source_url)
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        dependency_runtime._open_go_proxy_request(request, timeout=8)
+
+    assert error.value.code == 302
+    assert requested_urls == [source_url]
+
+
+@pytest.mark.parametrize("overflow", ("declared", "chunked"))
+def test_go_proxy_transport_enforces_profile_specific_byte_cap(
+    monkeypatch, overflow: str,
+) -> None:
+    monkeypatch.setattr(dependency_runtime, "GO_PROXY_LIST_MAX_BYTES", 8)
+    monkeypatch.setattr(dependency_runtime, "_REGISTRY_READ_CHUNK_BYTES", 4)
+    response = RegistryResponse(
+        b"v1.2.3\nX" if overflow == "chunked" else b"",
+        content_length="9" if overflow == "declared" else None,
+        final_url="https://proxy.golang.org/github.com/acme/lib/@v/list",
+    )
+    monkeypatch.setattr(
+        dependency_runtime,
+        "_open_go_proxy_request",
+        lambda request, timeout: response,
+    )
+    client = RegistryClient(
+        lambda url: dependency_runtime._registry_get(url, "go-modules"),
+        manager_id="go-modules",
+    )
+
+    assert client.package_metadata("github.com/acme/lib") is None
+    if overflow == "declared":
+        assert response.read_calls == 0
+    else:
+        assert response.read_calls > 1
 
 
 @pytest.mark.parametrize("overflow", ("declared", "chunked"))

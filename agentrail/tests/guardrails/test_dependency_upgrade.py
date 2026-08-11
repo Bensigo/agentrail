@@ -54,3 +54,19 @@ def test_dependency_upgrade_guardrail_is_registered_and_blocking():
     assert guardrail.evaluate(dependency_evidence=_payload(DependencyDecisionStatus.READY)).status is VerdictStatus.PASS
     assert guardrail.evaluate(dependency_evidence=_payload(DependencyDecisionStatus.BLOCKED)).status is VerdictStatus.FAIL
     assert guardrail.evaluate().status is VerdictStatus.FAIL
+
+
+def test_dependency_upgrade_guardrail_states_exact_manager_authority_boundary():
+    description = get_guardrail("dependency_upgrade_evidence").description
+
+    assert "pnpm is the sole managed execution adapter" in description
+    assert "npm, Yarn Berry 4 root projects, and uv" in description
+    assert "are external-builder-only" in description
+    assert "watcher candidates do not by themselves become canonical accepted evidence" in description
+    assert "Yarn has no Python watcher candidate" in description
+    assert "uv's legacy watcher candidate remains noncanonical" in description
+    assert "Cargo and Go Modules are bounded observation-only parser foundations" in description
+    assert "excluded from evidence gates and Pack eligibility" in description
+    assert "go.sum checksums are syntax-checked provided baseline material" in description
+    assert "not authenticated checksum-database or proxy receipts" in description
+    assert "Bun remains detected-only and unsupported" in description

@@ -1114,20 +1114,18 @@ function uvAcceptanceDependencyObservationInput(input: {
   };
 }
 
-function goAcceptanceDependencyObservationInput(input: {
+function withdrawnGoAcceptanceDependencyObservationInput(input: {
   workspaceId: string;
   recordId: string;
   compiledPackId: string;
   headSha: string;
   manifestBlobSha: string;
   lockfileBlobSha: string;
-  modulePath?: string;
-  currentVersion?: string;
   targetVersion?: string;
 }) {
-  const modulePath = input.modulePath ?? "github.com/agentrail/example/v2";
-  const currentVersion = input.currentVersion ?? "v2.3.4";
-  const targetVersion = input.targetVersion ?? "v2.4.0";
+  const currentVersion = "v1.2.3";
+  const targetVersion = input.targetVersion ?? "v1.3.0";
+  const modulePath = "github.com/acme/lib";
   const identity = {
     ecosystem: "go",
     manager: "go-modules",
@@ -1155,7 +1153,7 @@ function goAcceptanceDependencyObservationInput(input: {
       disposition: "safe" as const,
       name: "go",
       version: "1.26.1",
-      profile: "go_1_26_root_mod_sum_public_proxy_v1",
+      profile: identity.profile,
       updateArgv: ["go", "get", "-mod=mod", `${modulePath}@${targetVersion}`],
       evidenceSha256: "2".repeat(64),
     },
@@ -1177,8 +1175,12 @@ function goAcceptanceDependencyObservationInput(input: {
   };
 }
 
-async function appendHistoricalUnsupportedDependencyObservationV2(
+async function appendHistoricalDependencyObservationV2(
   evidence: RecordAcceptanceDependencyObservationInput,
+  observation: {
+    status: "observed" | "refused_unsupported_profile";
+    reasons: [] | ["unsupported_manager_profile"];
+  },
 ) {
   const record = (await db.select().from(changeRecords).where(and(
     eq(changeRecords.id, evidence.recordId),
@@ -1253,11 +1255,20 @@ async function appendHistoricalUnsupportedDependencyObservationV2(
       lockfile: evidence.lockfile,
       baseline: evidence.baseline,
       security: evidence.security,
-      status: "refused_unsupported_profile",
-      reasons: ["unsupported_manager_profile"],
+      status: observation.status,
+      reasons: observation.reasons,
     },
   });
   return { event: appended.event, eventKey, candidateFingerprint, binding };
+}
+
+async function appendHistoricalUnsupportedDependencyObservationV2(
+  evidence: RecordAcceptanceDependencyObservationInput,
+) {
+  return appendHistoricalDependencyObservationV2(evidence, {
+    status: "refused_unsupported_profile",
+    reasons: ["unsupported_manager_profile"],
+  });
 }
 
 async function selectDependencyExternalBuilderRoute(input: {
@@ -6993,415 +7004,6 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(events).toHaveLength(2);
     });
 
-    it("records the exact root Go Modules profile and preserves it through R10.2", async () => {
-      const headSha = "8".repeat(40);
-      const fixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-go-profile",
-        prNumber: 350,
-        headSha,
-        manifestPath: "go.mod",
-        manifestContent: [
-          "module github.com/agentrail/widgets",
-          "",
-          "go 1.26.1",
-          "",
-          "require github.com/agentrail/example/v2 v2.3.4",
-          "",
-        ].join("\n"),
-        lockfilePath: "go.sum",
-        lockfileContent: "github.com/agentrail/example/v2 v2.3.4 h1:fixture\n",
-      });
-      if (fixture.lockfileBlobSha === null) throw new Error("expected Go sum custody");
-      const evidence = goAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        compiledPackId: fixture.pack.id,
-        headSha,
-        manifestBlobSha: fixture.manifestBlobSha,
-        lockfileBlobSha: fixture.lockfileBlobSha,
-      });
-
-      const recorded = await recordAcceptanceDependencyObservation(evidence);
-      expect(recorded).toMatchObject({
-        kind: "recorded",
-        observation: {
-          status: "observed",
-          reasons: [],
-          candidate: {
-            identity: evidence.candidate.identity,
-            package: "github.com/agentrail/example/v2",
-            dependencyKind: "dependencies",
-            specifier: "v2.3.4",
-            currentVersion: "v2.3.4",
-            targetVersion: "v2.4.0",
-          },
-          runtime: { identity: evidence.runtime.identity, version: "1.26.1" },
-          packageManager: {
-            name: "go",
-            version: "1.26.1",
-            profile: "go_1_26_root_mod_sum_public_proxy_v1",
-            updateArgv: [
-              "go", "get", "-mod=mod", "github.com/agentrail/example/v2@v2.4.0",
-            ],
-          },
-          manifest: { path: "go.mod" },
-          lockfile: { path: "go.sum", disposition: "present" },
-          security: {
-            provider: "osv",
-            reference: "osv:Go:github.com/agentrail/example/v2@2.4.0",
-          },
-        },
-      });
-      if (recorded.kind !== "recorded") throw new Error("expected Go observation");
-      await expect(recordAcceptanceDependencyObservation(evidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: { eventId: recorded.observation.eventId, status: "observed" },
-      });
-      await expect(recordAcceptanceDependencyObservation({
-        ...evidence,
-        security: { ...evidence.security, reportSha256: "5".repeat(64) },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
-
-      const gopkgEvidence = goAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        compiledPackId: fixture.pack.id,
-        headSha,
-        manifestBlobSha: fixture.manifestBlobSha,
-        lockfileBlobSha: fixture.lockfileBlobSha,
-        modulePath: "gopkg.in/yaml.v3",
-        currentVersion: "v3.0.0",
-        targetVersion: "v3.0.1",
-      });
-      await expect(recordAcceptanceDependencyObservation(gopkgEvidence)).resolves.toMatchObject({
-        kind: "recorded",
-        observation: {
-          status: "observed",
-          candidate: { package: "gopkg.in/yaml.v3", targetVersion: "v3.0.1" },
-          packageManager: { updateArgv: ["go", "get", "-mod=mod", "gopkg.in/yaml.v3@v3.0.1"] },
-          security: { reference: "osv:Go:gopkg.in/yaml.v3@3.0.1" },
-        },
-      });
-
-      const selected = await selectDependencyExternalBuilderRoute({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        repo: fixture.repo,
-        adapter: "github_codex",
-        configurationVersion: 7,
-      });
-      const ownerId = "18181818-1818-4181-8181-181818181818";
-      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
-      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        observationEventId: recorded.observation.eventId,
-        approvedBy: `user:${ownerId}`,
-      });
-      expect(approved).toMatchObject({
-        kind: "approved",
-        observation: { eventId: recorded.observation.eventId, candidate: evidence.candidate },
-        externalBuilderPack: {
-          candidate: evidence.candidate,
-          runtime: evidence.runtime,
-          packageManager: evidence.packageManager,
-          manifest: evidence.manifest,
-          lockfile: evidence.lockfile,
-          security: evidence.security,
-          route: { id: selected.route.id, adapter: "github_codex", configurationVersion: 7 },
-          deliveryAuthority: "not_granted",
-          reviewRequirement: "exact_head_r7_reentry",
-        },
-      });
-    }, 15_000);
-
-    it("fails closed for Go runner drift, refusals, and exact root-source mismatch", async () => {
-      const headSha = "9".repeat(40);
-      const fixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-go-refusals",
-        prNumber: 351,
-        headSha,
-        manifestPath: "go.mod",
-        manifestContent: "module github.com/agentrail/widgets\n\ngo 1.26.1\n",
-        lockfilePath: "go.sum",
-        lockfileContent: "github.com/agentrail/example/v2 v2.3.4 h1:fixture\n",
-      });
-      if (fixture.lockfileBlobSha === null) throw new Error("expected Go refusal sum custody");
-      const base = (targetVersion: string) => goAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        compiledPackId: fixture.pack.id,
-        headSha,
-        manifestBlobSha: fixture.manifestBlobSha,
-        lockfileBlobSha: fixture.lockfileBlobSha,
-        targetVersion,
-      });
-
-      const argvDrift = base("v2.4.1");
-      await expect(recordAcceptanceDependencyObservation({
-        ...argvDrift,
-        packageManager: {
-          ...argvDrift.packageManager,
-          updateArgv: ["go", "get", "github.com/agentrail/example/v2@v2.4.1"],
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"] },
-      });
-      const baseline = base("v2.4.2");
-      await expect(recordAcceptanceDependencyObservation({
-        ...baseline,
-        baseline: { headSha: "f".repeat(40) },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_baseline", reasons: ["baseline_head_mismatch"] },
-      });
-      const unsafeRuntime = base("v2.4.3");
-      await expect(recordAcceptanceDependencyObservation({
-        ...unsafeRuntime,
-        runtime: { ...unsafeRuntime.runtime, disposition: "unsafe" as const, version: "1.25.9" },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
-      });
-      const unavailableManager = base("v2.4.4");
-      await expect(recordAcceptanceDependencyObservation({
-        ...unavailableManager,
-        packageManager: {
-          ...unavailableManager.packageManager,
-          disposition: "unavailable" as const,
-          version: null,
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "not_proven", reasons: ["package_manager_evidence_unavailable"] },
-      });
-      for (const [targetVersion, disposition, reason] of [
-        ["v2.4.5", "affected", "security_affected"],
-        ["v2.4.6", "unavailable", "security_evidence_unavailable"],
-      ] as const) {
-        const evidence = base(targetVersion);
-        await expect(recordAcceptanceDependencyObservation({
-          ...evidence,
-          security: { ...evidence.security, disposition },
-        })).resolves.toMatchObject({
-          kind: "recorded",
-          observation: { status: "refused_security", reasons: [reason] },
-        });
-      }
-
-      const missingHeadSha = "a".repeat(40);
-      const missing = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-go-lockfile-missing",
-        prNumber: 352,
-        headSha: missingHeadSha,
-        manifestPath: "go.mod",
-        manifestContent: "module github.com/agentrail/widgets\n\ngo 1.26.1\n",
-        lockfilePath: "go.sum",
-        lockfileReadReason: "path_not_found",
-      });
-      await expect(recordAcceptanceDependencyObservation({
-        ...goAcceptanceDependencyObservationInput({
-          workspaceId: wsId,
-          recordId: missing.draft.record.id,
-          compiledPackId: missing.pack.id,
-          headSha: missingHeadSha,
-          manifestBlobSha: missing.manifestBlobSha,
-          lockfileBlobSha: "0".repeat(40),
-        }),
-        lockfile: {
-          disposition: "missing" as const,
-          path: "go.sum",
-          blobSha: null,
-          evidenceSha256: "3".repeat(64),
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_lockfile", reasons: ["lockfile_missing"] },
-      });
-
-      const noSourceHeadSha = "b".repeat(40);
-      const noSource = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-go-source-not-proven",
-        prNumber: 353,
-        headSha: noSourceHeadSha,
-        manifestPath: "nested/go.mod",
-        manifestContent: "module github.com/agentrail/widgets\n\ngo 1.26.1\n",
-        lockfilePath: "go.sum",
-        lockfileContent: "github.com/agentrail/example/v2 v2.3.4 h1:fixture\n",
-      });
-      if (noSource.lockfileBlobSha === null) throw new Error("expected Go source sum custody");
-      await expect(recordAcceptanceDependencyObservation(goAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: noSource.draft.record.id,
-        compiledPackId: noSource.pack.id,
-        headSha: noSourceHeadSha,
-        manifestBlobSha: noSource.manifestBlobSha,
-        lockfileBlobSha: noSource.lockfileBlobSha,
-      }))).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "not_proven", reasons: ["manifest_source_not_proven"] },
-      });
-
-      const strictCases = [
-        (() => { const value = base("v2.5.0"); return { ...value, candidate: { ...value.candidate, package: "GitHub.com/acme/mod/v2" } }; })(),
-        ...["con", "con.txt", "com1", "foo~1", "foo~1.bar"].map((segment, index) => {
-          const targetVersion = `v2.6.${index}`;
-          const value = base(targetVersion);
-          const modulePath = `github.com/acme/${segment}/v2`;
-          return {
-            ...value,
-            candidate: { ...value.candidate, package: modulePath, targetVersion },
-            packageManager: {
-              ...value.packageManager,
-              updateArgv: ["go", "get", "-mod=mod", `${modulePath}@${targetVersion}`],
-            },
-            security: { ...value.security, reference: `osv:Go:${modulePath}@${targetVersion.slice(1)}` },
-          };
-        }),
-        (() => { const value = base("v1.2.4"); return { ...value, candidate: { ...value.candidate, package: "github.com/acme/mod/v1", specifier: "v1.2.3", currentVersion: "v1.2.3" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/acme/mod/v1@v1.2.4"] }, security: { ...value.security, reference: "osv:Go:github.com/acme/mod/v1@1.2.4" } }; })(),
-        (() => { const value = base("v0.2.0"); return { ...value, candidate: { ...value.candidate, package: "github.com/acme/mod/v0", specifier: "v0.1.0", currentVersion: "v0.1.0" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/acme/mod/v0@v0.2.0"] }, security: { ...value.security, reference: "osv:Go:github.com/acme/mod/v0@0.2.0" } }; })(),
-        (() => { const value = base("v1.2.4"); return { ...value, candidate: { ...value.candidate, package: "github.com/acme/mod/v01", specifier: "v1.2.3", currentVersion: "v1.2.3" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/acme/mod/v01@v1.2.4"] }, security: { ...value.security, reference: "osv:Go:github.com/acme/mod/v01@1.2.4" } }; })(),
-        (() => { const value = base("v1.2.5"); return { ...value, candidate: { ...value.candidate, package: "github.com/acme/mod/v1.2", specifier: "v1.2.3", currentVersion: "v1.2.3" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/acme/mod/v1.2@v1.2.5"] }, security: { ...value.security, reference: "osv:Go:github.com/acme/mod/v1.2@1.2.5" } }; })(),
-        (() => { const value = base("v2.5.1"); return { ...value, candidate: { ...value.candidate, package: "github.com/acme/mod" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/acme/mod@v2.5.1"] }, security: { ...value.security, reference: "osv:Go:github.com/acme/mod@2.5.1" } }; })(),
-        (() => { const value = base("v3.0.1"); return { ...value, candidate: { ...value.candidate, package: "gopkg.in/yaml/v3", specifier: "v3.0.0", currentVersion: "v3.0.0" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "gopkg.in/yaml/v3@v3.0.1"] }, security: { ...value.security, reference: "osv:Go:gopkg.in/yaml/v3@3.0.1" } }; })(),
-        (() => { const value = base("v3.0.0"); return { ...value, candidate: { ...value.candidate, specifier: "v2.3.4", currentVersion: "v2.3.4", targetVersion: "v3.0.0", package: "github.com/agentrail/example/v3" }, packageManager: { ...value.packageManager, updateArgv: ["go", "get", "-mod=mod", "github.com/agentrail/example/v3@v3.0.0"] }, security: { ...value.security, reference: "osv:Go:github.com/agentrail/example/v3@3.0.0" } }; })(),
-        (() => { const value = base("v2.5.2"); return { ...value, candidate: { ...value.candidate, dependencyKind: "devDependencies" } }; })(),
-        (() => { const value = base("v2.5.3"); return { ...value, candidate: { ...value.candidate, specifier: ">=v2.3.4" } }; })(),
-        (() => { const value = base("v2.5.4"); return { ...value, runtime: { ...value.runtime, version: "1.25.9" } }; })(),
-        (() => { const value = base("v2.5.5"); return { ...value, packageManager: { ...value.packageManager, version: "1.27.0" } }; })(),
-        (() => { const value = base("v2.5.6"); return { ...value, manifest: { ...value.manifest, path: "services/api/go.mod" } }; })(),
-        (() => { const value = base("v2.5.7"); return { ...value, security: { ...value.security, reference: "osv:Go:github.com/agentrail/example/v2@v2.5.7" } }; })(),
-      ];
-      for (const malformed of strictCases) {
-        await expect(recordAcceptanceDependencyObservation(malformed))
-          .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
-      }
-      const events = await db.select().from(changeRecordEvents).where(and(
-        eq(changeRecordEvents.recordId, fixture.draft.record.id),
-        eq(changeRecordEvents.stage, "dependency_observation"),
-      ));
-      expect(events).toHaveLength(6);
-    }, 20_000);
-
-    it("replays frozen pre-support Go v2 refusals without admitting a new broad body", async () => {
-      const validHeadSha = "c".repeat(40);
-      const validFixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-historical-unsupported-go-valid",
-        prNumber: 354,
-        headSha: validHeadSha,
-        manifestPath: "go.mod",
-        manifestContent: "module github.com/agentrail/widgets\n\ngo 1.26.1\n",
-        lockfilePath: "go.sum",
-        lockfileContent: "github.com/agentrail/example/v2 v2.3.4 h1:fixture\n",
-      });
-      if (validFixture.lockfileBlobSha === null) throw new Error("expected historical Go sum");
-      const validEvidence = goAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: validFixture.draft.record.id,
-        compiledPackId: validFixture.pack.id,
-        headSha: validHeadSha,
-        manifestBlobSha: validFixture.manifestBlobSha,
-        lockfileBlobSha: validFixture.lockfileBlobSha,
-      });
-      const validHistorical = await appendHistoricalUnsupportedDependencyObservationV2(validEvidence);
-      await expect(recordAcceptanceDependencyObservation(validEvidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: {
-          eventId: validHistorical.event.id,
-          status: "refused_unsupported_profile",
-          reasons: ["unsupported_manager_profile"],
-        },
-      });
-
-      const broadHeadSha = "d".repeat(40);
-      const broadFixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-historical-unsupported-go-broad",
-        prNumber: 355,
-        headSha: broadHeadSha,
-        manifestPath: "services/api/go.mod",
-        manifestContent: "module LOCAL/MODULE\n",
-        lockfilePath: "services/api/go.sum",
-        lockfileContent: "legacy opaque checksum\n",
-      });
-      if (broadFixture.lockfileBlobSha === null) throw new Error("expected broad historical Go sum");
-      const identity = {
-        ecosystem: "go",
-        manager: "go-modules",
-        profile: "go_1_26_root_mod_sum_public_proxy_v1",
-      };
-      const broadEvidence: RecordAcceptanceDependencyObservationInput = {
-        workspaceId: wsId,
-        recordId: broadFixture.draft.record.id,
-        compiledPackId: broadFixture.pack.id,
-        candidate: {
-          identity,
-          package: "LOCAL/MODULE",
-          dependencyKind: "replace-local",
-          specifier: "branch-main",
-          currentVersion: "release-1",
-          targetVersion: "release-2",
-        },
-        runtime: {
-          identity,
-          disposition: "safe",
-          version: "go-release-legacy",
-          evidenceSha256: "1".repeat(64),
-        },
-        packageManager: {
-          disposition: "safe",
-          name: "go",
-          version: "toolchain-preview",
-          profile: "go_1_26_root_mod_sum_public_proxy_v1",
-          updateArgv: ["go", "get", "LOCAL/MODULE@branch-main"],
-          evidenceSha256: "2".repeat(64),
-        },
-        manifest: { path: "services/api/go.mod", blobSha: broadFixture.manifestBlobSha },
-        lockfile: {
-          disposition: "present",
-          path: "services/api/go.sum",
-          blobSha: broadFixture.lockfileBlobSha,
-          evidenceSha256: "3".repeat(64),
-        },
-        baseline: { headSha: broadHeadSha },
-        security: {
-          identity,
-          disposition: "clear",
-          provider: "opaque",
-          reference: "opaque:pre-support-go",
-          reportSha256: "4".repeat(64),
-        },
-      };
-      const broadHistorical = await appendHistoricalUnsupportedDependencyObservationV2(broadEvidence);
-      await expect(recordAcceptanceDependencyObservation(broadEvidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: {
-          eventId: broadHistorical.event.id,
-          status: "refused_unsupported_profile",
-          candidate: broadEvidence.candidate,
-        },
-      });
-      await expect(recordAcceptanceDependencyObservation({
-        ...broadEvidence,
-        security: { ...broadEvidence.security, reportSha256: "5".repeat(64) },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
-      await expect(recordAcceptanceDependencyObservation({
-        ...broadEvidence,
-        candidate: { ...broadEvidence.candidate, targetVersion: "release-3" },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
-      const events = await db.select().from(changeRecordEvents).where(and(
-        inArray(changeRecordEvents.recordId, [validFixture.draft.record.id, broadFixture.draft.record.id]),
-        eq(changeRecordEvents.stage, "dependency_observation"),
-      ));
-      expect(events).toHaveLength(2);
-    }, 15_000);
-
     it("fails closed for npm command drift and rejects noncanonical new npm bodies without an event", async () => {
       const headSha = "b".repeat(40);
       const fixture = await createAcceptanceDependencyObservationFixture({
@@ -7830,6 +7432,192 @@ describe.skipIf(!DB_AVAILABLE)(
             "lockfile_source_not_proven",
           ],
         },
+      });
+    });
+
+    it("refuses the withdrawn Go profile and denies prior observed events approval or Pack authority", async () => {
+      const headSha = "7".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-go-withdrawn-profile",
+        prNumber: 296,
+        headSha,
+        manifestPath: "go.mod",
+        manifestContent: [
+          "module example.com/root",
+          "go 1.26.0",
+          "require github.com/acme/lib v1.2.3",
+          "",
+        ].join("\n"),
+        lockfilePath: "go.sum",
+        lockfileContent: [
+          `github.com/acme/lib v1.2.3 h1:${"A".repeat(43)}=`,
+          `github.com/acme/lib v1.2.3/go.mod h1:${"B".repeat(43)}=`,
+          "",
+        ].join("\n"),
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected Go sum custody");
+      const evidence = withdrawnGoAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+      const identity = evidence.candidate.identity;
+
+      const refused = await recordAcceptanceDependencyObservation(evidence);
+      expect(refused).toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+          candidate: { identity },
+        },
+      });
+      if (refused.kind !== "recorded") throw new Error("expected Go profile refusal");
+
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({
+        workspaceId: wsId,
+        userId: ownerId,
+        role: "owner",
+      });
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: refused.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({
+        kind: "observation_not_eligible",
+        reason: "observation_not_observed",
+      });
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        observations: [{
+          observation: {
+            eventId: refused.observation.eventId,
+            status: "refused_unsupported_profile",
+          },
+          approval: null,
+          externalBuilderPack: null,
+        }],
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+    });
+
+    it("keeps a former observed Go event audit-visible but withdraws replay, approval, and Pack authority", async () => {
+      const headSha = "8".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-go-historical-observed",
+        prNumber: 297,
+        headSha,
+        manifestPath: "go.mod",
+        manifestContent: [
+          "module example.com/root",
+          "go 1.26.0",
+          "require github.com/acme/lib v1.2.3",
+          "",
+        ].join("\n"),
+        lockfilePath: "go.sum",
+        lockfileContent: [
+          `github.com/acme/lib v1.2.3 h1:${"A".repeat(43)}=`,
+          `github.com/acme/lib v1.2.3/go.mod h1:${"B".repeat(43)}=`,
+          "",
+        ].join("\n"),
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected Go sum custody");
+      const evidence = withdrawnGoAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+        targetVersion: "v1.4.0",
+      });
+      const historical = await appendHistoricalDependencyObservationV2(evidence, {
+        status: "observed",
+        reasons: [],
+      });
+      expect(historical.event.payloadRef).toEqual({
+        kind: "acceptance_dependency_observation",
+        version: 2,
+        binding: historical.binding,
+        candidateFingerprint: historical.candidateFingerprint,
+        candidate: evidence.candidate,
+        runtime: evidence.runtime,
+        packageManager: evidence.packageManager,
+        manifest: evidence.manifest,
+        lockfile: evidence.lockfile,
+        baseline: evidence.baseline,
+        security: evidence.security,
+        status: "observed",
+        reasons: [],
+      });
+      expect(evidence.candidate.identity).toEqual({
+        ecosystem: "go",
+        manager: "go-modules",
+        profile: "go_1_26_root_mod_sum_public_proxy_v1",
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ))).toHaveLength(1);
+
+      const selected = await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_codex",
+      });
+      expect(selected.route.adapter).toBe("github_codex");
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({
+        workspaceId: wsId,
+        userId: ownerId,
+        role: "owner",
+      });
+
+      await expect(recordAcceptanceDependencyObservation(evidence))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: historical.event.id,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({
+        kind: "not_ready",
+        reason: "invalid_compiled_pack_custody",
+      });
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toEqual({
+        kind: "not_ready",
+        reason: "invalid_compiled_pack_custody",
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+      const retained = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.id, historical.event.id),
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+      ));
+      expect(retained).toHaveLength(1);
+      expect(retained[0]!.payloadRef).toMatchObject({
+        candidate: { identity: evidence.candidate.identity },
+        status: "observed",
+        reasons: [],
       });
     });
 

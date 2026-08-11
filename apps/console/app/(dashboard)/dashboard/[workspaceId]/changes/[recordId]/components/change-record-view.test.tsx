@@ -4,13 +4,17 @@ import {
   CorrectionsSection,
   FinalDecisionPanel,
   LifecycleTimeline,
+  ReviewMetricsPanel,
   changeRecordApiPath,
   finalDecisionPatchBody,
   formatChangeRecordDate,
   isCorrectionPacketsEnvelope,
   isFinalDecisionEnvelope,
+  isReviewMetricsEnvelope,
+  reviewEffortPatchBody,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceFinalDecisionEnvelope,
+  type AcceptancePrReviewMetricsEnvelope,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -203,6 +207,127 @@ const currentFinalDecision: AcceptanceFinalDecisionEnvelope = {
     },
   },
   decision: null,
+};
+
+const HISTORICAL_CYCLE = "00000000-0000-4000-8000-000000000098";
+const HISTORICAL_HEAD = "89abcdef0123456789abcdef0123456789abcdef";
+
+const currentReviewMetrics: AcceptancePrReviewMetricsEnvelope = {
+  kind: "record",
+  workspaceId: record.workspaceId,
+  recordId: record.id,
+  repo: record.repo,
+  prNumber: 98,
+  currentCycle: {
+    headSha: currentFinalDecision.binding.headSha,
+    headCycleId: currentFinalDecision.binding.headCycleId,
+    authorityGeneration: 7,
+  },
+  cycles: [
+    {
+      binding: {
+        workspaceId: record.workspaceId,
+        recordId: record.id,
+        repo: record.repo,
+        prNumber: 98,
+        headSha: HISTORICAL_HEAD,
+        headCycleId: HISTORICAL_CYCLE,
+        reviewJobId: HISTORICAL_CYCLE,
+        reviewVerdict: "proven",
+        postedReviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-4",
+        postedAttestationEventId: "00000000-0000-4000-8000-000000000076",
+        acceptanceContract: {
+          id: "00000000-0000-4000-8000-000000000088",
+          version: 3,
+          sha256: CONTRACT_SHA256,
+        },
+      },
+      current: false,
+      reviewedAt: "2026-08-10T08:00:00.000Z",
+      effort: {
+        kind: "known",
+        value: {
+          eventId: "00000000-0000-4000-8000-000000000075",
+          eventKey: `acceptance-pr-review-effort:${HISTORICAL_CYCLE}`,
+          minutes: 42,
+          source: "human_input",
+          recordedBy: "user:00000000-0000-4000-8000-000000000002",
+          recordedRole: "owner",
+          recordedAt: "2026-08-10T08:05:00.000Z",
+        },
+      },
+      decision: {
+        kind: "known",
+        value: {
+          eventId: "00000000-0000-4000-8000-000000000074",
+          eventKey: `acceptance-pr-decision:${HISTORICAL_CYCLE}`,
+          decision: "approved",
+          rationale: null,
+          decidedBy: "user:00000000-0000-4000-8000-000000000002",
+          decidedRole: "owner",
+          decidedAt: "2026-08-10T08:06:00.000Z",
+        },
+      },
+      signedMerge: {
+        kind: "known",
+        value: {
+          mergeEventId: "00000000-0000-4000-8000-000000000073",
+          deliveryEventId: "00000000-0000-4000-8000-000000000072",
+          mergeSha: "fedcba9876543210fedcba9876543210fedcba98",
+          mergedAt: "2026-08-10T08:07:00.000Z",
+          decisionAlignment: "aligned",
+        },
+      },
+      postMergeOutcomes: {
+        kind: "known",
+        values: [{
+          eventId: "00000000-0000-4000-8000-000000000071",
+          eventKey: "acceptance-post-merge:deployed:deploy-17",
+          outcome: {
+            kind: "deployed",
+            revisionSha: "fedcba9876543210fedcba9876543210fedcba98",
+            environment: "production",
+            deploymentReference: "deploy-17",
+          },
+          recordedBy: "user:00000000-0000-4000-8000-000000000002",
+          recordedAt: "2026-08-10T08:08:00.000Z",
+        }],
+      },
+    },
+    {
+      binding: {
+        workspaceId: currentFinalDecision.binding.workspaceId,
+        recordId: currentFinalDecision.binding.recordId,
+        repo: currentFinalDecision.binding.repo,
+        prNumber: currentFinalDecision.binding.prNumber,
+        headSha: currentFinalDecision.binding.headSha,
+        headCycleId: currentFinalDecision.binding.headCycleId,
+        reviewJobId: currentFinalDecision.binding.reviewJobId,
+        reviewVerdict: currentFinalDecision.binding.reviewVerdict,
+        postedReviewUrl: currentFinalDecision.binding.postedReviewUrl,
+        postedAttestationEventId: currentFinalDecision.binding.postedAttestationEventId,
+        acceptanceContract: currentFinalDecision.binding.acceptanceContract,
+      },
+      current: true,
+      reviewedAt: "2026-08-11T09:00:00.000Z",
+      effort: { kind: "unknown" },
+      decision: { kind: "unknown" },
+      signedMerge: { kind: "unknown" },
+      postMergeOutcomes: { kind: "unknown" },
+    },
+  ],
+  summary: {
+    reviewEffort: {
+      eligible: 2,
+      known: 1,
+      unknown: 1,
+      totalMinutes: 42,
+      averageMinutes: 42,
+    },
+    decisions: { eligible: 2, known: 1, unknown: 1 },
+    signedMerges: { eligible: 2, known: 1, unknown: 1 },
+    postMergeOutcomes: { eligible: 1, known: 1, unknown: 0 },
+  },
 };
 
 describe("Change Record detail view", () => {
@@ -515,6 +640,240 @@ describe("Change Record detail view", () => {
     expect(isCorrectionPacketsEnvelope(cycleMismatch)).toBe(false);
     expect(isCorrectionPacketsEnvelope(invalidHead)).toBe(false);
     expect(isCorrectionPacketsEnvelope(invalidPr)).toBe(false);
+  });
+
+  it("strictly validates review-metrics custody, exact variants, and honest denominators", () => {
+    expect(isReviewMetricsEnvelope(currentReviewMetrics)).toBe(true);
+    expect(isReviewMetricsEnvelope({ kind: "not_found" })).toBe(true);
+    expect(isReviewMetricsEnvelope({
+      kind: "unavailable",
+      reason: "invalid_effort_custody",
+    })).toBe(true);
+    expect(isReviewMetricsEnvelope({ kind: "unavailable", reason: "anything" })).toBe(false);
+
+    const forgedSource = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    if (forgedSource.cycles[0]!.effort.kind === "known") {
+      (forgedSource.cycles[0]!.effort.value as Record<string, unknown>).source = "timer";
+    }
+    expect(isReviewMetricsEnvelope(forgedSource)).toBe(false);
+
+    const emptyKnownOutcomes = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    emptyKnownOutcomes.cycles[0]!.postMergeOutcomes = { kind: "known", values: [] };
+    expect(isReviewMetricsEnvelope(emptyKnownOutcomes)).toBe(false);
+
+    const stringOutcome = structuredClone(currentReviewMetrics) as unknown as Record<string, unknown>;
+    const stringCycles = stringOutcome.cycles as Array<Record<string, unknown>>;
+    const postMerge = stringCycles[0]!.postMergeOutcomes as Record<string, unknown>;
+    (postMerge.values as Array<Record<string, unknown>>)[0]!.outcome = "deployed";
+    expect(isReviewMetricsEnvelope(stringOutcome)).toBe(false);
+
+    const allPostMergeVariants = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    if (allPostMergeVariants.cycles[0]!.postMergeOutcomes.kind === "known") {
+      allPostMergeVariants.cycles[0]!.postMergeOutcomes.values.push(
+        {
+          eventId: "00000000-0000-4000-8000-000000000070",
+          eventKey: "acceptance-post-merge:incident:incident-9",
+          outcome: {
+            kind: "incident",
+            revisionSha: "fedcba9876543210fedcba9876543210fedcba98",
+            incidentReference: "incident-9",
+          },
+          recordedBy: "incident-observer",
+          recordedAt: "2026-08-10T08:09:00.000Z",
+        },
+        {
+          eventId: "00000000-0000-4000-8000-000000000069",
+          eventKey: "acceptance-post-merge:reverted:7654321",
+          outcome: {
+            kind: "reverted",
+            revertedSha: "fedcba9876543210fedcba9876543210fedcba98",
+            revertSha: "7654321",
+            revertReference: "revert-3",
+          },
+          recordedBy: "release-controller",
+          recordedAt: "2026-08-10T08:10:00.000Z",
+        },
+      );
+    }
+    expect(isReviewMetricsEnvelope(allPostMergeVariants)).toBe(true);
+
+    const mismatchedSummary = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    mismatchedSummary.summary.reviewEffort.totalMinutes = 0;
+    expect(isReviewMetricsEnvelope(mismatchedSummary)).toBe(false);
+
+    const falseCurrentMarker = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    falseCurrentMarker.cycles[1]!.current = false;
+    expect(isReviewMetricsEnvelope(falseCurrentMarker)).toBe(false);
+
+    const currentHeadNotYetReviewed = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    currentHeadNotYetReviewed.cycles = [currentHeadNotYetReviewed.cycles[0]!];
+    currentHeadNotYetReviewed.summary = {
+      reviewEffort: { eligible: 1, known: 1, unknown: 0, totalMinutes: 42, averageMinutes: 42 },
+      decisions: { eligible: 1, known: 1, unknown: 0 },
+      signedMerges: { eligible: 1, known: 1, unknown: 0 },
+      postMergeOutcomes: { eligible: 1, known: 1, unknown: 0 },
+    };
+    expect(isReviewMetricsEnvelope(currentHeadNotYetReviewed)).toBe(true);
+  });
+
+  it("renders exact historical cycles and keeps known and unknown sample denominators separate", () => {
+    const rendered = ReviewMetricsPanel({
+      reviewMetrics: currentReviewMetrics,
+      finalDecision: currentFinalDecision,
+      canRecordReviewEffort: false,
+      onRecordEffort: () => undefined,
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "",
+      onEffortMinutesChange: () => undefined,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Review effort 1/2 recorded · 1/2 unknown");
+    expect(content).toContain("42 total minutes");
+    expect(content).toContain("Human decisions 1/2 recorded · 1/2 unknown");
+    expect(content).toContain("Post-merge outcomes 1/1 recorded · 0/1 unknown");
+    expect(content).toContain(HISTORICAL_HEAD);
+    expect(content).toContain(HISTORICAL_CYCLE);
+    expect(content).toContain(currentFinalDecision.binding.headSha);
+    expect(content).toContain(currentFinalDecision.binding.headCycleId);
+    expect(content).toContain("Recorded: 42 whole minutes");
+    expect(content).toContain("Unknown — not recorded; not zero");
+    expect(content).toContain("Recorded: deployed");
+  });
+
+  it("offers one whole-minute input only for an owner/admin current unknown cycle", () => {
+    let submitted: number | null = null;
+    const rendered = ReviewMetricsPanel({
+      reviewMetrics: currentReviewMetrics,
+      finalDecision: currentFinalDecision,
+      canRecordReviewEffort: true,
+      onRecordEffort: (minutes) => { submitted = minutes; },
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "37",
+      onEffortMinutesChange: () => undefined,
+    });
+    const inputs = elementsOfType(rendered, "input");
+    const buttons = elementsOfType(rendered, "button");
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]!.props).toMatchObject({ type: "number", min: 1, max: 1_440, step: 1 });
+    expect(buttonLabels(rendered)).toEqual(["Record review effort"]);
+    (buttons[0]!.props?.onClick as (() => void))();
+    expect(submitted).toBe(37);
+
+    const member = ReviewMetricsPanel({
+      reviewMetrics: currentReviewMetrics,
+      finalDecision: currentFinalDecision,
+      canRecordReviewEffort: false,
+      onRecordEffort: () => undefined,
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "37",
+      onEffortMinutesChange: () => undefined,
+    });
+    expect(buttonLabels(member)).toEqual([]);
+
+    const staleDecision: AcceptanceFinalDecisionEnvelope = {
+      ...currentFinalDecision,
+      binding: {
+        ...currentFinalDecision.binding,
+        headSha: "f".repeat(40),
+        headCycleId: "00000000-0000-4000-8000-000000000097",
+        reviewJobId: "00000000-0000-4000-8000-000000000097",
+      },
+    };
+    const stale = ReviewMetricsPanel({
+      reviewMetrics: currentReviewMetrics,
+      finalDecision: staleDecision,
+      canRecordReviewEffort: true,
+      onRecordEffort: () => undefined,
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "37",
+      onEffortMinutesChange: () => undefined,
+    });
+    expect(buttonLabels(stale)).toEqual([]);
+
+    const alreadyRecorded = structuredClone(currentReviewMetrics) as Extract<
+      AcceptancePrReviewMetricsEnvelope,
+      { kind: "record" }
+    >;
+    alreadyRecorded.cycles[1]!.effort = {
+      kind: "known",
+      value: {
+        eventId: "00000000-0000-4000-8000-000000000068",
+        eventKey: `acceptance-pr-review-effort:${currentFinalDecision.binding.reviewJobId}`,
+        minutes: 8,
+        source: "human_input",
+        recordedBy: "user:00000000-0000-4000-8000-000000000002",
+        recordedRole: "admin",
+        recordedAt: "2026-08-11T09:05:00.000Z",
+      },
+    };
+    alreadyRecorded.summary.reviewEffort = {
+      eligible: 2,
+      known: 2,
+      unknown: 0,
+      totalMinutes: 50,
+      averageMinutes: 25,
+    };
+    const recorded = ReviewMetricsPanel({
+      reviewMetrics: alreadyRecorded,
+      finalDecision: currentFinalDecision,
+      canRecordReviewEffort: true,
+      onRecordEffort: () => undefined,
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "37",
+      onEffortMinutesChange: () => undefined,
+    });
+    expect(buttonLabels(recorded)).toEqual([]);
+  });
+
+  it("does not expose timer, source, edit, delete, or merge controls", () => {
+    const rendered = ReviewMetricsPanel({
+      reviewMetrics: currentReviewMetrics,
+      finalDecision: currentFinalDecision,
+      canRecordReviewEffort: true,
+      onRecordEffort: () => undefined,
+      recordingEffort: false,
+      effortError: null,
+      effortMinutes: "37",
+      onEffortMinutesChange: () => undefined,
+    });
+    const labels = buttonLabels(rendered);
+
+    expect(labels).toEqual(["Record review effort"]);
+    expect(labels.some((label) => /timer|source|edit|delete|merge/iu.test(label))).toBe(false);
+    expect(elementTypes(rendered)).not.toContain("form");
+  });
+
+  it("builds an exact review-effort body without caller-supplied head or source", () => {
+    expect(reviewEffortPatchBody(currentFinalDecision.binding.bindingId, 37)).toEqual({
+      action: "record_pr_review_effort",
+      bindingId: currentFinalDecision.binding.bindingId,
+      minutes: 37,
+    });
   });
 
   it("formats invalid timestamps without throwing", () => {

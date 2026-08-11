@@ -4,10 +4,12 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptanceDependencyObservation: vi.fn(),
   AcceptanceDependencyObservationConflictError: class AcceptanceDependencyObservationConflictError extends Error {},
+  AcceptanceDependencyObservationInvalidEvidenceError: class AcceptanceDependencyObservationInvalidEvidenceError extends Error {},
 }));
 
 import {
   AcceptanceDependencyObservationConflictError,
+  AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
@@ -107,6 +109,47 @@ function request(body: unknown, options?: { auth?: boolean; contentType?: string
   });
 }
 
+function npmRequestBody() {
+  const value = structuredClone(VALID);
+  const identity = { ecosystem: "node", manager: "npm", profile: "npm_package_lock_only_v1" };
+  value.candidate.identity = identity;
+  value.runtime.identity = identity;
+  value.packageManager = {
+    ...value.packageManager,
+    name: "npm",
+    profile: "npm_package_lock_only_v1",
+    updateArgv: [
+      "npm", "install", "@acme/widget@1.3.0", "--package-lock-only",
+      "--ignore-scripts", "--no-audit", "--save-prod",
+    ],
+  };
+  value.manifest.path = "package.json";
+  value.lockfile.path = "package-lock.json";
+  value.security.identity = identity;
+  return value;
+}
+
+function historicalNpmReplayBody() {
+  const value = npmRequestBody();
+  Object.assign(value.candidate, {
+    specifier: "npm:@acme/real-widget@^1.2.0",
+    currentVersion: "release-1",
+    targetVersion: "release-2",
+  });
+  value.runtime.version = "node-current";
+  Object.assign(value.packageManager, {
+    version: "npm-current",
+    updateArgv: ["npm", "update", "@acme/widget"],
+  });
+  value.manifest.path = "legacy/package.json";
+  value.lockfile.path = "legacy/package-lock.json";
+  Object.assign(value.security, {
+    provider: "legacy-provider",
+    reference: "opaque:historical-query",
+  });
+  return value;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
@@ -143,6 +186,63 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
       observedAt: OBSERVED_AT.toISOString(),
     });
     expect(JSON.stringify(json)).not.toMatch(/approv|workspaceId|headSha|updateArgv|security/iu);
+  });
+
+  it("passes one exact npm package-lock-only observation to the same DB authority", async () => {
+    const npm = npmRequestBody();
+    const response = await POST(request(npm));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm);
+    expect(JSON.stringify(await response.json())).not.toMatch(/install|save-prod|security|approv/iu);
+  });
+
+  it("passes bounded npm command drift once so the DB can persist refusal truth", async () => {
+    const npm = npmRequestBody();
+    npm.packageManager.updateArgv = [
+      "npm", "install", "@acme/widget@1.3.0", "--package-lock-only",
+      "--ignore-scripts", "--save-prod",
+    ];
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("recorded", "refused_unsafe_runtime", ["unsafe_package_manager_argv"]) as never
+    );
+    const response = await POST(request(npm));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
+    });
+  });
+
+  it("lets an old bounded unsupported npm body reach only the exact DB replay seam", async () => {
+    const historical = historicalNpmReplayBody();
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+
+    const response = await POST(request(historical));
+
+    expect(response.status).toBe(200);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "replayed",
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    });
+  });
+
+  it("maps a new or altered historical npm candidate to sanitized invalid evidence", async () => {
+    vi.mocked(recordAcceptanceDependencyObservation).mockRejectedValue(
+      new AcceptanceDependencyObservationInvalidEvidenceError()
+    );
+
+    const response = await POST(request(historicalNpmReplayBody()));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid dependency observation" });
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
   });
 
   it("passes bounded unsafe argv evidence to DB once and returns the refusal truth", async () => {

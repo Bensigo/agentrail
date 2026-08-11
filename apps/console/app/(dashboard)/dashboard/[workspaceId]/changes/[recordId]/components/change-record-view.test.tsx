@@ -474,6 +474,43 @@ const dependencyExternalBuilderPack = {
   mintedAt: "2026-08-11T09:15:00.000Z",
 };
 
+function npmDependencyEnvelope(withPack = false): Extract<
+  AcceptanceDependencyObservationsEnvelope,
+  { kind: "current" }
+> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = { ecosystem: "node", manager: "npm", profile: "npm_package_lock_only_v1" };
+  item.observation.candidate = { ...item.observation.candidate, identity };
+  item.observation.runtime = { ...item.observation.runtime, identity };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "npm",
+    profile: "npm_package_lock_only_v1",
+    updateArgv: [
+      "npm", "install", "@acme/widget@1.3.0", "--package-lock-only",
+      "--ignore-scripts", "--no-audit", "--save-prod",
+    ],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "package.json" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "package-lock.json" };
+  item.observation.security = { ...item.observation.security, identity };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
+
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -1481,6 +1518,88 @@ describe("Change Record detail view", () => {
     >;
     wrongReference.observations[0]!.observation.security.reference = "https://osv.dev/report";
     expect(isDependencyObservationsEnvelope(wrongReference)).toBe(false);
+  });
+
+  it("strictly validates the npm package-lock-only receipt and immutable Pack", () => {
+    const npm = npmDependencyEnvelope();
+    const npmWithPack = npmDependencyEnvelope(true);
+
+    expect(isDependencyObservationsEnvelope(npm)).toBe(true);
+    expect(isDependencyObservationsEnvelope(npmWithPack)).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: npmWithPack,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("safe · npm 10.14.0 · npm_package_lock_only_v1");
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain("External authority not_granted");
+    expect(buttonLabels(rendered)).toEqual([]);
+    expect(content).not.toMatch(/\b(?:install|issue|dispatch|merge|managed-build)\b/iu);
+
+    const wrongSaveKind = npmDependencyEnvelope();
+    wrongSaveKind.observations[0]!.observation.packageManager.updateArgv[6] = "--save-dev";
+    expect(isDependencyObservationsEnvelope(wrongSaveKind)).toBe(false);
+
+    const expandedCommand = npmDependencyEnvelope();
+    expandedCommand.observations[0]!.observation.packageManager.updateArgv.push("--save-exact");
+    expect(isDependencyObservationsEnvelope(expandedCommand)).toBe(false);
+
+    const npmAlias = npmDependencyEnvelope();
+    npmAlias.observations[0]!.observation.candidate.specifier =
+      "npm:@acme/real-widget@^1.2.0";
+    expect(isDependencyObservationsEnvelope(npmAlias)).toBe(false);
+
+    const pnpmAlias = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope,
+      { kind: "current" }
+    >;
+    pnpmAlias.observations[0]!.observation.candidate.specifier =
+      "npm:@acme/real-widget@^1.2.0";
+    expect(isDependencyObservationsEnvelope(pnpmAlias)).toBe(true);
+  });
+
+  it("keeps a frozen unsupported npm refusal readable without promoting it", () => {
+    const historical = npmDependencyEnvelope();
+    const observation = historical.observations[0]!.observation;
+    Object.assign(observation.candidate, {
+      specifier: "npm:@acme/real-widget@^1.2.0",
+      currentVersion: "release-1",
+      targetVersion: "release-2",
+    });
+    observation.runtime.version = "node-current";
+    Object.assign(observation.packageManager, {
+      version: "npm-current",
+      updateArgv: ["npm", "update", "@acme/widget"],
+    });
+    observation.manifest.path = "legacy/package.json";
+    observation.lockfile.path = "legacy/package-lock.json";
+    Object.assign(observation.security, {
+      provider: "legacy-provider",
+      reference: "opaque:historical-query",
+    });
+    observation.status = "refused_unsupported_profile";
+    observation.reasons = ["unsupported_manager_profile"];
+
+    expect(isDependencyObservationsEnvelope(historical)).toBe(true);
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: historical,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(textContent(rendered)).toContain("Refused: unsupported profile");
+    expect(textContent(rendered)).toContain("unsupported_manager_profile");
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    observation.status = "observed";
+    observation.reasons = [];
+    expect(isDependencyObservationsEnvelope(historical)).toBe(false);
   });
 
   it("offers owner/admin approval only for one current observed unapproved item", () => {

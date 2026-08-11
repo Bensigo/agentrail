@@ -9,7 +9,10 @@ import {
 import { acceptanceContractId, changeRecordEventId, changeRecordId } from "./change_records.js";
 import {
   dependencyObservationProposalCustodyIdentity,
-  validatePnpmObservationProposalCandidate,
+  resolveDependencyObservationProposalCandidate,
+  type DependencyObservationProposalCandidate,
+  type DependencyObservationProposalProfile,
+  type DependencyObservationSelectedFileHashes,
 } from "./dependency_observation_acceptance_records.js";
 
 const ACTOR = "server:dependency-observation-proposal";
@@ -17,18 +20,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA1 = /^[a-f0-9]{40}$/i;
 const SHA256 = /^sha256:[a-f0-9]{64}$/i;
 const FILE_SHA256 = /^[a-f0-9]{64}$/i;
-const PROFILE = {
-  ecosystem: "node",
-  manager: "pnpm",
-  profile: "pnpm_lockfile_only_v1",
-  capability: "proposal_observation_only",
-} as const;
-const UNRESOLVED = [
+const BASE_UNRESOLVED = [
   "release", "usage", "runtime", "target-lock", "security", "human-confirmation",
   "approval", "context-pack", "builder-handoff",
 ] as const;
 
-type ProposalCandidate = NonNullable<ReturnType<typeof validatePnpmObservationProposalCandidate>>;
 type Source = {
   repositoryId: string;
   repositoryName: string;
@@ -37,11 +33,12 @@ type Source = {
   observationKey: string;
   candidateFingerprint: string;
   proposalCustodyIdentity: string;
-  candidate: ProposalCandidate;
+  candidate: DependencyObservationProposalCandidate;
   baselineSha: string;
   manifestPath: "package.json";
-  lockfilePath: "pnpm-lock.yaml";
-  selectedFileHashes: { "package.json": string; "pnpm-lock.yaml": string };
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  selectedFileHashes: DependencyObservationSelectedFileHashes;
+  profile: DependencyObservationProposalProfile;
 };
 
 export type DependencyDraftProposalDetail = {
@@ -54,13 +51,13 @@ export type DependencyDraftProposalDetail = {
       package: string;
       currentVersion: string;
       targetVersion: string;
-      dependencyKind: "dependencies" | "devDependencies";
+      dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
     };
     files: {
       manifest: { path: "package.json"; sha256: string };
-      lockfile: { path: "pnpm-lock.yaml"; sha256: string };
+      lockfile: { path: "pnpm-lock.yaml" | "package-lock.json"; sha256: string };
     };
-    profile: typeof PROFILE;
+    profile: DependencyObservationProposalProfile;
     repositorySourceVerification: "watch_observation_only";
     independentSourceProof: "not_proven";
     evidenceAdmission: "unresolved";
@@ -106,14 +103,27 @@ function source(value: unknown): Source | null {
     || typeof value.candidateFingerprint !== "string" || !SHA256.test(value.candidateFingerprint)
     || typeof value.proposalCustodyIdentity !== "string" || !SHA256.test(value.proposalCustodyIdentity)
     || typeof value.baselineSha !== "string" || !SHA1.test(value.baselineSha)
-    || value.manifestPath !== "package.json" || value.lockfilePath !== "pnpm-lock.yaml"
-    || !object(value.selectedFileHashes) || !exactKeys(value.selectedFileHashes, ["package.json", "pnpm-lock.yaml"])
-    || typeof value.selectedFileHashes["package.json"] !== "string" || !FILE_SHA256.test(value.selectedFileHashes["package.json"])
-    || typeof value.selectedFileHashes["pnpm-lock.yaml"] !== "string" || !FILE_SHA256.test(value.selectedFileHashes["pnpm-lock.yaml"])
-    || !isDeepStrictEqual(value.profile, PROFILE)
+    || !object(value.selectedFileHashes)
     || value.repositorySourceVerification !== "watch_observation_only" || value.independentSourceProof !== "not_proven") return null;
-  const candidate = validatePnpmObservationProposalCandidate(value.candidate);
-  if (!candidate || candidate.fingerprint !== value.candidateFingerprint || candidate.baseline_sha !== value.baselineSha) return null;
+  const resolved = resolveDependencyObservationProposalCandidate(value.candidate);
+  if (!resolved || resolved.candidate.fingerprint !== value.candidateFingerprint
+    || resolved.candidate.baseline_sha !== value.baselineSha
+    || value.manifestPath !== resolved.manifestPath || value.lockfilePath !== resolved.lockfilePath
+    || !isDeepStrictEqual(value.profile, resolved.profile)
+    || !exactKeys(value.selectedFileHashes, [resolved.manifestPath, resolved.lockfilePath])) return null;
+  const manifestHash = value.selectedFileHashes[resolved.manifestPath];
+  const lockfileHash = value.selectedFileHashes[resolved.lockfilePath];
+  if (typeof manifestHash !== "string" || !FILE_SHA256.test(manifestHash)
+    || typeof lockfileHash !== "string" || !FILE_SHA256.test(lockfileHash)) return null;
+  const selectedFileHashes: DependencyObservationSelectedFileHashes = resolved.lockfilePath === "pnpm-lock.yaml"
+    ? {
+        "package.json": manifestHash,
+        "pnpm-lock.yaml": lockfileHash,
+      }
+    : {
+        "package.json": manifestHash,
+        "package-lock.json": lockfileHash,
+      };
   const proposalCustodyIdentity = dependencyObservationProposalCustodyIdentity({
     repositoryId: value.repositoryId,
     repositoryName: value.repositoryName,
@@ -121,19 +131,17 @@ function source(value: unknown): Source | null {
     observationId: value.observationId,
     observationKey: value.observationKey,
     baselineSha: value.baselineSha,
-    selectedFileHashes: {
-      "package.json": value.selectedFileHashes["package.json"],
-      "pnpm-lock.yaml": value.selectedFileHashes["pnpm-lock.yaml"],
-    },
-    candidate,
+    selectedFileHashes,
+    candidate: resolved.candidate,
   });
   if (proposalCustodyIdentity !== value.proposalCustodyIdentity) return null;
   return {
     repositoryId: value.repositoryId, repositoryName: value.repositoryName, watchId: value.watchId,
     observationId: value.observationId, observationKey: value.observationKey,
     candidateFingerprint: value.candidateFingerprint, proposalCustodyIdentity: value.proposalCustodyIdentity,
-    candidate, baselineSha: value.baselineSha, manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml",
-    selectedFileHashes: { "package.json": value.selectedFileHashes["package.json"], "pnpm-lock.yaml": value.selectedFileHashes["pnpm-lock.yaml"] },
+    candidate: resolved.candidate, baselineSha: value.baselineSha,
+    manifestPath: resolved.manifestPath, lockfilePath: resolved.lockfilePath,
+    selectedFileHashes, profile: resolved.profile,
   };
 }
 
@@ -145,9 +153,21 @@ function sameSourceFields(value: Record<string, unknown>, parsed: Source): boole
     && value.manifestPath === parsed.manifestPath && value.lockfilePath === parsed.lockfilePath
     && isDeepStrictEqual(value.candidate, parsed.candidate)
     && isDeepStrictEqual(value.selectedFileHashes, parsed.selectedFileHashes)
-    && isDeepStrictEqual(value.profile, PROFILE)
+    && isDeepStrictEqual(value.profile, parsed.profile)
     && value.repositorySourceVerification === "watch_observation_only"
     && value.independentSourceProof === "not_proven";
+}
+
+function unresolvedFor(parsed: Source): readonly string[] {
+  return parsed.profile.manager === "npm"
+    ? [...BASE_UNRESOLVED, "delivery", "pull-request", "merge"]
+    : BASE_UNRESOLVED;
+}
+
+function lockfileSha(parsed: Source): string {
+  return parsed.lockfilePath === "pnpm-lock.yaml"
+    ? (parsed.selectedFileHashes as { "pnpm-lock.yaml": string })["pnpm-lock.yaml"]
+    : (parsed.selectedFileHashes as { "package-lock.json": string })["package-lock.json"];
 }
 
 function exactContract(value: unknown, parsed: Source): boolean {
@@ -162,6 +182,7 @@ function exactContract(value: unknown, parsed: Source): boolean {
   ]) || environment.kind !== "dependency_watch_observation_proposal" || environment.admission !== "draft_only"
     || !sameSourceFields(environment, parsed)) return false;
   const expectedRequest = `Assess observed dependency candidate ${parsed.candidate.package} from ${parsed.candidate.current_version} to ${parsed.candidate.target_version}.`;
+  const unresolved = unresolvedFor(parsed);
   return value.originalRequest === expectedRequest
     && isDeepStrictEqual(value.normalizedRequirements, [
       "This is a draft-only dependency proposal with server-derived observation custody.",
@@ -171,9 +192,9 @@ function exactContract(value: unknown, parsed: Source): boolean {
       id: "DEP-PROPOSAL-CUSTODY", text: "Watch-observation proposal custody remains exact and grants no delivery authority.", userVisible: false,
     }])
     && isDeepStrictEqual(value.nonGoals, ["No dependency change or operational handoff."])
-    && isDeepStrictEqual(value.risks, UNRESOLVED.map((kind) => `${kind} evidence is unresolved and blocking.`))
-    && isDeepStrictEqual(value.stops, UNRESOLVED.map((kind) => `${kind} evidence remains unresolved.`))
-    && isDeepStrictEqual(value.unresolvedQuestions, UNRESOLVED.map((kind) => ({
+    && isDeepStrictEqual(value.risks, unresolved.map((kind) => `${kind} evidence is unresolved and blocking.`))
+    && isDeepStrictEqual(value.stops, unresolved.map((kind) => `${kind} evidence remains unresolved.`))
+    && isDeepStrictEqual(value.unresolvedQuestions, unresolved.map((kind) => ({
       id: `dependency-${kind}-evidence`, text: `${kind} evidence has not been admitted.`,
     })));
 }
@@ -237,13 +258,20 @@ export async function readDependencyDraftProposalDetail(input: {
       candidate: {
         package: parsed.candidate.package, currentVersion: parsed.candidate.current_version,
         targetVersion: parsed.candidate.target_version,
-        dependencyKind: parsed.candidate.dependency_kind as "dependencies" | "devDependencies",
+        dependencyKind: parsed.candidate.dependency_kind as
+          | "dependencies"
+          | "devDependencies"
+          | "optionalDependencies"
+          | "peerDependencies",
       },
       files: {
         manifest: { path: "package.json", sha256: parsed.selectedFileHashes["package.json"] },
-        lockfile: { path: "pnpm-lock.yaml", sha256: parsed.selectedFileHashes["pnpm-lock.yaml"] },
+        lockfile: {
+          path: parsed.lockfilePath,
+          sha256: lockfileSha(parsed),
+        },
       },
-      profile: PROFILE,
+      profile: parsed.profile,
       repositorySourceVerification: "watch_observation_only",
       independentSourceProof: "not_proven",
       evidenceAdmission: "unresolved",

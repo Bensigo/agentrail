@@ -1311,6 +1311,55 @@ describe("Change Record detail view", () => {
     })).toBe(false);
   });
 
+  it("accepts only the closed npm draft profile and keeps it read-only", () => {
+    const npmDraft = structuredClone(draftDependencyProposal) as Extract<
+      AcceptanceDependencyDraftProposal,
+      { kind: "draft" }
+    >;
+    npmDraft.proposal.candidate = {
+      package: "lodash",
+      currentVersion: "4.17.21",
+      targetVersion: "4.17.22",
+      dependencyKind: "optionalDependencies",
+    };
+    npmDraft.proposal.files.lockfile = {
+      path: "package-lock.json",
+      sha256: "a".repeat(64),
+    };
+    npmDraft.proposal.profile = {
+      ecosystem: "node",
+      manager: "npm",
+      profile: "npm_package_lock_only_v1",
+      capability: "proposal_observation_only",
+    };
+
+    expect(isDependencyDraftProposal(npmDraft)).toBe(true);
+    const rendered = DependencyDraftProposalPanel({ dependencyDraftProposal: npmDraft });
+    const content = textContent(rendered);
+    expect(content).toContain("node / npm / npm_package_lock_only_v1");
+    expect(content).toContain("package-lock.json");
+    expect(content).toContain("delivery authority: not granted");
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    expect(isDependencyDraftProposal({
+      ...npmDraft,
+      proposal: {
+        ...npmDraft.proposal,
+        files: {
+          ...npmDraft.proposal.files,
+          lockfile: { path: "pnpm-lock.yaml", sha256: "a".repeat(64) },
+        },
+      },
+    })).toBe(false);
+    expect(isDependencyDraftProposal({
+      ...npmDraft,
+      proposal: {
+        ...npmDraft.proposal,
+        profile: { ...npmDraft.proposal.profile, manager: "yarn" },
+      },
+    })).toBe(false);
+  });
+
   it("labels historical human decisions as audit-only timeline evidence", () => {
     const historicalDecision: ChangeRecordEvent = {
       ...events[0]!,

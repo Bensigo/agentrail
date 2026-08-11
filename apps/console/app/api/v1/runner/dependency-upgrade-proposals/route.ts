@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
         evidence: {
           status: "unresolved",
           message:
-            "This draft records proposal custody only. Release, usage, runtime, target-lock, security, human confirmation, approval and builder handoff remain unproven.",
+            "This draft records observation-proposal custody only. Release, usage, runtime, target-lock, security, human confirmation, approval, Context Pack, builder handoff, delivery, pull request and merge remain unproven.",
         },
       },
       { status: draft.created ? 201 : 200 }

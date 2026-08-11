@@ -27,8 +27,18 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const FILE_SHA256 = /^[a-f0-9]{64}$/;
 const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const NPM_PRERELEASE_IDENTIFIER = "(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
+const NPM_PRERELEASE = `${NPM_PRERELEASE_IDENTIFIER}(?:\\.${NPM_PRERELEASE_IDENTIFIER})*`;
+const NPM_BUILD = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+const NPM_VERSION_TEXT = `v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-${NPM_PRERELEASE})?(?:\\+${NPM_BUILD})?`;
+const NPM_VERSION = new RegExp(
+  `^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(${NPM_PRERELEASE}))?(?:\\+${NPM_BUILD})?$`,
+);
+const NPM_COMPARATOR = new RegExp(`^(<=|>=|<|>|=)?(${NPM_VERSION_TEXT})$`);
+const NPM_HYPHEN = new RegExp(`^(${NPM_VERSION_TEXT})\\s+-\\s+(${NPM_VERSION_TEXT})$`);
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const UNSAFE_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
+const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?|npm):/i;
 const BIDI_OR_CONTROL = /[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 const MAX_SELECTED_FILE_HASHES = 16;
 
@@ -52,12 +62,36 @@ export type CreateDraftAcceptanceRecordFromDependencyObservationInput = {
   candidateFingerprint: string;
 };
 
-export type DependencyObservationProposalProfile = {
-  ecosystem: "node";
-  manager: "pnpm";
-  profile: "pnpm_lockfile_only_v1";
-  capability: "proposal_observation_only";
-};
+/**
+ * The only proposal profiles admitted by this persistence boundary.
+ * Detection, a lockfile name, or a command template cannot add an entry.
+ */
+export const dependencyObservationProposalProfileRegistry = {
+  "node:pnpm": {
+    profile: {
+      ecosystem: "node",
+      manager: "pnpm",
+      profile: "pnpm_lockfile_only_v1",
+      capability: "proposal_observation_only",
+    },
+    manifestPath: "package.json",
+    lockfilePath: "pnpm-lock.yaml",
+  },
+  "node:npm": {
+    profile: {
+      ecosystem: "node",
+      manager: "npm",
+      profile: "npm_package_lock_only_v1",
+      capability: "proposal_observation_only",
+    },
+    manifestPath: "package.json",
+    lockfilePath: "package-lock.json",
+  },
+} as const;
+
+type ProposalProfileDefinition =
+  (typeof dependencyObservationProposalProfileRegistry)[keyof typeof dependencyObservationProposalProfileRegistry];
+export type DependencyObservationProposalProfile = ProposalProfileDefinition["profile"];
 
 export type DependencyObservationAcceptanceRecordDraft = AcceptanceRecordDraft & {
   event: ChangeRecordEventRow;
@@ -66,7 +100,10 @@ export type DependencyObservationAcceptanceRecordDraft = AcceptanceRecordDraft &
   created: boolean;
 };
 
-type PnpmObservationProposalCandidate = Omit<
+type LegacyObservationProposalCandidate<
+  Manager extends "pnpm" | "npm",
+  VerificationCommands extends string[],
+> = Omit<
   DependencyUpgradeCandidate,
   | "ecosystem"
   | "package_manager"
@@ -75,11 +112,27 @@ type PnpmObservationProposalCandidate = Omit<
   | "manager_commands"
 > & {
   ecosystem: "node";
-  package_manager: "pnpm";
+  package_manager: Manager;
   package_manager_version: null;
-  verification_commands: [string, string];
+  verification_commands: VerificationCommands;
   manager_commands: { version: string; install: string; update: string };
 };
+
+type PnpmObservationProposalCandidate = LegacyObservationProposalCandidate<
+  "pnpm",
+  [string, string]
+>;
+type NpmObservationProposalCandidate = LegacyObservationProposalCandidate<
+  "npm",
+  [string]
+>;
+export type DependencyObservationProposalCandidate =
+  | PnpmObservationProposalCandidate
+  | NpmObservationProposalCandidate;
+
+export type DependencyObservationSelectedFileHashes =
+  | { "package.json": string; "pnpm-lock.yaml": string }
+  | { "package.json": string; "package-lock.json": string };
 
 type Custody = {
   watchId: string;
@@ -88,17 +141,13 @@ type Custody = {
   observationId: string;
   observationKey: string;
   baselineSha: string;
-  selectedFileHashes: { "package.json": string; "pnpm-lock.yaml": string };
-  candidate: PnpmObservationProposalCandidate;
+  manifestPath: "package.json";
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  selectedFileHashes: DependencyObservationSelectedFileHashes;
+  candidate: DependencyObservationProposalCandidate;
+  profile: DependencyObservationProposalProfile;
 };
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-const PROFILE: DependencyObservationProposalProfile = {
-  ecosystem: "node",
-  manager: "pnpm",
-  profile: "pnpm_lockfile_only_v1",
-  capability: "proposal_observation_only",
-};
 
 function exactLocator(input: unknown): input is CreateDraftAcceptanceRecordFromDependencyObservationInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
@@ -119,24 +168,195 @@ function safePath(value: unknown): value is string {
     && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
+type NpmSemver = {
+  major: bigint;
+  minor: bigint;
+  patch: bigint;
+  prerelease: Array<bigint | string>;
+};
+
+function parseNpmSemver(value: unknown): NpmSemver | null {
+  if (typeof value !== "string") return null;
+  const match = NPM_VERSION.exec(value.trim());
+  if (!match) return null;
+  const prerelease = match[4]
+    ? match[4].split(".").map((part) => /^[0-9]+$/.test(part) ? BigInt(part) : part)
+    : [];
+  return {
+    major: BigInt(match[1]!),
+    minor: BigInt(match[2]!),
+    patch: BigInt(match[3]!),
+    prerelease,
+  };
+}
+
+function compareNpmSemver(left: NpmSemver, right: NpmSemver): number {
+  for (const part of ["major", "minor", "patch"] as const) {
+    if (left[part] !== right[part]) return left[part] < right[part] ? -1 : 1;
+  }
+  if (left.prerelease.length === 0 && right.prerelease.length === 0) return 0;
+  if (left.prerelease.length === 0) return 1;
+  if (right.prerelease.length === 0) return -1;
+  const sharedLength = Math.min(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const leftPart = left.prerelease[index]!;
+    const rightPart = right.prerelease[index]!;
+    if (leftPart === rightPart) continue;
+    if (typeof leftPart === "bigint" && typeof rightPart === "string") return -1;
+    if (typeof leftPart === "string" && typeof rightPart === "bigint") return 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  if (left.prerelease.length === right.prerelease.length) return 0;
+  return left.prerelease.length < right.prerelease.length ? -1 : 1;
+}
+
+function sameNpmSemverCore(left: NpmSemver, right: NpmSemver): boolean {
+  return left.major === right.major && left.minor === right.minor && left.patch === right.patch;
+}
+
+function npmPrereleaseIsAdmitted(actual: NpmSemver, prereleaseCores: NpmSemver[]): boolean {
+  return actual.prerelease.length === 0
+    || prereleaseCores.some((expected) => sameNpmSemverCore(actual, expected));
+}
+
+type NpmWildcardBounds = { lower: NpmSemver | null; upper: NpmSemver | null };
+
+function npmWildcardBounds(text: string): NpmWildcardBounds | null {
+  if (["*", "x", "X"].includes(text)) return { lower: null, upper: null };
+  const parts = text.split(".");
+  const wildcard = (part: string) => ["*", "x", "X"].includes(part);
+  if (parts.length < 1 || parts.length > 3
+    || parts.some((part) => !wildcard(part) && !/^(?:0|[1-9][0-9]*)$/.test(part))) return null;
+  if (wildcard(parts[0]!)) return { lower: null, upper: null };
+  const major = BigInt(parts[0]!);
+  if (parts.length === 1 || wildcard(parts[1]!)) {
+    return {
+      lower: { major, minor: 0n, patch: 0n, prerelease: [] },
+      upper: { major: major + 1n, minor: 0n, patch: 0n, prerelease: [] },
+    };
+  }
+  const minor = BigInt(parts[1]!);
+  if (parts.length === 2 || wildcard(parts[2]!)) {
+    return {
+      lower: { major, minor, patch: 0n, prerelease: [] },
+      upper: { major, minor: minor + 1n, patch: 0n, prerelease: [] },
+    };
+  }
+  return null;
+}
+
+function npmComparatorMatches(operator: string, actual: NpmSemver, expected: NpmSemver): boolean {
+  const comparison = compareNpmSemver(actual, expected);
+  if (operator === "=") return comparison === 0;
+  if (operator === ">") return comparison > 0;
+  if (operator === ">=") return comparison >= 0;
+  if (operator === "<") return comparison < 0;
+  return operator === "<=" && comparison <= 0;
+}
+
+function npmConstraintBranchMatches(branch: string, actual: NpmSemver): boolean | null {
+  const hyphen = NPM_HYPHEN.exec(branch);
+  if (hyphen) {
+    const lower = parseNpmSemver(hyphen[1]);
+    const upper = parseNpmSemver(hyphen[2]);
+    if (!lower || !upper) return null;
+    const prereleaseCores = [lower, upper].filter((version) => version.prerelease.length > 0);
+    return compareNpmSemver(actual, lower) >= 0
+      && compareNpmSemver(actual, upper) <= 0
+      && npmPrereleaseIsAdmitted(actual, prereleaseCores);
+  }
+
+  if (branch.startsWith("^") || branch.startsWith("~")) {
+    if (branch.includes(" ")) return null;
+    const lower = parseNpmSemver(branch.slice(1));
+    if (!lower) return null;
+    const upper = branch[0] === "~"
+      ? { major: lower.major, minor: lower.minor + 1n, patch: 0n, prerelease: [] }
+      : lower.major > 0n
+        ? { major: lower.major + 1n, minor: 0n, patch: 0n, prerelease: [] }
+        : lower.minor > 0n
+          ? { major: 0n, minor: lower.minor + 1n, patch: 0n, prerelease: [] }
+          : { major: 0n, minor: 0n, patch: lower.patch + 1n, prerelease: [] };
+    return compareNpmSemver(actual, lower) >= 0
+      && compareNpmSemver(actual, upper) < 0
+      && npmPrereleaseIsAdmitted(actual, lower.prerelease.length > 0 ? [lower] : []);
+  }
+
+  const wildcard = npmWildcardBounds(branch);
+  if (wildcard) {
+    const matches = wildcard.lower === null
+      || (compareNpmSemver(actual, wildcard.lower) >= 0
+        && wildcard.upper !== null
+        && compareNpmSemver(actual, wildcard.upper) < 0);
+    return matches && npmPrereleaseIsAdmitted(actual, []);
+  }
+
+  const tokens = branch.split(/\s+/u);
+  if (tokens.length === 0) return null;
+  const comparators: Array<{ operator: string; expected: NpmSemver }> = [];
+  for (const token of tokens) {
+    const match = NPM_COMPARATOR.exec(token);
+    if (!match || (tokens.length > 1 && !match[1])) return null;
+    const expected = parseNpmSemver(match[2]);
+    if (!expected) return null;
+    comparators.push({ operator: match[1] ?? "=", expected });
+  }
+  const prereleaseCores = comparators
+    .map(({ expected }) => expected)
+    .filter((expected) => expected.prerelease.length > 0);
+  return comparators.every(({ operator, expected }) => npmComparatorMatches(operator, actual, expected))
+    && npmPrereleaseIsAdmitted(actual, prereleaseCores);
+}
+
+/** Exact conservative subset admitted by the merged Python npm producer. */
+export function npmObservationConstraintMatches(specifier: unknown, version: unknown): boolean | null {
+  const actual = parseNpmSemver(version);
+  if (!actual || typeof specifier !== "string" || !specifier.trim()) return null;
+  const branches = specifier.trim().split("||").map((branch) => branch.trim());
+  if (branches.some((branch) => !branch)) return null;
+  let anyMatch = false;
+  for (const branch of branches) {
+    const matches = npmConstraintBranchMatches(branch, actual);
+    if (matches === null) return null;
+    anyMatch ||= matches;
+  }
+  return anyMatch;
+}
+
+function npmTargetIsNewer(current: string, target: string): boolean {
+  const currentVersion = parseNpmSemver(current);
+  const targetVersion = parseNpmSemver(target);
+  return !!currentVersion && !!targetVersion
+    && targetVersion.prerelease.length === 0
+    && compareNpmSemver(currentVersion, targetVersion) < 0;
+}
+
 /**
  * Observation writers may hash a bounded set of selected files. This proposal
  * profile admits only the two files it understands, so unrelated hashes never
  * become Record custody or alter the canonical identity.
  */
-function selectedHashes(value: unknown): Custody["selectedFileHashes"] | null {
+function selectedHashes(
+  value: unknown,
+  definition: {
+    manifestPath: "package.json";
+    lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  },
+): DependencyObservationSelectedFileHashes | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length < 2 || entries.length > MAX_SELECTED_FILE_HASHES
     || !entries.every(([path, hash]) => safePath(path) && typeof hash === "string" && FILE_SHA256.test(hash))) return null;
-  const manifest = (value as Record<string, unknown>)["package.json"];
-  const lockfile = (value as Record<string, unknown>)["pnpm-lock.yaml"];
+  const manifest = (value as Record<string, unknown>)[definition.manifestPath];
+  const lockfile = (value as Record<string, unknown>)[definition.lockfilePath];
   if (typeof manifest !== "string" || typeof lockfile !== "string"
     || !FILE_SHA256.test(manifest) || !FILE_SHA256.test(lockfile)) return null;
-  return { "package.json": manifest, "pnpm-lock.yaml": lockfile };
+  return definition.lockfilePath === "pnpm-lock.yaml"
+    ? { "package.json": manifest, "pnpm-lock.yaml": lockfile }
+    : { "package.json": manifest, "package-lock.json": lockfile };
 }
 
-const PNPM_CANDIDATE_KEYS = [
+const LEGACY_CANDIDATE_KEYS = [
   "package", "ecosystem", "package_manager", "dependency_kind", "specifier",
   "current_version", "target_version", "manifest_path", "lockfile_path",
   "baseline_sha", "fingerprint", "package_manager_version",
@@ -146,13 +366,25 @@ const PNPM_CANDIDATE_KEYS = [
 function candidateRaw(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value);
-  return keys.length === PNPM_CANDIDATE_KEYS.length
-    && keys.every((key) => (PNPM_CANDIDATE_KEYS as readonly string[]).includes(key));
+  return keys.length === LEGACY_CANDIDATE_KEYS.length
+    && keys.every((key) => (LEGACY_CANDIDATE_KEYS as readonly string[]).includes(key));
 }
 
 function candidateWithFingerprint(value: unknown, fingerprint: string): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
     && (value as Record<string, unknown>).fingerprint === fingerprint;
+}
+
+function profileDefinition(value: unknown): ProposalProfileDefinition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.ecosystem === "node" && raw.package_manager === "pnpm") {
+    return dependencyObservationProposalProfileRegistry["node:pnpm"];
+  }
+  if (raw.ecosystem === "node" && raw.package_manager === "npm") {
+    return dependencyObservationProposalProfileRegistry["node:npm"];
+  }
+  return null;
 }
 
 /**
@@ -187,13 +419,40 @@ export function pnpmObservationCandidateFingerprint(
   });
 }
 
+/** Byte-compatible with observation.py:_make_candidate for the npm profile. */
+export function npmObservationCandidateFingerprint(
+  candidate: Pick<
+    DependencyUpgradeCandidate,
+    | "baseline_sha"
+    | "current_version"
+    | "dependency_kind"
+    | "lockfile_path"
+    | "manifest_path"
+    | "package"
+    | "specifier"
+    | "target_version"
+  >,
+): string {
+  return stableSha256({
+    baseline_sha: candidate.baseline_sha,
+    current_version: candidate.current_version,
+    dependency_kind: candidate.dependency_kind,
+    lockfile_path: candidate.lockfile_path,
+    manifest_path: candidate.manifest_path,
+    package: candidate.package,
+    package_manager: "npm",
+    specifier: candidate.specifier,
+    target_version: candidate.target_version,
+  });
+}
+
 /** Parse exactly the asdict shape serialized by the live pnpm watch producer. */
 export function validatePnpmObservationProposalCandidate(
   value: unknown,
 ): PnpmObservationProposalCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
-  if (!candidateRaw(raw) || PNPM_CANDIDATE_KEYS.some((key) => !(key in raw))) return null;
+  if (!candidateRaw(raw) || LEGACY_CANDIDATE_KEYS.some((key) => !(key in raw))) return null;
   if (raw.ecosystem !== "node" || raw.package_manager !== "pnpm"
     || raw.package_manager_version !== null) return null;
   if (!safeText(raw.package) || !NPM_PACKAGE.test(raw.package)
@@ -242,6 +501,91 @@ export function validatePnpmObservationProposalCandidate(
   return pnpmObservationCandidateFingerprint(candidate) === candidate.fingerprint ? candidate : null;
 }
 
+const NPM_SAVE_FLAGS = {
+  dependencies: "--save-prod",
+  devDependencies: "--save-dev",
+  optionalDependencies: "--save-optional",
+  peerDependencies: "--save-peer",
+} as const;
+
+/** Parse exactly the 14-key legacy payload persisted by the live npm watcher. */
+export function validateNpmObservationProposalCandidate(
+  value: unknown,
+): NpmObservationProposalCandidate | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!candidateRaw(raw) || LEGACY_CANDIDATE_KEYS.some((key) => !(key in raw))) return null;
+  if (raw.ecosystem !== "node" || raw.package_manager !== "npm"
+    || raw.package_manager_version !== null) return null;
+  if (!safeText(raw.package) || !NPM_PACKAGE.test(raw.package)
+    || !safeText(raw.dependency_kind)
+    || !Object.hasOwn(NPM_SAVE_FLAGS, raw.dependency_kind)
+    || !safeText(raw.specifier) || UNSAFE_NPM_SPECIFIER.test(raw.specifier.trim())
+    || !safeText(raw.current_version) || !SEMVER.test(raw.current_version)
+    || !safeText(raw.target_version) || !SEMVER.test(raw.target_version)
+    || !npmTargetIsNewer(raw.current_version, raw.target_version)
+    || npmObservationConstraintMatches(raw.specifier, raw.current_version) !== true
+    || npmObservationConstraintMatches(raw.specifier, raw.target_version) !== true
+    || raw.manifest_path !== "package.json" || raw.lockfile_path !== "package-lock.json"
+    || typeof raw.baseline_sha !== "string" || !GIT_SHA.test(raw.baseline_sha)
+    || typeof raw.fingerprint !== "string" || !SHA256.test(raw.fingerprint)) return null;
+
+  const commands = raw.manager_commands;
+  const verification = raw.verification_commands;
+  if (!commands || typeof commands !== "object" || Array.isArray(commands)
+    || !Array.isArray(verification)) return null;
+  const commandRecord = commands as Record<string, unknown>;
+  const saveFlag = NPM_SAVE_FLAGS[raw.dependency_kind as keyof typeof NPM_SAVE_FLAGS];
+  const expectedUpdate = `npm install ${raw.package}@${raw.target_version} --package-lock-only --ignore-scripts --no-audit ${saveFlag}`;
+  if (Object.keys(commandRecord).length !== 3
+    || commandRecord.version !== "npm --version"
+    || commandRecord.install !== "npm ci --ignore-scripts"
+    || commandRecord.update !== expectedUpdate
+    || verification.length !== 1
+    || verification[0] !== "npm test") return null;
+
+  const candidate: NpmObservationProposalCandidate = {
+    package: raw.package,
+    ecosystem: "node",
+    package_manager: "npm",
+    package_manager_version: null,
+    dependency_kind: raw.dependency_kind,
+    specifier: raw.specifier,
+    current_version: raw.current_version,
+    target_version: raw.target_version,
+    manifest_path: "package.json",
+    lockfile_path: "package-lock.json",
+    baseline_sha: raw.baseline_sha,
+    fingerprint: raw.fingerprint,
+    verification_commands: [verification[0]],
+    manager_commands: {
+      version: commandRecord.version as string,
+      install: commandRecord.install as string,
+      update: commandRecord.update as string,
+    },
+  };
+  return npmObservationCandidateFingerprint(candidate) === candidate.fingerprint ? candidate : null;
+}
+
+export type ResolvedDependencyObservationProposalCandidate = {
+  candidate: DependencyObservationProposalCandidate;
+  profile: DependencyObservationProposalProfile;
+  manifestPath: "package.json";
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+};
+
+/** Resolve through the closed registry; an unknown manager is never coerced to npm. */
+export function resolveDependencyObservationProposalCandidate(
+  value: unknown,
+): ResolvedDependencyObservationProposalCandidate | null {
+  const definition = profileDefinition(value);
+  if (!definition) return null;
+  const candidate = definition.profile.manager === "pnpm"
+    ? validatePnpmObservationProposalCandidate(value)
+    : validateNpmObservationProposalCandidate(value);
+  return candidate ? { candidate, ...definition } : null;
+}
+
 function stableSha256(value: Record<string, unknown>): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;
 }
@@ -251,7 +595,7 @@ function custodyIdentity(custody: Custody): string {
   return stableSha256({
     kind: "dependency_observation_proposal_custody",
     version: 1,
-    profile: PROFILE,
+    profile: custody.profile,
     repository: { id: custody.repositoryId, name: custody.repositoryName },
     watchId: custody.watchId,
     observation: { id: custody.observationId, key: custody.observationKey },
@@ -272,16 +616,16 @@ export function dependencyObservationProposalCustodyIdentity(input: {
   observationId: string;
   observationKey: string;
   baselineSha: string;
-  selectedFileHashes: { "package.json": string; "pnpm-lock.yaml": string };
+  selectedFileHashes: Record<string, string>;
   candidate: unknown;
 }): string | null {
-  const candidate = validatePnpmObservationProposalCandidate(input.candidate);
-  const hashes = selectedHashes(input.selectedFileHashes);
-  if (!candidate || !hashes || Object.keys(input.selectedFileHashes).length !== 2
+  const resolved = resolveDependencyObservationProposalCandidate(input.candidate);
+  const hashes = resolved ? selectedHashes(input.selectedFileHashes, resolved) : null;
+  if (!resolved || !hashes || Object.keys(input.selectedFileHashes).length !== 2
     || !UUID.test(input.repositoryId) || !safeText(input.repositoryName)
     || !UUID.test(input.watchId) || !UUID.test(input.observationId)
     || !safeText(input.observationKey) || !GIT_SHA.test(input.baselineSha)
-    || candidate.baseline_sha !== input.baselineSha) return null;
+    || resolved.candidate.baseline_sha !== input.baselineSha) return null;
   return custodyIdentity({
     repositoryId: input.repositoryId,
     repositoryName: input.repositoryName,
@@ -289,8 +633,11 @@ export function dependencyObservationProposalCustodyIdentity(input: {
     observationId: input.observationId,
     observationKey: input.observationKey,
     baselineSha: input.baselineSha,
+    manifestPath: resolved.manifestPath,
+    lockfilePath: resolved.lockfilePath,
     selectedFileHashes: hashes,
-    candidate,
+    candidate: resolved.candidate,
+    profile: resolved.profile,
   });
 }
 
@@ -301,8 +648,8 @@ function sourceReferences(custody: Custody, proposalCustodyIdentity: string): Re
     watchId: custody.watchId, observationId: custody.observationId, observationKey: custody.observationKey,
     candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity,
     candidate: custody.candidate, baselineSha: custody.baselineSha,
-    manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml", selectedFileHashes: custody.selectedFileHashes,
-    profile: PROFILE, repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
+    manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath, selectedFileHashes: custody.selectedFileHashes,
+    profile: custody.profile, repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
   }];
 }
 
@@ -317,6 +664,7 @@ function contract(custody: Custody, proposalCustodyIdentity: string): Record<str
     "approval",
     "context-pack",
     "builder-handoff",
+    ...(custody.profile.manager === "npm" ? ["delivery", "pull-request", "merge"] : []),
   ];
   return {
     originalRequest: `Assess observed dependency candidate ${custody.candidate.package} from ${custody.candidate.current_version} to ${custody.candidate.target_version}.`,
@@ -332,11 +680,11 @@ function contract(custody: Custody, proposalCustodyIdentity: string): Record<str
     nonGoals: ["No dependency change or operational handoff."],
     risks: unresolved.map((kind) => `${kind} evidence is unresolved and blocking.`),
     environment: {
-      kind: "dependency_watch_observation_proposal", admission: "draft_only", profile: PROFILE,
+      kind: "dependency_watch_observation_proposal", admission: "draft_only", profile: custody.profile,
       repositoryId: custody.repositoryId, repositoryName: custody.repositoryName,
       watchId: custody.watchId, observationId: custody.observationId, observationKey: custody.observationKey,
       candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity, candidate: custody.candidate,
-      baselineSha: custody.baselineSha, manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml",
+      baselineSha: custody.baselineSha, manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath,
       selectedFileHashes: custody.selectedFileHashes,
       repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
     },
@@ -352,7 +700,7 @@ function payload(custody: Custody, recordId: string, contractId: string, proposa
     repositoryId: custody.repositoryId, repositoryName: custody.repositoryName,
     watchId: custody.watchId, observationId: custody.observationId, observationKey: custody.observationKey,
     candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity, candidate: custody.candidate,
-    profile: PROFILE, baselineSha: custody.baselineSha, manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml",
+    profile: custody.profile, baselineSha: custody.baselineSha, manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath,
     selectedFileHashes: custody.selectedFileHashes, evidenceAdmission: "unresolved", authority: "draft_only",
     repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
   };
@@ -362,30 +710,27 @@ async function readCustody(
   tx: DbTransaction,
   input: CreateDraftAcceptanceRecordFromDependencyObservationInput,
 ): Promise<Custody> {
-  const watch = (await tx.select({
-    id: dependencyWatches.id,
-    repositoryId: dependencyWatches.repositoryId,
-    repositoryName: repositories.name,
-    manifestPath: dependencyWatches.manifestPath,
-    lockfilePath: dependencyWatches.lockfilePath,
-  })
-    .from(dependencyWatches)
-    .innerJoin(repositories, eq(repositories.id, dependencyWatches.repositoryId))
-    .where(and(
-      eq(dependencyWatches.workspaceId, input.workspaceId),
-      eq(dependencyWatches.id, input.watchId),
-      eq(repositories.workspaceId, input.workspaceId),
-  )).limit(1))[0];
+  const watch = (Array.from(await tx.execute(sql`
+    SELECT watch.id,
+           watch.repository_id AS "repositoryId",
+           repository.name AS "repositoryName",
+           watch.manifest_path AS "manifestPath",
+           watch.lockfile_path AS "lockfilePath"
+    FROM ${dependencyWatches} AS watch
+    INNER JOIN ${repositories} AS repository
+      ON repository.id = watch.repository_id
+    WHERE watch.workspace_id = ${input.workspaceId}
+      AND watch.id = ${input.watchId}
+      AND repository.workspace_id = ${input.workspaceId}
+    FOR UPDATE OF watch
+  `)) as Array<{
+    id: string;
+    repositoryId: string;
+    repositoryName: string;
+    manifestPath: string;
+    lockfilePath: string;
+  }>)[0];
   if (!watch) throw new DependencyObservationDraftError("not_found", "Dependency watch was not found in this workspace");
-  const exactRootPaths = watch.manifestPath === "package.json"
-    && watch.lockfilePath === "pnpm-lock.yaml";
-  const autoRootPaths = watch.manifestPath === "auto" && watch.lockfilePath === "auto";
-  if (!exactRootPaths && !autoRootPaths) {
-    throw new DependencyObservationDraftError(
-      "unsafe_custody",
-      "Dependency watch paths do not match the root pnpm proposal custody profile",
-    );
-  }
 
   // A newer failed, unchanged, or unsupported observation revokes older candidate custody.
   const observation = (await tx.select().from(dependencyWatchObservations).where(and(
@@ -398,20 +743,38 @@ async function readCustody(
     throw new DependencyObservationDraftError("unsafe_custody", "Dependency observation key is not bounded custody");
   }
 
-  const raw = (Array.isArray(observation.candidates) ? observation.candidates : []).find(
-    (value): value is Record<string, unknown> =>
-      candidateWithFingerprint(value, input.candidateFingerprint),
+  const matchingCandidates = (Array.isArray(observation.candidates) ? observation.candidates : []).filter(
+    (value): value is Record<string, unknown> => candidateWithFingerprint(value, input.candidateFingerprint),
   );
-  if (!raw) throw new DependencyObservationDraftError("not_found", "Dependency candidate is not present in the current observation");
-  if (raw.ecosystem !== "node" || raw.package_manager !== "pnpm") {
+  if (matchingCandidates.length === 0) {
+    throw new DependencyObservationDraftError("not_found", "Dependency candidate is not present in the current observation");
+  }
+  if (matchingCandidates.length !== 1) {
+    throw new DependencyObservationDraftError("unsafe_custody", "Dependency observation has ambiguous candidate custody");
+  }
+  const raw = matchingCandidates[0]!;
+  const definition = profileDefinition(raw);
+  if (!definition) {
     throw new DependencyObservationDraftError("unsupported_manager", "Dependency manager is not supported by the proposal custody profile");
   }
-  const candidate = validatePnpmObservationProposalCandidate(raw);
-  const hashes = selectedHashes(observation.selectedFileHashes);
-  if (observation.status !== "candidates" || !candidate
-    || observation.baselineSha !== candidate.baseline_sha || !GIT_SHA.test(observation.baselineSha ?? "")
+  const resolved = resolveDependencyObservationProposalCandidate(raw);
+  const hashes = selectedHashes(observation.selectedFileHashes, definition);
+  const exactRootPaths = watch.manifestPath === definition.manifestPath
+    && watch.lockfilePath === definition.lockfilePath;
+  const autoRootPaths = watch.manifestPath === "auto" && watch.lockfilePath === "auto";
+  if (!exactRootPaths && !autoRootPaths) {
+    throw new DependencyObservationDraftError(
+      "unsafe_custody",
+      `Dependency watch paths do not match the root ${definition.profile.manager} proposal custody profile`,
+    );
+  }
+  if (observation.status !== "candidates" || !resolved
+    || observation.baselineSha !== resolved.candidate.baseline_sha || !GIT_SHA.test(observation.baselineSha ?? "")
     || !hashes) {
-    throw new DependencyObservationDraftError("unsafe_custody", "Dependency observation lacks bounded pnpm proposal custody");
+    throw new DependencyObservationDraftError(
+      "unsafe_custody",
+      `Dependency observation lacks bounded ${definition.profile.manager} proposal custody`,
+    );
   }
   return {
     watchId: watch.id,
@@ -420,8 +783,11 @@ async function readCustody(
     observationId: observation.id,
     observationKey: observation.observationKey,
     baselineSha: observation.baselineSha,
+    manifestPath: resolved.manifestPath,
+    lockfilePath: resolved.lockfilePath,
     selectedFileHashes: hashes,
-    candidate,
+    candidate: resolved.candidate,
+    profile: resolved.profile,
   };
 }
 
@@ -449,22 +815,34 @@ export async function createDraftAcceptanceRecordFromDependencyObservation(
     )).limit(1))[0];
 
     if (existing) {
-      const storedContract = (await tx.select().from(acceptanceContracts).where(and(
-        eq(acceptanceContracts.recordId, recordId), eq(acceptanceContracts.version, 1),
-      )).limit(1))[0];
-      const event = (await tx.select().from(changeRecordEvents).where(and(
-        eq(changeRecordEvents.recordId, recordId), eq(changeRecordEvents.eventKey, eventKey),
-      )).limit(1))[0];
+      const storedContracts = await tx.select().from(acceptanceContracts).where(
+        eq(acceptanceContracts.recordId, recordId),
+      );
+      const storedEvents = await tx.select().from(changeRecordEvents).where(
+        eq(changeRecordEvents.recordId, recordId),
+      );
+      const storedContract = storedContracts[0];
+      const event = storedEvents[0];
       if (existing.repo !== custody.repositoryName || existing.workKey !== workKey
         || existing.originChannel !== "dependency_watch" || !isDeepStrictEqual(existing.sourceReferences, sources)
-        || !storedContract || storedContract.id !== contractId || storedContract.status !== "draft"
+        || existing.issueNumber !== null || existing.prNumber !== null
+        || existing.currentPrHeadSha !== null || existing.currentPrHeadCycleId !== null
+        || existing.currentPrHeadAuthoritative || existing.currentPrHeadAuthorityGeneration !== 0
+        || !isDeepStrictEqual(existing.headShas, []) || existing.mergedSha !== null
+        || existing.state !== "open"
+        || storedContracts.length !== 1 || !storedContract
+        || storedContract.id !== contractId || storedContract.recordId !== recordId
+        || storedContract.version !== 1 || storedContract.status !== "draft"
+        || storedContract.confirmedBy !== null || storedContract.confirmedAt !== null
         || storedContract.createdBy !== ACTOR || !isDeepStrictEqual(storedContract.contract, draftContract)
-        || !event || event.id !== changeRecordEventId({ recordId, eventKey })
+        || storedEvents.length !== 1 || !event
+        || event.id !== changeRecordEventId({ recordId, eventKey })
+        || event.recordId !== recordId || event.eventKey !== eventKey
         || event.stage !== "dependency_observation_proposal" || event.actor !== ACTOR
         || !isDeepStrictEqual(event.payloadRef, provenance)) {
         throw new DependencyObservationDraftError("conflict", "Dependency proposal custody conflicts with its immutable record");
       }
-      return { record: existing, contract: storedContract, event, observation, profile: PROFILE, created: false };
+      return { record: existing, contract: storedContract, event, observation, profile: custody.profile, created: false };
     }
 
     const [record] = await tx.insert(changeRecords).values({
@@ -479,6 +857,6 @@ export async function createDraftAcceptanceRecordFromDependencyObservation(
       stage: "dependency_observation_proposal", actor: ACTOR, payloadRef: provenance,
     }).returning();
     if (!record || !createdContract || !event) throw new Error("Dependency proposal custody insert returned no row");
-    return { record, contract: createdContract, event, observation, profile: PROFILE, created: true };
+    return { record, contract: createdContract, event, observation, profile: custody.profile, created: true };
   });
 }

@@ -233,7 +233,7 @@ database/Console acceptance-observation profile, cannot pass the canonical
 R10.1 ingestion boundary as `observed`, and grants no approval, Pack, builder,
 delivery, pull-request, or merge authority.
 
-The Go Modules profile slice adds the closed `go` / `go-modules` /
+PR #1706 adds the closed `go` / `go-modules` /
 `go_1_26_root_mod_sum_public_proxy_v1` evidence profile. It accepts only
 stable Go 1.26 runtime and tool evidence, root `go.mod` and `go.sum` exact-head
 custody, a candidate from a canonical public direct module requirement, stable

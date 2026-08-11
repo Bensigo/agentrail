@@ -4578,15 +4578,7 @@ function matchesCanonicalPostedReviewAttestation(input: {
 }): boolean {
   const { event, binding } = input;
   const payload = event.payloadRef;
-  const requiredKeys = [
-    "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
-    "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest",
-    "postPayloadDigest", "postedReviewUrl",
-  ];
-  const allowedShape = hasExactKeys(payload, requiredKeys)
-    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted"])
-    || hasExactKeys(payload, [...requiredKeys, "commentsFolded"])
-    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted", "commentsFolded"]);
+  const allowedShape = postedReviewAttestationShape(payload);
   const expectedEventKey = reviewJobPostedAttestationEventKey(binding.reviewJobId);
   return allowedShape
     && event.id === changeRecordEventId({ recordId: binding.recordId, eventKey: expectedEventKey })
@@ -5899,15 +5891,7 @@ function parseHistoricalPostedReviewAttestation(
   reviewJobId: string
 ): HistoricalPostedReviewAttestation | null {
   const payload = event.payloadRef;
-  const requiredKeys = [
-    "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
-    "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest",
-    "postPayloadDigest", "postedReviewUrl",
-  ];
-  const allowedShape = hasExactKeys(payload, requiredKeys)
-    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted"])
-    || hasExactKeys(payload, [...requiredKeys, "commentsFolded"])
-    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted", "commentsFolded"]);
+  const allowedShape = postedReviewAttestationShape(payload);
   if (!allowedShape || event.id !== changeRecordEventId({ recordId: record.id, eventKey: event.eventKey })
     || event.recordId !== record.id || event.eventKey !== reviewJobPostedAttestationEventKey(reviewJobId)
     || event.stage !== REVIEW_JOB_POSTED_ATTESTATION_STAGE
@@ -6665,10 +6649,14 @@ function postedReviewAttestationShape(payload: Record<string, unknown>): boolean
     "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest",
     "postPayloadDigest", "postedReviewUrl",
   ];
-  return hasExactKeys(payload, required)
-    || hasExactKeys(payload, [...required, "inlineCommentsPosted"])
-    || hasExactKeys(payload, [...required, "commentsFolded"])
-    || hasExactKeys(payload, [...required, "inlineCommentsPosted", "commentsFolded"]);
+  const optional = new Set([
+    "inlineCommentsPosted", "commentsFolded", "criterionOutcomeBundleSha256",
+  ]);
+  return required.every((key) => hasOwn(payload, key))
+    && Object.keys(payload).every((key) => required.includes(key) || optional.has(key))
+    && (!hasOwn(payload, "criterionOutcomeBundleSha256")
+      || (typeof payload["criterionOutcomeBundleSha256"] === "string"
+        && LOWER_SHA256.test(payload["criterionOutcomeBundleSha256"])));
 }
 
 function parseAcceptancePrReviewMetricsCycle(input: {
@@ -17926,5 +17914,1687 @@ export async function readAcceptanceRecordDetail(
       return { kind: "unavailable", reason: "detail_output_limit" };
     }
     return { kind: "record", detail };
+  });
+}
+
+// R11.2b criterion-outcome and opaque artifact custody ----------------------
+
+export type AcceptanceCriterionOutcomeState =
+  | "proven"
+  | "failed"
+  | "not_proven"
+  | "not_testable";
+
+export type AcceptanceCriterionArtifactContentType =
+  | "image/png"
+  | "image/jpeg"
+  | "application/json";
+
+export type AcceptanceCriterionOutcomeArtifact = {
+  artifactId: string;
+  contentType: AcceptanceCriterionArtifactContentType;
+  contentSha256: string;
+};
+
+export type AcceptanceCriterionOutcomeEvidence =
+  | {
+      kind: "execution_receipt";
+      modality: "ui" | "api" | "data" | "job";
+      executionId: string;
+      receiptEventId: string;
+      evidenceRef: string;
+      artifact: AcceptanceCriterionOutcomeArtifact | null;
+    }
+  | {
+      kind: "preview_receipt";
+      previewBootId: string;
+      evidenceRef: string;
+    }
+  | {
+      kind: "not_testable_plan";
+      planEventId: string;
+    };
+
+export type AcceptanceCriterionOutcome = {
+  criterionId: string;
+  criterionText: string;
+  state: AcceptanceCriterionOutcomeState;
+  expected: string;
+  observed: string;
+  evidence: AcceptanceCriterionOutcomeEvidence;
+};
+
+export type AcceptanceCriterionOutcomeBundleBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  reviewJobId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  verificationPlanEventId: string;
+  postedAttemptEventId: string;
+  postedAttestationEventId: string;
+  outcomeDigest: string;
+  postPayloadDigest: string;
+  reviewVerdict: AcceptanceCriterionOutcomeState;
+};
+
+export type AcceptanceCriterionOutcomeBundle = {
+  id: string;
+  eventId: string;
+  eventKey: string;
+  binding: AcceptanceCriterionOutcomeBundleBinding;
+  outcomes: AcceptanceCriterionOutcome[];
+  outcomeSetSha256: string;
+  sha256: string;
+  recordedAt: Date;
+};
+
+export type AcceptanceCriterionOutcomeBundleNotReadyReason =
+  | "review_job_unavailable"
+  | "confirmed_contract_unavailable"
+  | "verification_plan_unavailable"
+  | "posted_attempt_unavailable"
+  | "criterion_evidence_unavailable"
+  | "correction_packet_unavailable"
+  | "posted_attestation_unavailable"
+  | "criterion_outcome_bundle_not_recorded"
+  | "invalid_criterion_outcome_custody";
+
+export type RecordPostedAcceptanceCriterionOutcomeBundleInput = {
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  postedReviewUrl: string;
+  inlineCommentsPosted: number;
+  commentsFolded: boolean;
+};
+
+export type RecordPostedAcceptanceCriterionOutcomeBundleResult =
+  | { kind: "recorded" | "replayed"; current: boolean; bundle: AcceptanceCriterionOutcomeBundle }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "not_ready"; reason: AcceptanceCriterionOutcomeBundleNotReadyReason };
+
+export type ReadCurrentAcceptanceCriterionOutcomeBundleInput = {
+  workspaceId: string;
+  recordId: string;
+};
+
+export type ReadCurrentAcceptanceCriterionOutcomeBundleResult =
+  | { kind: "current"; bundle: AcceptanceCriterionOutcomeBundle }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "not_ready"; reason: AcceptanceCriterionOutcomeBundleNotReadyReason };
+
+export type ResolveAcceptanceCriterionArtifactInput = {
+  workspaceId: string;
+  recordId: string;
+  artifactId: string;
+};
+
+export type ResolveAcceptanceCriterionArtifactResult =
+  | {
+      kind: "resolved";
+      artifact: AcceptanceCriterionOutcomeArtifact & { artifactKey: string };
+    }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "artifact_not_found" }
+  | { kind: "not_ready"; reason: AcceptanceCriterionOutcomeBundleNotReadyReason };
+
+export class AcceptanceCriterionOutcomeBundleConflictError extends Error {
+  readonly code = "ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_CONFLICT" as const;
+
+  constructor() {
+    super("The exact review cycle already has different criterion-outcome custody");
+    this.name = "AcceptanceCriterionOutcomeBundleConflictError";
+  }
+}
+
+const ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_KIND = "acceptance_criterion_outcome_bundle";
+const ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_VERSION = 1;
+const ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_STAGE = "review";
+const ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_ACTOR = "server:acceptance-criterion-custody";
+const REVIEW_JOB_POST_ATTEMPT_KIND = "review_job_github_post_attempt";
+const REVIEW_JOB_VERIFICATION_PLAN_KIND = "review_job_verification_plan";
+const REVIEW_JOB_VERIFICATION_PLAN_ACTOR = "jace:review-verification-planner";
+const REVIEW_JOB_VERIFICATION_STAGE = "verification";
+const ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS = 512;
+// The verification plan is independently capped at 256 KiB, while each of at
+// most 100 criteria may contribute one attempt, reservation, result, and a
+// bounded 24 KiB correction packet. This aggregate bound is deliberately above
+// the maximum accepted custody shape instead of narrowing valid Contracts.
+export const ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES = 16 * 1024 * 1024;
+const R7_READY_NOT_PROVEN_OBSERVATION =
+  "The isolated exact-head preview became ready, but no server-custodied criterion execution receipt was recorded for this run; this criterion remains not proven.";
+
+type CriterionPlanModality = "ui" | "api" | "data" | "job";
+type CriterionPlan = {
+  criterionId: string;
+  criterionTextSnapshot: string;
+  modality: CriterionPlanModality;
+  environmentKind: "isolated_preview" | null;
+  flow: string | null;
+  uiSteps: Record<string, unknown>[] | null;
+  apiRequest: Record<string, unknown> | null;
+  dataRequest: Record<string, unknown> | null;
+  jobRequest: Record<string, unknown> | null;
+  status: "planned" | "not_testable";
+  notTestableReason: string | null;
+};
+
+type CriterionExecutionReceipt = {
+  modality: CriterionPlanModality;
+  executionId: string;
+  receiptEvent: ChangeRecordEventRow;
+  evidenceRef: string;
+  state: "proven" | "failed" | "not_proven";
+  expected: string;
+  observed: string;
+  previewBootId: string;
+  artifactKey: string;
+  contentType: AcceptanceCriterionArtifactContentType;
+  contentSha256: string;
+};
+
+export type AcceptanceCriterionOutcomeBundlePayload = {
+  kind: typeof ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_KIND;
+  version: typeof ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_VERSION;
+  id: string;
+  binding: AcceptanceCriterionOutcomeBundleBinding;
+  outcomes: AcceptanceCriterionOutcome[];
+  outcomeSetSha256: string;
+};
+
+function criterionOutcomeBundleEventKey(headCycleId: string): string {
+  return `review:criterion-outcomes:${headCycleId}`;
+}
+
+export function acceptanceCriterionOutcomeBundleId(input: {
+  recordId: string;
+  headCycleId: string;
+}): string {
+  return changeRecordEventId({
+    recordId: input.recordId,
+    eventKey: criterionOutcomeBundleEventKey(input.headCycleId),
+  });
+}
+
+export function acceptanceCriterionArtifactId(input: {
+  bundleId: string;
+  criterionId: string;
+  receiptEventId: string;
+  contentSha256: string;
+}): string {
+  return uuid5Url([
+    "acceptance-criterion-artifact",
+    "1",
+    input.bundleId,
+    input.criterionId,
+    input.receiptEventId,
+    input.contentSha256,
+  ].join(":"));
+}
+
+export function acceptanceCriterionOutcomeSetSha256(
+  outcomes: readonly AcceptanceCriterionOutcome[],
+): string {
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_criterion_outcome_set",
+    version: 1,
+    outcomes,
+  });
+}
+
+export function acceptanceCriterionOutcomeBundleSha256(
+  payload: AcceptanceCriterionOutcomeBundlePayload,
+): string {
+  return acceptanceContextPackCanonicalSha256(payload);
+}
+
+function assertExactCriterionOutcomeReadInput(
+  input: unknown,
+): asserts input is ReadCurrentAcceptanceCriterionOutcomeBundleInput {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId"])
+    || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])) {
+    throw new Error("Current criterion outcome read requires only workspace and Record");
+  }
+}
+
+function assertExactCriterionArtifactInput(
+  input: unknown,
+): asserts input is ResolveAcceptanceCriterionArtifactInput {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId", "artifactId"])
+    || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])
+    || !isUuid(input["artifactId"])) {
+    throw new Error("Criterion artifact resolution requires only workspace, Record, and artifact id");
+  }
+}
+
+function assertExactCriterionOutcomeWriteInput(
+  input: unknown,
+): asserts input is RecordPostedAcceptanceCriterionOutcomeBundleInput {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "recordId", "reviewJobId", "postedReviewUrl",
+    "inlineCommentsPosted", "commentsFolded",
+  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])
+    || !isUuid(input["reviewJobId"])
+    || !Number.isSafeInteger(input["inlineCommentsPosted"])
+    || (input["inlineCommentsPosted"] as number) < 0
+    || (input["inlineCommentsPosted"] as number) > 100
+    || typeof input["commentsFolded"] !== "boolean") {
+    throw new Error("Posted criterion outcome custody requires one exact server-issued receipt");
+  }
+}
+
+function boundedCriterionText(value: unknown, max = 2_000): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function criterionPlanPath(value: unknown): string | null {
+  if (!boundedCriterionText(value) || !value.startsWith("/") || value.startsWith("//")
+    || /[\\%?#]/u.test(value)
+    || value.split("/").some((segment) => segment === "." || segment === "..")) return null;
+  return value;
+}
+
+function parseCriterionApiRequest(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["method", "path", "expectedStatus"])
+    || value["method"] !== "GET" || criterionPlanPath(value["path"]) === null
+    || !Number.isSafeInteger(value["expectedStatus"])
+    || (value["expectedStatus"] as number) < 100 || (value["expectedStatus"] as number) > 599) return null;
+  return { method: "GET", path: value["path"], expectedStatus: value["expectedStatus"] };
+}
+
+function criterionDataPointer(value: unknown): string | null {
+  if (typeof value !== "string" || !value.startsWith("/") || value.length > 512
+    || /[\u0000-\u001f\u007f]/u.test(value)) return null;
+  for (const segment of value.slice(1).split("/")) {
+    if (/(?:~(?![01]))/u.test(segment)) return null;
+    const decoded = segment.replace(/~1/gu, "/").replace(/~0/gu, "~");
+    const normalized = decoded.toLowerCase().replace(/[\s_-]/gu, "");
+    if (/(?:token|password|passwd|passcode|secret|apikey|authorization|cookie|credential|privatekey|clientsecret|pin|otp|ssn|socialsecurity|taxid|card|credit|cvv|cvc|pan|email|phone|mobile|address|birth|dob)/u
+      .test(normalized)
+      || (/^(?:0|[1-9][0-9]*)$/u.test(decoded) && decoded !== segment)) return null;
+  }
+  return value;
+}
+
+function parseCriterionDataRequest(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "method", "path", "expectedStatus", "digestAlgorithm", "digestKeyId", "digestContext", "expectedJson",
+  ]) || parseCriterionApiRequest({
+    method: value["method"], path: value["path"], expectedStatus: value["expectedStatus"],
+  }) === null || value["digestAlgorithm"] !== "hmac-sha256-v1"
+    || typeof value["digestKeyId"] !== "string"
+    || !/^[A-Za-z0-9._-]{1,64}$/u.test(value["digestKeyId"])
+    || typeof value["digestContext"] !== "string" || !LOWER_SHA256.test(value["digestContext"])
+    || !Array.isArray(value["expectedJson"]) || value["expectedJson"].length < 1
+    || value["expectedJson"].length > 12) return null;
+  const pointers = new Set<string>();
+  const expectedJson: Record<string, unknown>[] = [];
+  for (const assertion of value["expectedJson"]) {
+    if (!isRecord(assertion)
+      || !hasExactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])) return null;
+    const pointer = criterionDataPointer(assertion["pointer"]);
+    if (!pointer || pointers.has(pointer)
+      || (assertion["equalsType"] !== "null" && assertion["equalsType"] !== "boolean"
+        && assertion["equalsType"] !== "number" && assertion["equalsType"] !== "string")
+      || typeof assertion["equalsHmacSha256"] !== "string"
+      || !LOWER_SHA256.test(assertion["equalsHmacSha256"])) return null;
+    pointers.add(pointer);
+    expectedJson.push({
+      pointer,
+      equalsType: assertion["equalsType"],
+      equalsHmacSha256: assertion["equalsHmacSha256"],
+    });
+  }
+  return {
+    method: "GET",
+    path: value["path"],
+    expectedStatus: value["expectedStatus"],
+    digestAlgorithm: "hmac-sha256-v1",
+    digestKeyId: value["digestKeyId"],
+    digestContext: value["digestContext"],
+    expectedJson,
+  };
+}
+
+function criterionDataDigestContext(input: {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  headSha: string;
+  contractId: string;
+  contractVersion: number;
+  criterionId: string;
+  path: string;
+  expectedStatus: number;
+}): string {
+  return canonicalSha256([
+    input.workspaceId, input.recordId, input.jobId, input.headSha,
+    input.contractId, input.contractVersion, input.criterionId,
+    input.path, input.expectedStatus,
+  ]);
+}
+
+function criterionJobDigestContext(input: {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  headSha: string;
+  contractId: string;
+  contractVersion: number;
+  criterionId: string;
+  triggerPath: string;
+  triggerExpectedStatus: number;
+  readbackPath: string;
+  readbackExpectedStatus: number;
+}): string {
+  return canonicalSha256([
+    input.workspaceId, input.recordId, input.jobId, input.headSha,
+    input.contractId, input.contractVersion, input.criterionId,
+    input.triggerPath, input.triggerExpectedStatus,
+    input.readbackPath, input.readbackExpectedStatus,
+  ]);
+}
+
+function parseCriterionJobRequest(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["trigger", "readback"])
+    || !isRecord(value["trigger"]) || !hasExactKeys(value["trigger"], ["method", "path", "expectedStatus"])
+    || value["trigger"]["method"] !== "POST" || typeof value["trigger"]["path"] !== "string"
+    || !Number.isSafeInteger(value["trigger"]["expectedStatus"])
+    || (value["trigger"]["expectedStatus"] as number) < 200
+    || (value["trigger"]["expectedStatus"] as number) > 299) return null;
+  const prefix = "/__agentrail/verification/jobs/";
+  const triggerPath = value["trigger"]["path"];
+  if (!triggerPath.startsWith(prefix) || !triggerPath.endsWith("/trigger")) return null;
+  const id = triggerPath.slice(prefix.length, -"/trigger".length);
+  if (!/^[A-Za-z0-9._-]{1,64}$/u.test(id)
+    || triggerPath !== `${prefix}${id}/trigger`) return null;
+  const readback = parseCriterionDataRequest(value["readback"]);
+  return readback && readback["path"] === `${prefix}${id}/result`
+    && typeof readback["expectedStatus"] === "number"
+    && readback["expectedStatus"] >= 200 && readback["expectedStatus"] <= 299 ? {
+    trigger: {
+      method: "POST",
+      path: value["trigger"]["path"],
+      expectedStatus: value["trigger"]["expectedStatus"],
+    },
+    readback,
+  } : null;
+}
+
+function parseCriterionUiSteps(value: unknown): Record<string, unknown>[] | null {
+  if (!Array.isArray(value) || value.length < 3 || value.length > 12) return null;
+  const pressKeys = new Set([
+    "Enter", "Tab", "Escape", "Space", "Backspace",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  ]);
+  const steps: Record<string, unknown>[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || typeof raw["action"] !== "string") return null;
+    switch (raw["action"]) {
+      case "open":
+        if (!hasExactKeys(raw, ["action", "path"]) || !boundedCriterionText(raw["path"])
+          || !(raw["path"] as string).startsWith("/") || (raw["path"] as string).startsWith("//")
+          || (raw["path"] as string).includes("\\")) return null;
+        steps.push({ action: "open", path: raw["path"] });
+        break;
+      case "click":
+        if (!hasExactKeys(raw, ["action", "selector"]) || !boundedCriterionText(raw["selector"])) return null;
+        steps.push({ action: "click", selector: raw["selector"] });
+        break;
+      case "fill":
+        if (!hasExactKeys(raw, ["action", "selector", "value"])
+          || !boundedCriterionText(raw["selector"]) || typeof raw["value"] !== "string"
+          || raw["value"] !== raw["value"].trim() || raw["value"].length > 2_000
+          || /[\u0000-\u001f\u007f]/u.test(raw["value"])) return null;
+        steps.push({ action: "fill", selector: raw["selector"], value: raw["value"] });
+        break;
+      case "press":
+        if (!hasExactKeys(raw, ["action", "key"]) || typeof raw["key"] !== "string"
+          || !pressKeys.has(raw["key"])) return null;
+        steps.push({ action: "press", key: raw["key"] });
+        break;
+      case "expect_text":
+        if (!hasExactKeys(raw, ["action", "text"]) || !boundedCriterionText(raw["text"])) return null;
+        steps.push({ action: "expect_text", text: raw["text"] });
+        break;
+      case "screenshot":
+        if (!hasExactKeys(raw, ["action", "label"]) || !boundedCriterionText(raw["label"])) return null;
+        steps.push({ action: "screenshot", label: raw["label"] });
+        break;
+      default: return null;
+    }
+  }
+  return steps[0]?.["action"] === "open"
+    && steps.at(-2)?.["action"] === "expect_text"
+    && steps.at(-1)?.["action"] === "screenshot"
+    && steps.slice(1, -2).every((step) =>
+      step["action"] === "click" || step["action"] === "fill" || step["action"] === "press")
+    ? steps : null;
+}
+
+function parseCriterionVerificationPlan(input: {
+  event: ChangeRecordEventRow;
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  contract: AcceptanceConfirmedContractProjection;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+}): CriterionPlan[] | null {
+  const eventKey = `verification:plan:${input.job.id}`;
+  const payload = input.event.payloadRef;
+  if (input.event.id !== changeRecordEventId({ recordId: input.record.id, eventKey })
+    || input.event.recordId !== input.record.id || input.event.eventKey !== eventKey
+    || input.event.stage !== REVIEW_JOB_VERIFICATION_STAGE
+    || input.event.actor !== REVIEW_JOB_VERIFICATION_PLAN_ACTOR
+    || !hasExactKeys(payload, [
+      "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
+      "acceptanceContractId", "acceptanceContractVersion", "plannedBy", "plans",
+    ]) || payload["kind"] !== REVIEW_JOB_VERIFICATION_PLAN_KIND
+    || payload["jobId"] !== input.job.id || payload["workspaceId"] !== input.record.workspaceId
+    || payload["repo"] !== input.record.repo || payload["prNumber"] !== input.record.prNumber
+    || payload["headSha"] !== input.job.headSha || payload["recordId"] !== input.record.id
+    || payload["acceptanceContractId"] !== input.acceptanceContractId
+    || payload["acceptanceContractVersion"] !== input.acceptanceContractVersion
+    || !boundedCriterionText(payload["plannedBy"], 512)
+    || !Array.isArray(payload["plans"])
+    || payload["plans"].length !== input.contract.acceptanceCriteria.length) return null;
+  try {
+    if (Buffer.byteLength(acceptanceContextPackCanonicalJson(payload), "utf8") > 256_000) return null;
+  } catch {
+    return null;
+  }
+
+  const byId = new Map<string, CriterionPlan>();
+  for (const raw of payload["plans"]) {
+    if (!isRecord(raw)) return null;
+    const allowedKeys = [
+      "criterionId", "criterionTextSnapshot", "modality", "environmentKind", "flow",
+      "uiSteps", "apiRequest", "dataRequest", "status", "notTestableReason",
+    ];
+    const hasJobRequest = hasOwn(raw, "jobRequest");
+    if (!hasExactKeys(raw, hasJobRequest ? [...allowedKeys, "jobRequest"] : allowedKeys)
+      || !boundedCriterionText(raw["criterionId"], 512)
+      || !boundedCriterionText(raw["criterionTextSnapshot"])
+      || (raw["modality"] !== "ui" && raw["modality"] !== "api"
+        && raw["modality"] !== "data" && raw["modality"] !== "job")
+      || byId.has(raw["criterionId"] as string)) return null;
+    const modality = raw["modality"] as CriterionPlanModality;
+    let plan: CriterionPlan | null = null;
+    if (raw["status"] === "not_testable" && raw["environmentKind"] === null
+      && raw["flow"] === null && raw["uiSteps"] === null && raw["apiRequest"] === null
+      && raw["dataRequest"] === null && (!hasJobRequest || raw["jobRequest"] === null)
+      && boundedCriterionText(raw["notTestableReason"])) {
+      plan = {
+        criterionId: raw["criterionId"] as string,
+        criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
+        modality, environmentKind: null, flow: null, uiSteps: null, apiRequest: null,
+        dataRequest: null, jobRequest: null, status: "not_testable",
+        notTestableReason: raw["notTestableReason"] as string,
+      };
+    } else if (raw["status"] === "planned" && raw["environmentKind"] === "isolated_preview"
+      && boundedCriterionText(raw["flow"]) && raw["notTestableReason"] === null) {
+      if (modality === "ui" && raw["apiRequest"] === null && raw["dataRequest"] === null
+        && (!hasJobRequest || raw["jobRequest"] === null)) {
+        const uiSteps = raw["uiSteps"] === null ? null : parseCriterionUiSteps(raw["uiSteps"]);
+        if (raw["uiSteps"] === null || uiSteps) plan = {
+          criterionId: raw["criterionId"] as string,
+          criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
+          modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
+          uiSteps, apiRequest: null, dataRequest: null, jobRequest: null,
+          status: "planned", notTestableReason: null,
+        };
+      } else if (modality === "api" && raw["uiSteps"] === null && raw["dataRequest"] === null
+        && (!hasJobRequest || raw["jobRequest"] === null)) {
+        const apiRequest = raw["apiRequest"] === null ? null : parseCriterionApiRequest(raw["apiRequest"]);
+        if (raw["apiRequest"] === null || apiRequest) plan = {
+          criterionId: raw["criterionId"] as string,
+          criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
+          modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
+          uiSteps: null, apiRequest, dataRequest: null, jobRequest: null,
+          status: "planned", notTestableReason: null,
+        };
+      } else if (modality === "data" && raw["uiSteps"] === null && raw["apiRequest"] === null
+        && (!hasJobRequest || raw["jobRequest"] === null)) {
+        const dataRequest = parseCriterionDataRequest(raw["dataRequest"]);
+        if (dataRequest) plan = {
+          criterionId: raw["criterionId"] as string,
+          criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
+          modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
+          uiSteps: null, apiRequest: null, dataRequest, jobRequest: null,
+          status: "planned", notTestableReason: null,
+        };
+      } else if (modality === "job" && raw["uiSteps"] === null && raw["apiRequest"] === null
+        && raw["dataRequest"] === null && hasJobRequest) {
+        const jobRequest = parseCriterionJobRequest(raw["jobRequest"]);
+        if (jobRequest) plan = {
+          criterionId: raw["criterionId"] as string,
+          criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
+          modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
+          uiSteps: null, apiRequest: null, dataRequest: null, jobRequest,
+          status: "planned", notTestableReason: null,
+        };
+      }
+    }
+    if (!plan) return null;
+    byId.set(plan.criterionId, plan);
+  }
+
+  const ordered: CriterionPlan[] = [];
+  for (const criterion of input.contract.acceptanceCriteria) {
+    const plan = byId.get(criterion.id);
+    if (!plan || plan.criterionTextSnapshot !== criterion.text
+      || (criterion.userVisible && plan.modality !== "ui")
+      || (criterion.modality !== undefined && plan.modality !== criterion.modality)) return null;
+    if (plan.status === "planned" && plan.modality === "data") {
+      const request = plan.dataRequest!;
+      if (request["digestContext"] !== criterionDataDigestContext({
+        workspaceId: input.record.workspaceId,
+        recordId: input.record.id,
+        jobId: input.job.id,
+        headSha: input.job.headSha,
+        contractId: input.acceptanceContractId,
+        contractVersion: input.acceptanceContractVersion,
+        criterionId: criterion.id,
+        path: request["path"] as string,
+        expectedStatus: request["expectedStatus"] as number,
+      })) return null;
+    }
+    if (plan.status === "planned" && plan.modality === "job") {
+      const request = plan.jobRequest!;
+      const trigger = request["trigger"] as Record<string, unknown>;
+      const readback = request["readback"] as Record<string, unknown>;
+      if (readback["digestContext"] !== criterionJobDigestContext({
+        workspaceId: input.record.workspaceId,
+        recordId: input.record.id,
+        jobId: input.job.id,
+        headSha: input.job.headSha,
+        contractId: input.acceptanceContractId,
+        contractVersion: input.acceptanceContractVersion,
+        criterionId: criterion.id,
+        triggerPath: trigger["path"] as string,
+        triggerExpectedStatus: trigger["expectedStatus"] as number,
+        readbackPath: readback["path"] as string,
+        readbackExpectedStatus: readback["expectedStatus"] as number,
+      })) return null;
+    }
+    ordered.push(plan);
+  }
+  return byId.size === ordered.length ? ordered : null;
+}
+
+function criterionPlanDigest(plan: CriterionPlan): string {
+  const base = {
+    criterionId: plan.criterionId,
+    criterionTextSnapshot: plan.criterionTextSnapshot,
+    modality: plan.modality,
+    environmentKind: plan.environmentKind,
+    flow: plan.flow,
+    status: plan.status,
+  };
+  return canonicalSha256(plan.modality === "ui" ? { ...base, uiSteps: plan.uiSteps }
+    : plan.modality === "api" ? { ...base, apiRequest: plan.apiRequest }
+      : plan.modality === "data" ? { ...base, dataRequest: plan.dataRequest }
+        : { ...base, jobRequest: plan.jobRequest });
+}
+
+function criterionExecutionCoordinate(input: {
+  job: ReviewJobRow;
+  record: ChangeRecordRow;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  criterionId: string;
+}): string {
+  return canonicalSha256({
+    jobId: input.job.id,
+    recordId: input.record.id,
+    headSha: input.job.headSha,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+    criterionId: input.criterionId,
+  });
+}
+
+function criterionExecutionId(input: {
+  modality: CriterionPlanModality;
+  coordinate: string;
+  planDigest: string;
+  previewBootId: string;
+}): string {
+  return `${input.modality}-${canonicalSha256({
+    coordinate: input.coordinate,
+    planDigest: input.planDigest,
+    previewBootId: input.previewBootId,
+  }).slice(0, 48)}`;
+}
+
+function validArtifactKey(input: {
+  artifactKey: unknown;
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  contentType: AcceptanceCriterionArtifactContentType;
+  executionId: string;
+  contentSha256: string;
+}): input is typeof input & { artifactKey: string } {
+  if (typeof input.artifactKey !== "string" || !LOWER_SHA256.test(input.contentSha256)) return false;
+  const ext = input.contentType === "image/png" ? "png"
+    : input.contentType === "image/jpeg" ? "jpeg" : "json";
+  return input.artifactKey === [
+    "review-evidence",
+    input.workspaceId,
+    input.repo.replace(/\//g, "__"),
+    String(input.prNumber),
+    input.headSha,
+    `${input.executionId}-${input.contentSha256.slice(0, 16)}`,
+    `1.${ext}`,
+  ].join("/");
+}
+
+function criterionHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2_048 || value !== value.trim()) return null;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && url.username === "" && url.password === "" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function receiptAssertions(input: {
+  value: unknown;
+  expectedJson: unknown;
+  active: boolean;
+}): { allPassed: boolean; failed: number; total: number } | null {
+  if (!Array.isArray(input.expectedJson) || !Array.isArray(input.value)
+    || input.expectedJson.length < 1 || input.expectedJson.length > 12
+    || input.value.length !== input.expectedJson.length) return null;
+  let failed = 0;
+  for (let index = 0; index < input.expectedJson.length; index += 1) {
+    const expected = input.expectedJson[index];
+    const assertion = input.value[index];
+    if (!isRecord(expected) || !isRecord(assertion)
+      || !hasExactKeys(assertion, ["pointer", "found", "passed", "observed", "observedHmacSha256"])
+      || assertion["pointer"] !== expected["pointer"]
+      || typeof assertion["found"] !== "boolean" || typeof assertion["passed"] !== "boolean") return null;
+    if (!input.active || assertion["found"] === false) {
+      if (assertion["found"] !== false || assertion["passed"] !== false
+        || assertion["observed"] !== null || assertion["observedHmacSha256"] !== null) return null;
+      failed += 1;
+      continue;
+    }
+    if (assertion["passed"] === true) {
+      if (assertion["observed"] !== "[MATCH]"
+        || assertion["observedHmacSha256"] !== expected["equalsHmacSha256"]
+        || typeof assertion["observedHmacSha256"] !== "string"
+        || !LOWER_SHA256.test(assertion["observedHmacSha256"])) return null;
+      continue;
+    }
+    if ((assertion["observed"] !== "[REDACTED_MISMATCH]"
+      && assertion["observed"] !== "[REDACTED]")
+      || assertion["observedHmacSha256"] !== null) return null;
+    failed += 1;
+  }
+  return { allPassed: failed === 0, failed, total: input.expectedJson.length };
+}
+
+function parseCriterionExecutionReceipt(input: {
+  events: readonly ChangeRecordEventRow[];
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  plan: CriterionPlan;
+  boot: typeof previewBoots.$inferSelect | null;
+  postedAttemptAt: Date;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+}): CriterionExecutionReceipt | null | "invalid" {
+  if (input.plan.status !== "planned") return null;
+  const coordinate = criterionExecutionCoordinate({ ...input, criterionId: input.plan.criterionId });
+  const prefix = input.plan.modality;
+  const resultEventKey = `verification:${prefix}-result:${input.job.id}:${coordinate.slice(0, 24)}`;
+  const matching = input.events.filter((event) => event.eventKey === resultEventKey);
+  if (matching.length === 0) return null;
+  if (matching.length !== 1) return "invalid";
+  const event = matching[0]!;
+  const payload = event.payloadRef;
+  const actor = input.plan.modality === "ui" ? "jace:review-ui-executor"
+    : input.plan.modality === "api" ? "jace:review-api-executor"
+      : input.plan.modality === "data" ? "jace:review-data-executor" : "jace:review-job-executor";
+  const kind = input.plan.modality === "ui" ? "review_job_ui_execution_result"
+    : input.plan.modality === "api" ? "review_job_api_execution_result"
+      : input.plan.modality === "data" ? "review_job_data_execution_result" : "review_job_execution_result";
+  const contentType: AcceptanceCriterionArtifactContentType = input.plan.modality === "ui"
+    ? payload["contentType"] === "image/png" ? "image/png" : "image/jpeg"
+    : "application/json";
+  const planDigest = criterionPlanDigest(input.plan);
+  const executionId = typeof payload["previewBootId"] === "string" ? criterionExecutionId({
+    modality: input.plan.modality, coordinate, planDigest,
+    previewBootId: payload["previewBootId"],
+  }) : "";
+  const planField = input.plan.modality === "ui" ? "uiSteps"
+    : input.plan.modality === "api" ? "apiRequest"
+      : input.plan.modality === "data" ? "dataRequest" : "jobRequest";
+  const expectedPlanField = input.plan.modality === "ui" ? input.plan.uiSteps
+    : input.plan.modality === "api" ? input.plan.apiRequest
+      : input.plan.modality === "data" ? input.plan.dataRequest : input.plan.jobRequest;
+  const attemptKind = input.plan.modality === "ui" ? "review_job_ui_execution_attempt"
+    : input.plan.modality === "api" ? "review_job_api_execution_attempt"
+      : input.plan.modality === "data" ? "review_job_data_execution_attempt" : "review_job_execution_attempt";
+  const attemptKeys = [
+    "acceptanceContractId", "acceptanceContractVersion", "criterionId", "criterionTextSnapshot",
+    "executionId", "headSha", "jobId", "kind", "planDigest", "prNumber", "previewBootId",
+    "previewUrl", "recordId", "repo", planField, "workspaceId",
+  ];
+  const extraResultKeys = input.plan.modality === "ui"
+    ? ["artifactKey", "contentSha256", "contentType", "evidenceRef", "expected", "observed", "observedUrl", "state"]
+    : input.plan.modality === "api"
+      ? ["artifactKey", "contentSha256", "contentType", "evidenceRef", "expected", "observed", "observedStatus", "state"]
+      : input.plan.modality === "data"
+        ? ["artifactKey", "assertions", "contentSha256", "contentType", "evidenceRef", "expected", "observed", "observedStatus", "state"]
+        : ["artifactKey", "assertions", "contentSha256", "contentType", "evidenceRef", "expected", "observed", "observedReadbackStatus", "observedTriggerStatus", "state"];
+  const resultKeys = [...attemptKeys.filter((key) => key !== "kind"), "kind", ...extraResultKeys];
+  const attemptEventKey = `verification:${prefix}-attempt:${input.job.id}:${coordinate.slice(0, 24)}`;
+  const attempts = input.events.filter((candidate) => candidate.eventKey === attemptEventKey);
+  if (attempts.length !== 1) return "invalid";
+  const attemptEvent = attempts[0]!;
+  const attempt = attemptEvent.payloadRef;
+  const previewUrl = criterionHttpUrl(attempt["previewUrl"]);
+  if (!input.boot || attempts.length !== 1
+    || attemptEvent.id !== changeRecordEventId({ recordId: input.record.id, eventKey: attemptEventKey })
+    || attemptEvent.recordId !== input.record.id || attemptEvent.stage !== REVIEW_JOB_VERIFICATION_STAGE
+    || attemptEvent.actor !== actor || !hasExactKeys(attempt, attemptKeys)
+    || attempt["kind"] !== attemptKind || attempt["jobId"] !== input.job.id
+    || attempt["workspaceId"] !== input.record.workspaceId || attempt["repo"] !== input.record.repo
+    || attempt["prNumber"] !== input.record.prNumber || attempt["headSha"] !== input.job.headSha
+    || attempt["recordId"] !== input.record.id || attempt["acceptanceContractId"] !== input.acceptanceContractId
+    || attempt["acceptanceContractVersion"] !== input.acceptanceContractVersion
+    || attempt["criterionId"] !== input.plan.criterionId
+    || attempt["criterionTextSnapshot"] !== input.plan.criterionTextSnapshot
+    || attempt["planDigest"] !== planDigest || !isDeepStrictEqual(attempt[planField], expectedPlanField)
+    || attempt["previewBootId"] !== input.boot.id || attempt["executionId"] !== executionId
+    || input.boot.createdAt > attemptEvent.at
+    || previewUrl === null || previewUrl !== criterionHttpUrl(input.boot.url)) return "invalid";
+  if (!hasExactKeys(payload, resultKeys)
+    || attemptKeys.some((key) => key !== "kind" && !isDeepStrictEqual(payload[key], attempt[key]))) return "invalid";
+  if (event.id !== changeRecordEventId({ recordId: input.record.id, eventKey: resultEventKey })
+    || event.recordId !== input.record.id || event.stage !== REVIEW_JOB_VERIFICATION_STAGE
+    || event.actor !== actor || payload["kind"] !== kind
+    || payload["jobId"] !== input.job.id || payload["workspaceId"] !== input.record.workspaceId
+    || payload["repo"] !== input.record.repo || payload["prNumber"] !== input.record.prNumber
+    || payload["headSha"] !== input.job.headSha || payload["recordId"] !== input.record.id
+    || payload["acceptanceContractId"] !== input.acceptanceContractId
+    || payload["acceptanceContractVersion"] !== input.acceptanceContractVersion
+    || payload["criterionId"] !== input.plan.criterionId
+    || payload["criterionTextSnapshot"] !== input.plan.criterionTextSnapshot
+    || payload["planDigest"] !== planDigest
+    || !isUuid(payload["previewBootId"]) || criterionHttpUrl(payload["previewUrl"]) === null
+    || !boundedCriterionText(payload["executionId"], 512)
+    || !boundedCriterionText(payload["evidenceRef"])
+    || payload["evidenceRef"] !== `review-${prefix}-execution:${payload["executionId"]}`
+    || !boundedCriterionText(payload["expected"]) || payload["expected"] !== input.plan.criterionTextSnapshot
+    || !boundedCriterionText(payload["observed"]) || typeof payload["contentSha256"] !== "string"
+    || !LOWER_SHA256.test(payload["contentSha256"])
+    || (input.plan.modality === "ui" && payload["contentType"] !== "image/png"
+      && payload["contentType"] !== "image/jpeg")
+    || (input.plan.modality !== "ui" && payload["contentType"] !== "application/json")
+    || !validArtifactKey({
+      artifactKey: payload["artifactKey"], workspaceId: input.record.workspaceId,
+      repo: input.record.repo, prNumber: input.record.prNumber!, headSha: input.job.headSha, contentType,
+      executionId, contentSha256: payload["contentSha256"] as string,
+    })) return "invalid";
+  if (!isDeepStrictEqual(payload[planField], expectedPlanField)) return "invalid";
+  if (payload["executionId"] !== executionId) return "invalid";
+  let state: CriterionExecutionReceipt["state"];
+  if (input.plan.modality === "ui") {
+    if (payload["state"] !== "proven" && payload["state"] !== "failed") return "invalid";
+    const assertion = input.plan.uiSteps?.at(-2);
+    if (!assertion || assertion["action"] !== "expect_text" || typeof assertion["text"] !== "string") return "invalid";
+    const observed = payload["state"] === "proven"
+      ? `The deterministic browser observed the planned text ${JSON.stringify(assertion["text"])} on the exact-head preview and retained the decisive screenshot.`
+      : `The deterministic browser did not observe the planned text ${JSON.stringify(assertion["text"])} on the exact-head preview; the failing state was retained as the decisive screenshot.`;
+    const observedUrl = criterionHttpUrl(payload["observedUrl"]);
+    if (payload["observed"] !== observed || !observedUrl
+      || new URL(observedUrl).origin !== new URL(previewUrl).origin) return "invalid";
+    state = payload["state"];
+  } else if (input.plan.modality === "api") {
+    const request = input.plan.apiRequest!;
+    const status = payload["observedStatus"];
+    if (!Number.isSafeInteger(status) || (status as number) < 100 || (status as number) > 599) return "invalid";
+    const proven = status === request["expectedStatus"];
+    const observed = proven
+      ? `The safe GET ${request["path"]} returned the planned HTTP ${request["expectedStatus"]}.`
+      : `The safe GET ${request["path"]} returned HTTP ${status}; the planned status was ${request["expectedStatus"]}.`;
+    if (payload["state"] !== (proven ? "proven" : "failed") || payload["observed"] !== observed) return "invalid";
+    state = proven ? "proven" : "failed";
+  } else if (input.plan.modality === "data") {
+    const request = input.plan.dataRequest!;
+    const status = payload["observedStatus"];
+    if (!Number.isSafeInteger(status) || (status as number) < 100 || (status as number) > 599) return "invalid";
+    const assertions = receiptAssertions({
+      value: payload["assertions"], expectedJson: request["expectedJson"],
+      active: status === request["expectedStatus"],
+    });
+    if (!assertions) return "invalid";
+    const observed = status !== request["expectedStatus"]
+      ? `The safe data GET ${request["path"]} returned HTTP ${status}; the planned status was ${request["expectedStatus"]}.`
+      : assertions.failed > 0
+        ? `The safe data GET ${request["path"]} returned HTTP ${request["expectedStatus"]}; ${assertions.failed} of ${assertions.total} planned JSON scalar assertions did not match.`
+        : `The safe data GET ${request["path"]} returned HTTP ${request["expectedStatus"]}; all ${assertions.total} planned JSON scalar assertions matched.`;
+    const proven = status === request["expectedStatus"] && assertions.allPassed;
+    if (payload["state"] !== (proven ? "proven" : "failed") || payload["observed"] !== observed) return "invalid";
+    state = proven ? "proven" : "failed";
+  } else {
+    const request = input.plan.jobRequest!;
+    const trigger = request["trigger"] as Record<string, unknown>;
+    const readback = request["readback"] as Record<string, unknown>;
+    const triggerStatus = payload["observedTriggerStatus"];
+    const readbackStatus = payload["observedReadbackStatus"];
+    if (!Number.isSafeInteger(triggerStatus) || (triggerStatus as number) < 100
+      || (triggerStatus as number) > 599
+      || (readbackStatus !== null && (!Number.isSafeInteger(readbackStatus)
+        || (readbackStatus as number) < 100 || (readbackStatus as number) > 599))
+      || (triggerStatus === trigger["expectedStatus"] ? readbackStatus === null : readbackStatus !== null)) return "invalid";
+    const active = triggerStatus === trigger["expectedStatus"] && readbackStatus === readback["expectedStatus"];
+    const assertions = receiptAssertions({
+      value: payload["assertions"], expectedJson: readback["expectedJson"], active,
+    });
+    if (!assertions) return "invalid";
+    const observed = triggerStatus !== trigger["expectedStatus"]
+      ? `The safe job trigger ${trigger["path"]} returned HTTP ${triggerStatus}; the planned status was ${trigger["expectedStatus"]}.`
+      : readbackStatus !== readback["expectedStatus"]
+        ? `The safe job readback ${readback["path"]} returned HTTP ${readbackStatus}; the planned status was ${readback["expectedStatus"]}.`
+        : assertions.failed > 0
+          ? `The safe job readback ${readback["path"]} returned HTTP ${readbackStatus}; ${assertions.failed} of ${assertions.total} planned JSON scalar assertions did not match.`
+          : `The safe job trigger and readback returned planned HTTP statuses; all ${assertions.total} planned JSON scalar assertions matched.`;
+    const proven = active && assertions.allPassed;
+    if (payload["state"] !== (proven ? "proven" : "not_proven") || payload["observed"] !== observed) return "invalid";
+    state = proven ? "proven" : "not_proven";
+  }
+  const reservationPrefix = input.plan.modality === "ui" ? "ui-screenshot" : `${prefix}-card`;
+  const reservationKind = input.plan.modality === "ui" ? "review_job_ui_screenshot_upload_reservation"
+    : input.plan.modality === "api" ? "review_job_api_card_upload_reservation"
+      : input.plan.modality === "data" ? "review_job_data_card_upload_reservation"
+        : "review_job_card_upload_reservation";
+  const reservationKey = `verification:${reservationPrefix}:${input.job.id}:${coordinate.slice(0, 24)}`;
+  const reservation = input.events.filter((candidate) => candidate.eventKey === reservationKey);
+  if (reservation.length !== 1 || reservation[0]!.id !== changeRecordEventId({
+    recordId: input.record.id, eventKey: reservationKey,
+  }) || reservation[0]!.stage !== REVIEW_JOB_VERIFICATION_STAGE || reservation[0]!.actor !== actor
+    || !hasExactKeys(reservation[0]!.payloadRef, ["kind", "result"])
+    || reservation[0]!.payloadRef["kind"] !== reservationKind
+    || !isDeepStrictEqual(reservation[0]!.payloadRef["result"], payload)
+    || attemptEvent.at > reservation[0]!.at || reservation[0]!.at > event.at
+    || event.at > input.postedAttemptAt) return "invalid";
+  return {
+    modality: input.plan.modality,
+    executionId,
+    receiptEvent: event,
+    evidenceRef: payload["evidenceRef"] as string,
+    state,
+    expected: payload["expected"] as string,
+    observed: payload["observed"] as string,
+    previewBootId: payload["previewBootId"] as string,
+    artifactKey: payload["artifactKey"] as string,
+    contentType,
+    contentSha256: payload["contentSha256"] as string,
+  };
+}
+
+function canonicalPostAttempt(input: {
+  event: ChangeRecordEventRow;
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+}): { outcomeDigest: string; postPayloadDigest: string } | null {
+  const eventKey = `review:github-attempt:${input.job.id}`;
+  const payload = input.event.payloadRef;
+  return input.event.id === changeRecordEventId({ recordId: input.record.id, eventKey })
+    && input.event.recordId === input.record.id && input.event.eventKey === eventKey
+    && input.event.stage === REVIEW_JOB_POSTED_ATTESTATION_STAGE
+    && input.event.actor === REVIEW_JOB_POSTED_ATTESTATION_ACTOR
+    && hasExactKeys(payload, [
+      "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
+      "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest", "postPayloadDigest",
+    ]) && payload["kind"] === REVIEW_JOB_POST_ATTEMPT_KIND
+    && payload["jobId"] === input.job.id && payload["workspaceId"] === input.record.workspaceId
+    && payload["repo"] === input.record.repo && payload["prNumber"] === input.record.prNumber
+    && payload["headSha"] === input.job.headSha && payload["recordId"] === input.record.id
+    && payload["acceptanceContractId"] === input.acceptanceContractId
+    && payload["acceptanceContractVersion"] === input.acceptanceContractVersion
+    && typeof payload["outcomeDigest"] === "string" && LOWER_SHA256.test(payload["outcomeDigest"])
+    && typeof payload["postPayloadDigest"] === "string" && LOWER_SHA256.test(payload["postPayloadDigest"])
+    ? {
+        outcomeDigest: payload["outcomeDigest"],
+        postPayloadDigest: payload["postPayloadDigest"],
+      }
+    : null;
+}
+
+function exactCriterionPreviewBoot(input: {
+  boot: typeof previewBoots.$inferSelect | undefined;
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+}): typeof previewBoots.$inferSelect | null {
+  const expectedId = previewBootId({
+    workspaceId: input.record.workspaceId,
+    repo: input.record.repo,
+    prNumber: input.record.prNumber!,
+    headSha: input.job.headSha,
+    cycleId: input.job.id,
+  });
+  const boot = input.boot;
+  return boot && boot.id === expectedId && boot.workspaceId === input.record.workspaceId
+    && boot.repo === input.record.repo && boot.prNumber === input.record.prNumber
+    && boot.headSha === input.job.headSha ? boot : null;
+}
+
+function unavailablePreviewObservation(input: {
+  status: "failed" | "torn_down";
+  reason: string;
+}): string {
+  const transition = input.status === "failed"
+    ? "failed before it became ready"
+    : "was torn down before it became ready";
+  return `The isolated exact-head preview ${transition}: ${input.reason}`;
+}
+
+function correctionPacketMatchesCriterionOutcome(input: {
+  event: ChangeRecordEventRow | undefined;
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  criteria: ReadonlyMap<string, string>;
+  plan: CriterionPlan;
+  outcome: AcceptanceCriterionOutcome;
+  receipt: CriterionExecutionReceipt | null;
+}): boolean {
+  const event = input.event;
+  if (!event || correctionPacketIdForSnapshotEvent(event, {
+    workspaceId: input.record.workspaceId,
+    recordId: input.record.id,
+    reviewJobId: input.job.id,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+    repo: input.record.repo,
+    prNumber: input.record.prNumber!,
+    expectedHeadSha: input.job.headSha,
+  }, input.criteria) === null) return false;
+  const payload = event.payloadRef;
+  const affected = payload["affectedContext"];
+  const evidence = payload["evidence"];
+  if (!isRecord(affected) || !isRecord(evidence)
+    || payload["state"] !== input.outcome.state || payload["expected"] !== input.outcome.expected
+    || payload["observed"] !== input.outcome.observed
+    || affected["modality"] !== input.plan.modality
+    || affected["environmentKind"] !== input.plan.environmentKind
+    || affected["flow"] !== input.plan.flow
+    || evidence["evidenceRef"] !== (input.outcome.evidence.kind === "not_testable_plan"
+      ? null : input.outcome.evidence.evidenceRef)) return false;
+  if (input.receipt) {
+    return evidence["executionId"] === input.receipt.executionId
+      && evidence["previewBootId"] === input.receipt.previewBootId
+      && evidence["artifactKey"] === input.receipt.artifactKey;
+  }
+  return input.outcome.evidence.kind === "preview_receipt"
+    && evidence["previewBootId"] === input.outcome.evidence.previewBootId
+    && !hasOwn(evidence, "executionId") && !hasOwn(evidence, "artifactKey");
+}
+
+function deriveCriterionOutcomeBundlePayload(input: {
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  confirmed: AcceptanceContractRow;
+  contract: AcceptanceConfirmedContractProjection;
+  contractSha256: string;
+  events: readonly ChangeRecordEventRow[];
+  boot: typeof previewBoots.$inferSelect | undefined;
+  postedAttempt: ChangeRecordEventRow;
+  postedAttestationEventId: string;
+}): AcceptanceCriterionOutcomeBundlePayload | null {
+  const planEventKey = `verification:plan:${input.job.id}`;
+  const planEvents = input.events.filter((event) => event.eventKey === planEventKey);
+  if (planEvents.length !== 1) return null;
+  const plans = parseCriterionVerificationPlan({
+    event: planEvents[0]!, record: input.record, job: input.job, contract: input.contract,
+    acceptanceContractId: input.confirmed.id,
+    acceptanceContractVersion: input.confirmed.version,
+  });
+  const attempt = canonicalPostAttempt({
+    event: input.postedAttempt, record: input.record, job: input.job,
+    acceptanceContractId: input.confirmed.id,
+    acceptanceContractVersion: input.confirmed.version,
+  });
+  if (!plans || !attempt) return null;
+  const bundleId = acceptanceCriterionOutcomeBundleId({
+    recordId: input.record.id, headCycleId: input.job.id,
+  });
+  const preview = exactCriterionPreviewBoot({ boot: input.boot, record: input.record, job: input.job });
+  if (preview && preview.createdAt > input.postedAttempt.at) return null;
+  const criteria = new Map(input.contract.acceptanceCriteria.map((criterion) => [criterion.id, criterion.text]));
+  const correctionEvents = input.events.filter((event) =>
+    event.eventKey.startsWith(`review:correction:${input.job.id}:`));
+  const expectedCorrectionIds = new Set<string>();
+  const outcomes: AcceptanceCriterionOutcome[] = [];
+  for (const plan of plans) {
+    let outcome: AcceptanceCriterionOutcome;
+    let receipt: CriterionExecutionReceipt | null = null;
+    if (plan.status === "not_testable") {
+      outcome = {
+        criterionId: plan.criterionId,
+        criterionText: plan.criterionTextSnapshot,
+        state: "not_testable",
+        expected: plan.criterionTextSnapshot,
+        observed: plan.notTestableReason!,
+        evidence: { kind: "not_testable_plan", planEventId: planEvents[0]!.id },
+      };
+    } else {
+      const resolution = parseCriterionExecutionReceipt({
+        events: input.events, record: input.record, job: input.job, plan, boot: preview,
+        postedAttemptAt: input.postedAttempt.at,
+        acceptanceContractId: input.confirmed.id,
+        acceptanceContractVersion: input.confirmed.version,
+      });
+      if (resolution === "invalid") return null;
+      receipt = resolution;
+      if (receipt) {
+        if (!preview || receipt.previewBootId !== preview.id) return null;
+        const publicArtifact = receipt.state === "proven" || receipt.state === "failed" ? {
+          artifactId: acceptanceCriterionArtifactId({
+            bundleId, criterionId: plan.criterionId,
+            receiptEventId: receipt.receiptEvent.id, contentSha256: receipt.contentSha256,
+          }),
+          contentType: receipt.contentType,
+          contentSha256: receipt.contentSha256,
+        } : null;
+        outcome = {
+          criterionId: plan.criterionId,
+          criterionText: plan.criterionTextSnapshot,
+          state: receipt.state,
+          expected: receipt.expected,
+          observed: receipt.observed,
+          evidence: {
+            kind: "execution_receipt",
+            modality: receipt.modality,
+            executionId: receipt.executionId,
+            receiptEventId: receipt.receiptEvent.id,
+            evidenceRef: receipt.evidenceRef,
+            artifact: publicArtifact,
+          },
+        };
+      } else if (preview && (preview.status === "ready" || preview.status === "torn_down")
+        && boundedCriterionText(preview.url, 2_048)) {
+        outcome = {
+          criterionId: plan.criterionId,
+          criterionText: plan.criterionTextSnapshot,
+          state: "not_proven",
+          expected: plan.criterionTextSnapshot,
+          observed: R7_READY_NOT_PROVEN_OBSERVATION,
+          evidence: {
+            kind: "preview_receipt",
+            previewBootId: preview.id,
+            evidenceRef: `preview-boot:${preview.id}`,
+          },
+        };
+      } else if (preview && (preview.status === "failed" || preview.status === "torn_down")
+        && preview.url === null && boundedCriterionText(preview.reason)) {
+        outcome = {
+          criterionId: plan.criterionId,
+          criterionText: plan.criterionTextSnapshot,
+          state: "not_testable",
+          expected: plan.criterionTextSnapshot,
+          observed: unavailablePreviewObservation({ status: preview.status, reason: preview.reason }),
+          evidence: {
+            kind: "preview_receipt",
+            previewBootId: preview.id,
+            evidenceRef: `preview-boot:${preview.id}`,
+          },
+        };
+      } else return null;
+    }
+    if (outcome.state === "failed" || outcome.state === "not_proven") {
+      const eventKey = `review:correction:${input.job.id}:${plan.criterionId}`;
+      const correction = correctionEvents.find((event) => event.eventKey === eventKey);
+      const evidenceAt = receipt?.receiptEvent.at ?? planEvents[0]!.at;
+      if (!correction || correction.at < evidenceAt || correction.at > input.postedAttempt.at) return null;
+      if (!correctionPacketMatchesCriterionOutcome({
+        event: correction, record: input.record, job: input.job,
+        acceptanceContractId: input.confirmed.id,
+        acceptanceContractVersion: input.confirmed.version,
+        criteria, plan, outcome, receipt,
+      })) return null;
+      expectedCorrectionIds.add(correction!.id);
+    }
+    outcomes.push(outcome);
+  }
+  if (correctionEvents.length !== expectedCorrectionIds.size
+    || correctionEvents.some((event) => !expectedCorrectionIds.has(event.id))) return null;
+  const reviewVerdict: AcceptanceCriterionOutcomeState = outcomes.some((outcome) => outcome.state === "failed")
+    ? "failed" : outcomes.some((outcome) => outcome.state === "not_proven")
+      ? "not_proven" : outcomes.some((outcome) => outcome.state === "not_testable")
+        ? "not_testable" : "proven";
+  const eventKey = criterionOutcomeBundleEventKey(input.job.id);
+  const binding: AcceptanceCriterionOutcomeBundleBinding = {
+    workspaceId: input.record.workspaceId,
+    recordId: input.record.id,
+    repo: input.record.repo,
+    prNumber: input.record.prNumber!,
+    headSha: input.job.headSha,
+    headCycleId: input.job.id,
+    reviewJobId: input.job.id,
+    acceptanceContract: {
+      id: input.confirmed.id,
+      version: input.confirmed.version,
+      sha256: input.contractSha256,
+    },
+    verificationPlanEventId: planEvents[0]!.id,
+    postedAttemptEventId: input.postedAttempt.id,
+    postedAttestationEventId: input.postedAttestationEventId,
+    outcomeDigest: attempt.outcomeDigest,
+    postPayloadDigest: attempt.postPayloadDigest,
+    reviewVerdict,
+  };
+  return {
+    kind: ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_KIND,
+    version: ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_VERSION,
+    id: bundleId,
+    binding,
+    outcomes,
+    outcomeSetSha256: acceptanceCriterionOutcomeSetSha256(outcomes),
+  };
+}
+
+function publicCriterionOutcomeBundle(input: {
+  event: ChangeRecordEventRow;
+  payload: AcceptanceCriterionOutcomeBundlePayload;
+}): AcceptanceCriterionOutcomeBundle {
+  return {
+    id: input.payload.id,
+    eventId: input.event.id,
+    eventKey: input.event.eventKey,
+    binding: structuredClone(input.payload.binding),
+    outcomes: structuredClone(input.payload.outcomes),
+    outcomeSetSha256: input.payload.outcomeSetSha256,
+    sha256: acceptanceCriterionOutcomeBundleSha256(input.payload),
+    recordedAt: input.event.at,
+  };
+}
+
+function postedAttestationPayloadWithBundle(input: {
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  confirmed: AcceptanceContractRow;
+  attempt: { outcomeDigest: string; postPayloadDigest: string };
+  postedReviewUrl: string;
+  inlineCommentsPosted: number;
+  commentsFolded: boolean;
+  bundleSha256: string;
+}): Record<string, unknown> {
+  return {
+    kind: REVIEW_JOB_POSTED_ATTESTATION_KIND,
+    jobId: input.job.id,
+    workspaceId: input.record.workspaceId,
+    repo: input.record.repo,
+    prNumber: input.record.prNumber,
+    headSha: input.job.headSha,
+    recordId: input.record.id,
+    acceptanceContractId: input.confirmed.id,
+    acceptanceContractVersion: input.confirmed.version,
+    outcomeDigest: input.attempt.outcomeDigest,
+    postPayloadDigest: input.attempt.postPayloadDigest,
+    postedReviewUrl: input.postedReviewUrl,
+    inlineCommentsPosted: input.inlineCommentsPosted,
+    commentsFolded: input.commentsFolded,
+    criterionOutcomeBundleSha256: input.bundleSha256,
+  };
+}
+
+type CriterionBundleSource = {
+  record: ChangeRecordRow;
+  job: ReviewJobRow;
+  confirmed: AcceptanceContractRow;
+  contract: AcceptanceConfirmedContractProjection;
+  contractSha256: string;
+  events: ChangeRecordEventRow[];
+  boot: typeof previewBoots.$inferSelect | undefined;
+  attemptEvent: ChangeRecordEventRow;
+  attempt: { outcomeDigest: string; postPayloadDigest: string };
+};
+
+async function criterionBundleSourceInTransaction(input: {
+  tx: DbTransaction;
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  candidate: { repo: string; prNumber: number };
+}): Promise<CriterionBundleSource | { reason: AcceptanceCriterionOutcomeBundleNotReadyReason }
+  | { kind: "not_found" } | { kind: "not_current" }> {
+  const record = (await input.tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!record) return { kind: "not_found" };
+  if (record.repo !== input.candidate.repo || record.prNumber !== input.candidate.prNumber
+    || record.prNumber == null || !record.headShas.every((sha) => EXACT_SHA1.test(sha))) {
+    return { kind: "not_current" };
+  }
+  const job = (await input.tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, input.reviewJobId), eq(reviewJobs.workspaceId, input.workspaceId),
+    eq(reviewJobs.repo, record.repo), eq(reviewJobs.prNumber, record.prNumber),
+  )).limit(1))[0];
+  if (!job || !EXACT_SHA1.test(job.headSha) || !record.headShas.includes(job.headSha)) {
+    return { reason: "review_job_unavailable" };
+  }
+  const confirmedRows = await input.tx.select().from(acceptanceContracts).where(and(
+    eq(acceptanceContracts.recordId, record.id), eq(acceptanceContracts.status, "confirmed"),
+  )).orderBy(asc(acceptanceContracts.version));
+  if (confirmedRows.length !== 1) return { reason: "confirmed_contract_unavailable" };
+  const confirmed = confirmedRows[0]!;
+  const contract = projectConfirmedAcceptanceContract(confirmed.contract);
+  if (!contract || !isNonBlankString(confirmed.confirmedBy)
+    || !(confirmed.confirmedAt instanceof Date) || Number.isNaN(confirmed.confirmedAt.valueOf())) {
+    return { reason: "confirmed_contract_unavailable" };
+  }
+  let contractSha256: string;
+  try {
+    contractSha256 = acceptanceContractSha256({
+      acceptanceContractId: confirmed.id,
+      acceptanceContractVersion: confirmed.version,
+      contract: confirmed.contract,
+    });
+  } catch {
+    return { reason: "confirmed_contract_unavailable" };
+  }
+  const exactKeys = [
+    `verification:plan:${job.id}`,
+    `review:github-attempt:${job.id}`,
+    reviewJobPostedAttestationEventKey(job.id),
+    criterionOutcomeBundleEventKey(job.id),
+  ];
+  const events = await input.tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, record.id),
+    sql`(${inArray(changeRecordEvents.eventKey, exactKeys)}
+      OR ${changeRecordEvents.eventKey} LIKE ${`verification:%:${job.id}:%`}
+      OR ${changeRecordEvents.eventKey} LIKE ${`review:correction:${job.id}:%`})`,
+  )).orderBy(asc(changeRecordEvents.eventKey));
+  if (events.length > ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS) {
+    return { reason: "invalid_criterion_outcome_custody" };
+  }
+  try {
+    const eventBytes = events.reduce((total, event) => total
+      + Buffer.byteLength(acceptanceContextPackCanonicalJson({
+        id: event.id,
+        eventKey: event.eventKey,
+        stage: event.stage,
+        actor: event.actor,
+        payloadRef: event.payloadRef,
+      }), "utf8"), 0);
+    if (eventBytes > ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES) {
+      return { reason: "invalid_criterion_outcome_custody" };
+    }
+  } catch {
+    return { reason: "invalid_criterion_outcome_custody" };
+  }
+  const planEvents = events.filter((event) => event.eventKey === `verification:plan:${job.id}`);
+  if (planEvents.length === 0) return { reason: "verification_plan_unavailable" };
+  if (planEvents.length !== 1) return { reason: "invalid_criterion_outcome_custody" };
+  const attemptEvents = events.filter((event) => event.eventKey === `review:github-attempt:${job.id}`);
+  if (attemptEvents.length === 0) return { reason: "posted_attempt_unavailable" };
+  if (attemptEvents.length !== 1) return { reason: "invalid_criterion_outcome_custody" };
+  const attemptEvent = attemptEvents[0]!;
+  const attempt = canonicalPostAttempt({
+    event: attemptEvent, record, job,
+    acceptanceContractId: confirmed.id,
+    acceptanceContractVersion: confirmed.version,
+  });
+  if (!attempt || planEvents[0]!.at < confirmed.confirmedAt
+    || planEvents[0]!.at < job.createdAt || attemptEvent.at < planEvents[0]!.at) {
+    return { reason: "invalid_criterion_outcome_custody" };
+  }
+  const bootId = previewBootId({
+    workspaceId: record.workspaceId, repo: record.repo, prNumber: record.prNumber,
+    headSha: job.headSha, cycleId: job.id,
+  });
+  const boot = (await input.tx.select().from(previewBoots).where(eq(previewBoots.id, bootId)).limit(1))[0];
+  return { record, job, confirmed, contract, contractSha256, events, boot, attemptEvent, attempt };
+}
+
+function isCriterionBundleSource(
+  value: CriterionBundleSource | { reason: AcceptanceCriterionOutcomeBundleNotReadyReason }
+    | { kind: "not_found" } | { kind: "not_current" },
+): value is CriterionBundleSource {
+  return "record" in value;
+}
+
+function canonicalBundlePostedAttestation(input: {
+  event: ChangeRecordEventRow;
+  source: CriterionBundleSource;
+  bundleSha256: string;
+}): boolean {
+  const payload = input.event.payloadRef;
+  const eventKey = reviewJobPostedAttestationEventKey(input.source.job.id);
+  return input.event.id === changeRecordEventId({ recordId: input.source.record.id, eventKey })
+    && input.event.recordId === input.source.record.id && input.event.eventKey === eventKey
+    && input.event.stage === REVIEW_JOB_POSTED_ATTESTATION_STAGE
+    && input.event.actor === REVIEW_JOB_POSTED_ATTESTATION_ACTOR
+    && input.event.at >= input.source.attemptEvent.at
+    && hasExactKeys(payload, [
+      "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
+      "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest", "postPayloadDigest",
+      "postedReviewUrl", "inlineCommentsPosted", "commentsFolded", "criterionOutcomeBundleSha256",
+    ]) && payload["kind"] === REVIEW_JOB_POSTED_ATTESTATION_KIND
+    && payload["jobId"] === input.source.job.id
+    && payload["workspaceId"] === input.source.record.workspaceId
+    && payload["repo"] === input.source.record.repo
+    && payload["prNumber"] === input.source.record.prNumber
+    && payload["headSha"] === input.source.job.headSha
+    && payload["recordId"] === input.source.record.id
+    && payload["acceptanceContractId"] === input.source.confirmed.id
+    && payload["acceptanceContractVersion"] === input.source.confirmed.version
+    && payload["outcomeDigest"] === input.source.attempt.outcomeDigest
+    && payload["postPayloadDigest"] === input.source.attempt.postPayloadDigest
+    && isCanonicalGithubReviewUrl(
+      payload["postedReviewUrl"], input.source.record.repo, input.source.record.prNumber!,
+    ) && Number.isSafeInteger(payload["inlineCommentsPosted"])
+    && (payload["inlineCommentsPosted"] as number) >= 0
+    && (payload["inlineCommentsPosted"] as number) <= 100
+    && typeof payload["commentsFolded"] === "boolean"
+    && payload["criterionOutcomeBundleSha256"] === input.bundleSha256;
+}
+
+function storedBundleMatchesExpected(input: {
+  event: ChangeRecordEventRow;
+  expected: AcceptanceCriterionOutcomeBundlePayload;
+}): boolean {
+  return input.event.id === input.expected.id
+    && input.event.recordId === input.expected.binding.recordId
+    && input.event.eventKey === criterionOutcomeBundleEventKey(input.expected.binding.headCycleId)
+    && input.event.stage === ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_STAGE
+    && input.event.actor === ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_ACTOR
+    && isDeepStrictEqual(input.event.payloadRef, input.expected)
+    && input.expected.outcomeSetSha256 === acceptanceCriterionOutcomeSetSha256(input.expected.outcomes)
+    && input.expected.id === acceptanceCriterionOutcomeBundleId({
+      recordId: input.expected.binding.recordId,
+      headCycleId: input.expected.binding.headCycleId,
+    });
+}
+
+async function resolveCurrentCriterionBundleInTransaction(input: {
+  tx: DbTransaction;
+  workspaceId: string;
+  recordId: string;
+  candidate: { repo: string; prNumber: number };
+}): Promise<ReadCurrentAcceptanceCriterionOutcomeBundleResult> {
+  const record = (await input.tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!record) return { kind: "not_found" };
+  if (record.repo !== input.candidate.repo || record.prNumber !== input.candidate.prNumber
+    || record.prNumber == null || record.state !== "open" || record.mergedSha !== null
+    || !record.currentPrHeadAuthoritative || !EXACT_SHA1.test(record.currentPrHeadSha ?? "")
+    || !isUuid(record.currentPrHeadCycleId)
+    || !record.headShas.includes(record.currentPrHeadSha!)) return { kind: "not_current" };
+  const source = await criterionBundleSourceInTransaction({
+    tx: input.tx, workspaceId: input.workspaceId, recordId: input.recordId,
+    reviewJobId: record.currentPrHeadCycleId!, candidate: input.candidate,
+  });
+  if (!isCriterionBundleSource(source)) {
+    if ("kind" in source) return source;
+    return { kind: "not_ready", reason: source.reason };
+  }
+  if (source.job.headSha !== record.currentPrHeadSha || source.job.id !== record.currentPrHeadCycleId
+    || source.job.state !== "posted" || !isAcceptanceReviewVerdict(source.job.verdict)
+    || !isCanonicalGithubReviewUrl(source.job.postedReviewUrl, record.repo, record.prNumber)) {
+    return { kind: "not_ready", reason: "review_job_unavailable" };
+  }
+  const attestationEvents = source.events.filter((event) =>
+    event.eventKey === reviewJobPostedAttestationEventKey(source.job.id));
+  if (attestationEvents.length === 0) return { kind: "not_ready", reason: "posted_attestation_unavailable" };
+  const bundleEvents = source.events.filter((event) =>
+    event.eventKey === criterionOutcomeBundleEventKey(source.job.id));
+  if (bundleEvents.length === 0) return {
+    kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded",
+  };
+  if (attestationEvents.length !== 1 || bundleEvents.length !== 1) return {
+    kind: "not_ready", reason: "invalid_criterion_outcome_custody",
+  };
+  const expected = deriveCriterionOutcomeBundlePayload({
+    record: source.record, job: source.job, confirmed: source.confirmed,
+    contract: source.contract, contractSha256: source.contractSha256,
+    events: source.events, boot: source.boot, postedAttempt: source.attemptEvent,
+    postedAttestationEventId: attestationEvents[0]!.id,
+  });
+  if (!expected || expected.binding.reviewVerdict !== source.job.verdict
+    || source.job.postedReviewUrl !== attestationEvents[0]!.payloadRef["postedReviewUrl"]
+    || attestationEvents[0]!.at.valueOf() !== bundleEvents[0]!.at.valueOf()
+    || !storedBundleMatchesExpected({ event: bundleEvents[0]!, expected })) return {
+    kind: "not_ready", reason: "invalid_criterion_outcome_custody",
+  };
+  const bundleSha256 = acceptanceCriterionOutcomeBundleSha256(expected);
+  if (!canonicalBundlePostedAttestation({
+    event: attestationEvents[0]!, source, bundleSha256,
+  })) return { kind: "not_ready", reason: "invalid_criterion_outcome_custody" };
+  return { kind: "current", bundle: publicCriterionOutcomeBundle({
+    event: bundleEvents[0]!, payload: expected,
+  }) };
+}
+
+export async function readCurrentAcceptanceCriterionOutcomeBundle(
+  input: ReadCurrentAcceptanceCriterionOutcomeBundleInput,
+): Promise<ReadCurrentAcceptanceCriterionOutcomeBundleResult> {
+  assertExactCriterionOutcomeReadInput(input);
+  const candidate = (await db.select({ repo: changeRecords.repo, prNumber: changeRecords.prNumber })
+    .from(changeRecords).where(and(
+      eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+  if (candidate.prNumber == null) return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: input.recordId,
+    repo: candidate.repo, prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    return resolveCurrentCriterionBundleInTransaction({
+      tx, ...input, candidate: { repo: candidate.repo, prNumber: candidate.prNumber! },
+    });
+  });
+}
+
+export async function recordPostedAcceptanceCriterionOutcomeBundle(
+  input: RecordPostedAcceptanceCriterionOutcomeBundleInput,
+): Promise<RecordPostedAcceptanceCriterionOutcomeBundleResult> {
+  assertExactCriterionOutcomeWriteInput(input);
+  const candidate = (await db.select({ repo: changeRecords.repo, prNumber: changeRecords.prNumber })
+    .from(changeRecords).where(and(
+      eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+  if (candidate.prNumber == null) return { kind: "not_current" };
+  if (!isCanonicalGithubReviewUrl(input.postedReviewUrl, candidate.repo, candidate.prNumber)) {
+    throw new Error("Posted criterion outcome custody requires one canonical GitHub review URL");
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: input.recordId,
+    repo: candidate.repo, prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const source = await criterionBundleSourceInTransaction({
+      tx, workspaceId: input.workspaceId, recordId: input.recordId,
+      reviewJobId: input.reviewJobId,
+      candidate: { repo: candidate.repo, prNumber: candidate.prNumber! },
+    });
+    if (!isCriterionBundleSource(source)) {
+      if ("kind" in source) return source;
+      return { kind: "not_ready", reason: source.reason };
+    }
+    if (!isCanonicalGithubReviewUrl(input.postedReviewUrl, source.record.repo, source.record.prNumber!)) {
+      throw new Error("Posted criterion outcome custody requires the exact repository review URL");
+    }
+    const current = source.record.state === "open" && source.record.mergedSha === null
+      && source.record.currentPrHeadAuthoritative
+      && source.record.currentPrHeadSha === source.job.headSha
+      && source.record.currentPrHeadCycleId === source.job.id;
+    const attestationEventKey = reviewJobPostedAttestationEventKey(source.job.id);
+    const bundleEventKey = criterionOutcomeBundleEventKey(source.job.id);
+    const existingAttestation = source.events.filter((event) => event.eventKey === attestationEventKey);
+    const existingBundle = source.events.filter((event) => event.eventKey === bundleEventKey);
+    if (existingAttestation.length > 1 || existingBundle.length > 1
+      || (existingAttestation.length === 1) !== (existingBundle.length === 1)) {
+      throw new AcceptanceCriterionOutcomeBundleConflictError();
+    }
+    if (existingAttestation.length === 0) {
+      const freshCurrent = current && source.job.state === "running";
+      const freshHistorical = !current && source.job.state === "superseded"
+        && source.job.updatedAt >= source.attemptEvent.at;
+      if (!freshCurrent && !freshHistorical) return { kind: "not_current" };
+    }
+    const postedAttestationEventId = changeRecordEventId({
+      recordId: source.record.id, eventKey: attestationEventKey,
+    });
+    const expectedBundle = deriveCriterionOutcomeBundlePayload({
+      record: source.record, job: source.job, confirmed: source.confirmed,
+      contract: source.contract, contractSha256: source.contractSha256,
+      events: source.events, boot: source.boot, postedAttempt: source.attemptEvent,
+      postedAttestationEventId,
+    });
+    if (!expectedBundle) return {
+      kind: "not_ready", reason: "invalid_criterion_outcome_custody",
+    };
+    const bundleSha256 = acceptanceCriterionOutcomeBundleSha256(expectedBundle);
+    const attestationPayload = postedAttestationPayloadWithBundle({
+      record: source.record, job: source.job, confirmed: source.confirmed,
+      attempt: source.attempt, postedReviewUrl: input.postedReviewUrl,
+      inlineCommentsPosted: input.inlineCommentsPosted,
+      commentsFolded: input.commentsFolded,
+      bundleSha256,
+    });
+    if (existingAttestation.length === 1) {
+      if (!isDeepStrictEqual(existingAttestation[0]!.payloadRef, attestationPayload)
+        || existingAttestation[0]!.at.valueOf() !== existingBundle[0]!.at.valueOf()
+        || !canonicalBundlePostedAttestation({
+          event: existingAttestation[0]!, source, bundleSha256,
+        }) || !storedBundleMatchesExpected({
+          event: existingBundle[0]!, expected: expectedBundle,
+        })) throw new AcceptanceCriterionOutcomeBundleConflictError();
+      return {
+        kind: "replayed",
+        current,
+        bundle: publicCriterionOutcomeBundle({ event: existingBundle[0]!, payload: expectedBundle }),
+      };
+    }
+    const recordedAt = new Date();
+    let appended: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [
+        {
+          recordId: source.record.id,
+          eventKey: attestationEventKey,
+          stage: REVIEW_JOB_POSTED_ATTESTATION_STAGE,
+          actor: REVIEW_JOB_POSTED_ATTESTATION_ACTOR,
+          payloadRef: attestationPayload,
+          at: recordedAt,
+        },
+        {
+          recordId: source.record.id,
+          eventKey: bundleEventKey,
+          stage: ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_STAGE,
+          actor: ACCEPTANCE_CRITERION_OUTCOME_BUNDLE_ACTOR,
+          payloadRef: expectedBundle,
+          at: recordedAt,
+        },
+      ]);
+    } catch (error) {
+      if (error instanceof Error
+        && error.message.includes("event key is already bound")) {
+        throw new AcceptanceCriterionOutcomeBundleConflictError();
+      }
+      throw error;
+    }
+    if (appended.events.length !== 2
+      || appended.events.some((event) => !event.inserted)
+      || !canonicalBundlePostedAttestation({
+        event: appended.events[0]!.event, source, bundleSha256,
+      }) || !storedBundleMatchesExpected({
+        event: appended.events[1]!.event, expected: expectedBundle,
+      })) throw new AcceptanceCriterionOutcomeBundleConflictError();
+    return {
+      kind: "recorded",
+      current,
+      bundle: publicCriterionOutcomeBundle({
+        event: appended.events[1]!.event, payload: expectedBundle,
+      }),
+    };
+  });
+}
+
+export async function resolveAcceptanceCriterionArtifact(
+  input: ResolveAcceptanceCriterionArtifactInput,
+): Promise<ResolveAcceptanceCriterionArtifactResult> {
+  assertExactCriterionArtifactInput(input);
+  const candidate = (await db.select({ repo: changeRecords.repo, prNumber: changeRecords.prNumber })
+    .from(changeRecords).where(and(
+      eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+  if (candidate.prNumber == null) return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: input.recordId,
+    repo: candidate.repo, prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const resolved = await resolveCurrentCriterionBundleInTransaction({
+      tx, workspaceId: input.workspaceId, recordId: input.recordId,
+      candidate: { repo: candidate.repo, prNumber: candidate.prNumber! },
+    });
+    if (resolved.kind !== "current") return resolved;
+    const matches = resolved.bundle.outcomes.filter((outcome) =>
+      outcome.evidence.kind === "execution_receipt"
+      && outcome.evidence.artifact?.artifactId === input.artifactId);
+    if (matches.length === 0) return { kind: "artifact_not_found" };
+    if (matches.length !== 1) return {
+      kind: "not_ready", reason: "invalid_criterion_outcome_custody",
+    };
+    const outcome = matches[0]!;
+    if (outcome.evidence.kind !== "execution_receipt" || !outcome.evidence.artifact) {
+      return { kind: "artifact_not_found" };
+    }
+    const receipt = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.id, outcome.evidence.receiptEventId),
+    )).limit(1))[0];
+    const artifactKey = receipt?.payloadRef["artifactKey"];
+    if (!receipt || typeof artifactKey !== "string"
+      || receipt.payloadRef["contentSha256"] !== outcome.evidence.artifact.contentSha256
+      || receipt.payloadRef["contentType"] !== outcome.evidence.artifact.contentType
+      || acceptanceCriterionArtifactId({
+        bundleId: resolved.bundle.id,
+        criterionId: outcome.criterionId,
+        receiptEventId: receipt.id,
+        contentSha256: outcome.evidence.artifact.contentSha256,
+      }) !== input.artifactId
+      || !validArtifactKey({
+        artifactKey, workspaceId: resolved.bundle.binding.workspaceId,
+        repo: resolved.bundle.binding.repo, prNumber: resolved.bundle.binding.prNumber,
+        headSha: resolved.bundle.binding.headSha,
+        contentType: outcome.evidence.artifact.contentType,
+        executionId: outcome.evidence.executionId,
+        contentSha256: outcome.evidence.artifact.contentSha256,
+      })) return { kind: "not_ready", reason: "invalid_criterion_outcome_custody" };
+    return {
+      kind: "resolved",
+      artifact: { ...outcome.evidence.artifact, artifactKey },
+    };
   });
 }

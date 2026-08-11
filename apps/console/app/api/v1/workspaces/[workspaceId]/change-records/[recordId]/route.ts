@@ -8,6 +8,7 @@ import {
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
   readAcceptanceRecordDetail,
+  readCurrentAcceptanceCriterionOutcomeBundle,
   readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
@@ -236,6 +237,31 @@ function serializeDates(value: unknown): unknown {
   return value;
 }
 
+/**
+ * The member detail projection never exposes private artifact/evidence storage
+ * coordinates. Canonical packets and event payloads remain unchanged in DB
+ * custody; their persisted digests continue to identify that server-side
+ * source rather than this redacted view.
+ */
+const MEMBER_PRIVATE_STORAGE_KEYS = new Set([
+  "artifactKey",
+  "evidenceKey",
+  "evidenceKeys",
+  "bootLogKey",
+]);
+
+function redactMemberStorageCoordinates(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactMemberStorageCoordinates);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !MEMBER_PRIVATE_STORAGE_KEYS.has(key))
+        .map(([key, nested]) => [key, redactMemberStorageCoordinates(nested)]),
+    );
+  }
+  return value;
+}
+
 function currentDecisionMatchesTimeline(
   timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
   result: Extract<Awaited<ReturnType<typeof readCurrentAcceptancePrDecision>>, { kind: "current" }>,
@@ -277,6 +303,50 @@ function dependencyObservationsMatchTimeline(
     && timeline.record.currentPrHeadSha === result.binding.headSha
     && timeline.record.currentPrHeadCycleId === result.binding.headCycleId
     && timeline.record.currentPrHeadAuthorityGeneration === result.binding.authorityGeneration;
+}
+
+function criterionOutcomesMatchTimeline(
+  timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
+  result: Extract<
+    Awaited<ReturnType<typeof readCurrentAcceptanceCriterionOutcomeBundle>>,
+    { kind: "current" }
+  >,
+): boolean {
+  const { binding } = result.bundle;
+  return timeline.record.currentPrHeadAuthoritative
+    && timeline.record.workspaceId === binding.workspaceId
+    && timeline.record.id === binding.recordId
+    && timeline.record.repo === binding.repo
+    && timeline.record.prNumber === binding.prNumber
+    && timeline.record.currentPrHeadSha === binding.headSha
+    && timeline.record.currentPrHeadCycleId === binding.headCycleId;
+}
+
+function criterionOutcomesMatchDetail(
+  result: Extract<
+    Awaited<ReturnType<typeof readCurrentAcceptanceCriterionOutcomeBundle>>,
+    { kind: "current" }
+  >,
+  detailResult: Awaited<ReturnType<typeof readAcceptanceRecordDetail>>,
+): boolean {
+  if (detailResult.kind !== "record" || detailResult.detail.pullRequest.kind !== "attached") {
+    return false;
+  }
+  const { binding } = result.bundle;
+  const { current } = detailResult.detail.pullRequest;
+  if (current === null || current.reviewJob.kind !== "recorded"
+    || current.reviewJob.state !== "posted" || current.reviewJob.id !== binding.reviewJobId
+    || current.headSha !== binding.headSha || current.headCycleId !== binding.headCycleId
+    || detailResult.detail.contract.identity.id !== binding.acceptanceContract.id
+    || detailResult.detail.contract.identity.version !== binding.acceptanceContract.version
+    || detailResult.detail.contract.identity.sha256 !== binding.acceptanceContract.sha256) return false;
+  const proofCycle = detailResult.detail.proofMatrix.find((candidate) =>
+    candidate.occurrence.headCycleId === binding.headCycleId
+  );
+  return proofCycle?.review.kind === "posted"
+    && proofCycle.review.reviewJobId === binding.reviewJobId
+    && proofCycle.review.verdict === binding.reviewVerdict
+    && proofCycle.review.postedAttestationEventId === binding.postedAttestationEventId;
 }
 
 function acceptanceDetailMatchesTimeline(
@@ -346,6 +416,7 @@ export async function GET(
       resolvedDependencyObservations,
       resolvedAcceptanceDetail,
       dependencyDraftProposal,
+      resolvedCriterionOutcomes,
     ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
@@ -353,6 +424,7 @@ export async function GET(
       readCurrentAcceptanceDependencyObservations({ workspaceId, recordId }),
       readAcceptanceRecordDetail({ workspaceId, recordId }),
       readDependencyDraftProposalDetail({ workspaceId, recordId }),
+      readCurrentAcceptanceCriterionOutcomeBundle({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -383,9 +455,14 @@ export async function GET(
       && !acceptanceDetailMatchesTimeline(timeline, resolvedAcceptanceDetail)
       ? { kind: "unavailable" as const, reason: "invalid_record_custody" as const }
       : serializeDates(resolvedAcceptanceDetail);
+    const criterionOutcomes = resolvedCriterionOutcomes.kind === "current"
+      && (!criterionOutcomesMatchTimeline(timeline, resolvedCriterionOutcomes)
+        || !criterionOutcomesMatchDetail(resolvedCriterionOutcomes, resolvedAcceptanceDetail))
+      ? { kind: "not_current" as const }
+      : serializeDates(resolvedCriterionOutcomes);
     const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
 
-    return json({
+    return json(redactMemberStorageCoordinates({
       record: {
         id: timeline.record.id,
         workspaceId: timeline.record.workspaceId,
@@ -417,10 +494,11 @@ export async function GET(
       dependencyObservations,
       acceptanceDetail,
       dependencyDraftProposal,
+      criterionOutcomes,
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,
-    });
+    }) as Record<string, unknown>);
   } catch (err) {
     console.error("[change-records] failed to load detail:", err);
     return NextResponse.json(

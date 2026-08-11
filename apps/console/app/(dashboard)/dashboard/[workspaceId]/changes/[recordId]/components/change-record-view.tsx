@@ -543,6 +543,85 @@ export type AcceptanceDependencyDraftProposal =
   | { kind: "not_draft_proposal" }
   | { kind: "invalid_custody" };
 
+type AcceptanceCriterionArtifact = {
+  artifactId: string;
+  contentType: "image/png" | "image/jpeg" | "application/json";
+  contentSha256: string;
+};
+
+type AcceptanceCriterionEvidence =
+  | {
+      kind: "execution_receipt";
+      modality: "ui" | "api" | "data" | "job";
+      executionId: string;
+      receiptEventId: string;
+      evidenceRef: string;
+      artifact: AcceptanceCriterionArtifact | null;
+    }
+  | {
+      kind: "preview_receipt";
+      previewBootId: string;
+      evidenceRef: string;
+    }
+  | {
+      kind: "not_testable_plan";
+      planEventId: string;
+    };
+
+type AcceptanceCriterionOutcome = {
+  criterionId: string;
+  criterionText: string;
+  state: "proven" | "failed" | "not_proven" | "not_testable";
+  expected: string;
+  observed: string;
+  evidence: AcceptanceCriterionEvidence;
+};
+
+export type AcceptanceCriterionOutcomesEnvelope =
+  | {
+      kind: "current";
+      bundle: {
+        id: string;
+        eventId: string;
+        eventKey: string;
+        binding: {
+          workspaceId: string;
+          recordId: string;
+          repo: string;
+          prNumber: number;
+          headSha: string;
+          headCycleId: string;
+          reviewJobId: string;
+          acceptanceContract: { id: string; version: number; sha256: string };
+          verificationPlanEventId: string;
+          postedAttemptEventId: string;
+          postedAttestationEventId: string;
+          outcomeDigest: string;
+          postPayloadDigest: string;
+          reviewVerdict: "proven" | "failed" | "not_proven" | "not_testable";
+        };
+        outcomes: AcceptanceCriterionOutcome[];
+        outcomeSetSha256: string;
+        sha256: string;
+        recordedAt: string;
+      };
+    }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | {
+      kind: "not_ready";
+      reason:
+        | "review_job_unavailable"
+        | "confirmed_contract_unavailable"
+        | "verification_plan_unavailable"
+        | "posted_attempt_unavailable"
+        | "criterion_evidence_unavailable"
+        | "correction_packet_unavailable"
+        | "posted_attestation_unavailable"
+        | "criterion_outcome_bundle_not_recorded"
+        | "invalid_criterion_outcome_custody";
+    };
+
 export type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
@@ -552,6 +631,7 @@ export type ChangeRecordResponse = {
   dependencyObservations: AcceptanceDependencyObservationsEnvelope;
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   dependencyDraftProposal: AcceptanceDependencyDraftProposal;
+  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
@@ -600,6 +680,9 @@ function isSafeTimelineEvent(value: unknown): value is ChangeRecordEvent {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA1 = /^[a-f0-9]{40}$/i;
 const SHA256 = /^[a-f0-9]{64}$/i;
+const LOWER_SHA256 = /^[a-f0-9]{64}$/;
+const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LOWER_UUID_V5 = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CORRECTION_PACKET_ID = /^correction-[a-f0-9]{48}$/i;
 const SAFE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
@@ -1738,6 +1821,191 @@ export function isAcceptanceRecordDetailEnvelope(
   return true;
 }
 
+const CRITERION_OUTCOME_NOT_READY_REASONS = new Set([
+  "review_job_unavailable",
+  "confirmed_contract_unavailable",
+  "verification_plan_unavailable",
+  "posted_attempt_unavailable",
+  "criterion_evidence_unavailable",
+  "correction_packet_unavailable",
+  "posted_attestation_unavailable",
+  "criterion_outcome_bundle_not_recorded",
+  "invalid_criterion_outcome_custody",
+]);
+
+function isCriterionArtifact(value: unknown): value is AcceptanceCriterionArtifact {
+  return isObject(value) && hasExactKeys(value, [
+    "artifactId", "contentType", "contentSha256",
+  ]) && typeof value.artifactId === "string" && LOWER_UUID_V5.test(value.artifactId)
+    && (value.contentType === "image/png" || value.contentType === "image/jpeg"
+      || value.contentType === "application/json")
+    && typeof value.contentSha256 === "string" && LOWER_SHA256.test(value.contentSha256);
+}
+
+function isCriterionEvidence(
+  value: unknown,
+  state: AcceptanceCriterionOutcome["state"],
+): value is AcceptanceCriterionEvidence {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "execution_receipt") {
+    if (!hasExactKeys(value, [
+      "kind", "modality", "executionId", "receiptEventId", "evidenceRef", "artifact",
+    ]) || (value.modality !== "ui" && value.modality !== "api"
+      && value.modality !== "data" && value.modality !== "job")
+      || typeof value.executionId !== "string"
+      || value.executionId !== `${value.modality}-${value.executionId.slice(value.modality.length + 1)}`
+      || !new RegExp(`^${value.modality}-[a-f0-9]{48}$`).test(value.executionId)
+      || typeof value.receiptEventId !== "string" || !LOWER_UUID.test(value.receiptEventId)
+      || value.evidenceRef !== `review-${value.modality}-execution:${value.executionId}`) return false;
+    if (state === "proven" || state === "failed") {
+      return isCriterionArtifact(value.artifact) && (
+        value.modality === "ui"
+          ? value.artifact.contentType === "image/png" || value.artifact.contentType === "image/jpeg"
+          : value.artifact.contentType === "application/json"
+      );
+    }
+    return state === "not_proven" && value.artifact === null;
+  }
+  if (value.kind === "preview_receipt") {
+    return hasExactKeys(value, ["kind", "previewBootId", "evidenceRef"])
+      && (state === "not_proven" || state === "not_testable")
+      && typeof value.previewBootId === "string" && LOWER_UUID.test(value.previewBootId)
+      && value.evidenceRef === `preview-boot:${value.previewBootId}`;
+  }
+  return value.kind === "not_testable_plan"
+    && hasExactKeys(value, ["kind", "planEventId"])
+    && state === "not_testable"
+    && typeof value.planEventId === "string" && LOWER_UUID.test(value.planEventId);
+}
+
+function isCriterionOutcome(value: unknown): value is AcceptanceCriterionOutcome {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "criterionId", "criterionText", "state", "expected", "observed", "evidence",
+  ]) || !isSafeText(value.criterionId, 512)
+    || !isSafeText(value.criterionText, 2_000)
+    || (value.state !== "proven" && value.state !== "failed"
+      && value.state !== "not_proven" && value.state !== "not_testable")
+    || !isSafeText(value.expected, 2_000) || value.expected !== value.criterionText
+    || !isSafeText(value.observed, 2_000)) return false;
+  return isCriterionEvidence(value.evidence, value.state);
+}
+
+export function isCriterionOutcomesEnvelope(
+  value: unknown,
+): value is AcceptanceCriterionOutcomesEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found" || value.kind === "not_current") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind === "not_ready") {
+    return hasExactKeys(value, ["kind", "reason"])
+      && typeof value.reason === "string"
+      && CRITERION_OUTCOME_NOT_READY_REASONS.has(value.reason);
+  }
+  if (value.kind !== "current" || !hasExactKeys(value, ["kind", "bundle"])
+    || !isObject(value.bundle) || !hasExactKeys(value.bundle, [
+      "id", "eventId", "eventKey", "binding", "outcomes", "outcomeSetSha256", "sha256",
+      "recordedAt",
+    ])) return false;
+  const bundle = value.bundle;
+  if (typeof bundle.id !== "string" || !LOWER_UUID_V5.test(bundle.id)
+    || bundle.eventId !== bundle.id
+    || !isObject(bundle.binding) || !hasExactKeys(bundle.binding, [
+      "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId", "reviewJobId",
+      "acceptanceContract", "verificationPlanEventId", "postedAttemptEventId",
+      "postedAttestationEventId", "outcomeDigest", "postPayloadDigest", "reviewVerdict",
+    ])) return false;
+  const binding = bundle.binding;
+  if (typeof binding.workspaceId !== "string" || !LOWER_UUID.test(binding.workspaceId)
+    || typeof binding.recordId !== "string" || !LOWER_UUID.test(binding.recordId)
+    || !isSafeRepo(binding.repo) || !isPositiveInteger(binding.prNumber)
+    || typeof binding.headSha !== "string" || !/^[a-f0-9]{40}$/.test(binding.headSha)
+    || typeof binding.headCycleId !== "string" || !LOWER_UUID.test(binding.headCycleId)
+    || typeof binding.reviewJobId !== "string" || !LOWER_UUID.test(binding.reviewJobId)
+    || binding.headCycleId !== binding.reviewJobId
+    || !isObject(binding.acceptanceContract)
+    || !hasExactKeys(binding.acceptanceContract, ["id", "version", "sha256"])
+    || typeof binding.acceptanceContract.id !== "string"
+    || !LOWER_UUID.test(binding.acceptanceContract.id)
+    || !isPositiveInteger(binding.acceptanceContract.version)
+    || typeof binding.acceptanceContract.sha256 !== "string"
+    || !LOWER_SHA256.test(binding.acceptanceContract.sha256)
+    || typeof binding.verificationPlanEventId !== "string"
+    || !LOWER_UUID.test(binding.verificationPlanEventId)
+    || typeof binding.postedAttemptEventId !== "string"
+    || !LOWER_UUID.test(binding.postedAttemptEventId)
+    || typeof binding.postedAttestationEventId !== "string"
+    || !LOWER_UUID.test(binding.postedAttestationEventId)
+    || typeof binding.outcomeDigest !== "string" || !LOWER_SHA256.test(binding.outcomeDigest)
+    || typeof binding.postPayloadDigest !== "string" || !LOWER_SHA256.test(binding.postPayloadDigest)
+    || (binding.reviewVerdict !== "proven" && binding.reviewVerdict !== "failed"
+      && binding.reviewVerdict !== "not_proven" && binding.reviewVerdict !== "not_testable")
+    || bundle.eventKey !== `review:criterion-outcomes:${binding.headCycleId}`
+    || !Array.isArray(bundle.outcomes) || bundle.outcomes.length === 0
+    || bundle.outcomes.length > 100
+    || typeof bundle.outcomeSetSha256 !== "string" || !LOWER_SHA256.test(bundle.outcomeSetSha256)
+    || typeof bundle.sha256 !== "string" || !LOWER_SHA256.test(bundle.sha256)
+    || !isIsoTimestamp(bundle.recordedAt)) return false;
+
+  const criterionIds = new Set<string>();
+  const validOutcomes = bundle.outcomes.every((outcome) => {
+    if (!isCriterionOutcome(outcome) || criterionIds.has(outcome.criterionId)
+      || (outcome.evidence.kind === "not_testable_plan"
+        && outcome.evidence.planEventId !== binding.verificationPlanEventId)) return false;
+    criterionIds.add(outcome.criterionId);
+    return true;
+  });
+  if (!validOutcomes) return false;
+  const expectedVerdict = bundle.outcomes.some((outcome) => outcome.state === "failed")
+    ? "failed"
+    : bundle.outcomes.some((outcome) => outcome.state === "not_proven")
+      ? "not_proven"
+      : bundle.outcomes.some((outcome) => outcome.state === "not_testable")
+        ? "not_testable"
+        : "proven";
+  return binding.reviewVerdict === expectedVerdict;
+}
+
+function criterionOutcomesMatchDetail(
+  outcomes: AcceptanceCriterionOutcomesEnvelope,
+  envelope: AcceptanceRecordDetailEnvelope,
+): boolean {
+  if (outcomes.kind !== "current") return true;
+  if (envelope.kind !== "record") return false;
+  const { detail } = envelope;
+  if (detail.pullRequest.kind !== "attached"
+    || detail.pullRequest.current === null) return false;
+  const { binding } = outcomes.bundle;
+  const currentReviewJob = detail.pullRequest.current.reviewJob;
+  const currentProof = detail.proofMatrix.find((cycle) =>
+    cycle.occurrence.headCycleId === binding.headCycleId
+  );
+  if (binding.workspaceId !== detail.summary.workspaceId
+    || binding.recordId !== detail.summary.recordId
+    || binding.repo !== detail.summary.repo
+    || binding.prNumber !== detail.pullRequest.prNumber
+    || binding.headSha !== detail.pullRequest.current.headSha
+    || binding.headCycleId !== detail.pullRequest.current.headCycleId
+    || currentReviewJob.kind !== "recorded"
+    || currentReviewJob.state !== "posted"
+    || binding.reviewJobId !== currentReviewJob.id
+    || currentProof?.review.kind !== "posted"
+    || currentProof.review.reviewJobId !== binding.reviewJobId
+    || currentProof.review.verdict !== binding.reviewVerdict
+    || currentProof.review.postedAttestationEventId !== binding.postedAttestationEventId
+    || !exactJsonEqual(binding.acceptanceContract, detail.contract.identity)
+    || outcomes.bundle.outcomes.length !== detail.contract.contract.acceptanceCriteria.length) {
+    return false;
+  }
+  return outcomes.bundle.outcomes.every((outcome, index) => {
+    const criterion = detail.contract.contract.acceptanceCriteria[index];
+    return criterion !== undefined
+      && outcome.criterionId === criterion.id
+      && outcome.criterionText === criterion.text
+      && outcome.expected === criterion.text;
+  });
+}
+
 export function isCorrectionPacketsEnvelope(value: unknown): value is AcceptanceCorrectionPacketsEnvelope {
   if (!isObject(value)) return false;
   if (value.kind === "not_found" || value.kind === "not_current") {
@@ -2763,7 +3031,7 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
   return isObject(value) && hasExactKeys(value, [
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
     "dependencyObservations", "acceptanceDetail", "dependencyDraftProposal",
-    "canRecordFinalDecision", "canRecordReviewEffort",
+    "criterionOutcomes", "canRecordFinalDecision", "canRecordReviewEffort",
     "canApproveDependencyObservation",
   ]) && isObject(value.record) && Array.isArray(value.events)
     && value.events.every(isSafeTimelineEvent)
@@ -2773,6 +3041,8 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
     && isDependencyObservationsEnvelope(value.dependencyObservations)
     && isAcceptanceRecordDetailEnvelope(value.acceptanceDetail)
     && isDependencyDraftProposal(value.dependencyDraftProposal)
+    && isCriterionOutcomesEnvelope(value.criterionOutcomes)
+    && criterionOutcomesMatchDetail(value.criterionOutcomes, value.acceptanceDetail)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
     && typeof value.canApproveDependencyObservation === "boolean";
@@ -2995,7 +3265,6 @@ function CorrectionPacketCard({ packet }: { packet: AcceptanceCorrectionPacket }
         </h4>
         <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
           <CorrectionDatum label="Evidence reference" mono>{packet.evidence.evidenceRef}</CorrectionDatum>
-          <CorrectionDatum label="Artifact key" mono>{packet.evidence.artifactKey ?? "Not recorded"}</CorrectionDatum>
           <CorrectionDatum label="Execution ID" mono>{packet.evidence.executionId ?? "Not recorded"}</CorrectionDatum>
           <CorrectionDatum label="Preview boot ID" mono>{packet.evidence.previewBootId ?? "Not recorded"}</CorrectionDatum>
         </dl>
@@ -3055,10 +3324,79 @@ function occurrenceLabel(kind: "current" | "merged" | "historical"): string {
     : kind === "merged" ? "Signed merged occurrence" : "Historical occurrence";
 }
 
+export function criterionArtifactApiPath(
+  workspaceId: string,
+  recordId: string,
+  artifactId: string,
+): string {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}/criterion-outcomes/artifacts/${encodeURIComponent(artifactId)}`;
+}
+
+function criterionStateLabel(state: AcceptanceCriterionOutcome["state"]): string {
+  return state === "proven" ? "Proven"
+    : state === "failed" ? "Failed"
+      : state === "not_proven" ? "Not proven" : "Not testable";
+}
+
+function CriterionOutcomeReceipt({
+  outcome,
+  workspaceId,
+  recordId,
+}: {
+  outcome: AcceptanceCriterionOutcome;
+  workspaceId: string;
+  recordId: string;
+}) {
+  const { evidence } = outcome;
+  return (
+    <div className="mt-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
+      <p className="text-xs font-semibold text-[var(--gray-12)]">
+        Current recorded outcome: {criterionStateLabel(outcome.state)}
+      </p>
+      <dl className="mt-2 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+        <CorrectionDatum label="Expected">{outcome.expected}</CorrectionDatum>
+        <CorrectionDatum label="Observed">{outcome.observed}</CorrectionDatum>
+        <CorrectionDatum label="Evidence custody">
+          {evidence.kind === "execution_receipt"
+            ? `${evidence.modality} execution receipt · ${evidence.receiptEventId}`
+            : evidence.kind === "preview_receipt"
+              ? `exact preview receipt · ${evidence.previewBootId}`
+              : `not-testable verification plan · ${evidence.planEventId}`}
+        </CorrectionDatum>
+        {evidence.kind === "execution_receipt" && evidence.artifact !== null ? (
+          <CorrectionDatum label="Artifact">
+            <a
+              href={criterionArtifactApiPath(workspaceId, recordId, evidence.artifact.artifactId)}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2"
+            >
+              Open receipt artifact ({evidence.artifact.contentType})
+            </a>
+            <span className="mt-1 block break-all font-mono text-[var(--gray-09)]">
+              SHA-256 {evidence.artifact.contentSha256}
+            </span>
+          </CorrectionDatum>
+        ) : (
+          <CorrectionDatum label="Artifact">
+            No artifact is claimed for this evidence type and outcome.
+          </CorrectionDatum>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 export function AcceptanceRecordDetailPanel({
   acceptanceDetail,
+  criterionOutcomes,
+  workspaceId,
+  recordId,
 }: {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
+  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
+  workspaceId: string;
+  recordId: string;
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
@@ -3074,6 +3412,13 @@ export function AcceptanceRecordDetailPanel({
   const { detail } = acceptanceDetail;
   const contract = detail.contract.contract;
   const occurrences = detail.pullRequest.kind === "attached" ? detail.pullRequest.occurrences : [];
+  const currentBundle = criterionOutcomes.kind === "current" ? criterionOutcomes.bundle : null;
+  const currentOutcomesByCriterion = new Map(
+    currentBundle?.outcomes.map((outcome) => [outcome.criterionId, outcome]) ?? [],
+  );
+  const currentArtifactCount = currentBundle?.outcomes.filter((outcome) =>
+    outcome.evidence.kind === "execution_receipt" && outcome.evidence.artifact !== null
+  ).length ?? 0;
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -3274,6 +3619,16 @@ export function AcceptanceRecordDetailPanel({
 
         <article className="border-t border-[var(--gray-05)] pt-5">
           <h3 className="text-sm font-semibold text-[var(--gray-12)]">Criterion proof matrix</h3>
+          {currentBundle ? (
+            <p className="mt-2 text-xs text-[var(--gray-09)]">
+              Current immutable bundle <code>{currentBundle.sha256}</code> · recorded {formatChangeRecordDate(currentBundle.recordedAt)}.
+              Current outcomes below supersede the detail projection&apos;s unknown placeholder for this exact cycle.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-[var(--gray-09)]">
+              Current criterion outcomes are not available. No result is inferred from the aggregate review or raw timeline.
+            </p>
+          )}
           {detail.proofMatrix.length === 0 ? (
             <p className="mt-2 text-xs text-[var(--gray-09)]">No PR occurrence exists for criterion proof.</p>
           ) : (
@@ -3291,24 +3646,38 @@ export function AcceptanceRecordDetailPanel({
                         : "not recorded"}
                   </p>
                   <div className="mt-3 space-y-3">
-                    {cycle.criteria.map(({ criterion, proof }) => (
-                      <div key={criterion.id} className="rounded border border-[var(--gray-05)] p-3">
-                        <p className="font-mono text-xs text-[var(--gray-09)]">{criterion.id}</p>
-                        <p className="mt-1 text-sm text-[var(--gray-12)]">{criterion.text}</p>
-                        {proof.kind === "unknown" ? (
-                          <p className="mt-2 text-xs font-medium text-[var(--gray-11)]">
-                            Criterion evidence unknown: {proof.reason.replaceAll("_", " ")}. Aggregate review verdicts are not treated as criterion proof.
-                          </p>
-                        ) : (
-                          <div className="mt-3">
-                            <p className="mb-2 text-xs font-medium text-[var(--gray-11)]">
-                              Correction-backed {proof.state === "failed" ? "failed" : "not proven"} evidence
+                    {cycle.criteria.map(({ criterion, proof }) => {
+                      const currentOutcome = currentBundle?.binding.headCycleId === cycle.occurrence.headCycleId
+                        ? currentOutcomesByCriterion.get(criterion.id) ?? null
+                        : null;
+                      return (
+                        <div key={criterion.id} className="rounded border border-[var(--gray-05)] p-3">
+                          <p className="font-mono text-xs text-[var(--gray-09)]">{criterion.id}</p>
+                          <p className="mt-1 text-sm text-[var(--gray-12)]">{criterion.text}</p>
+                          {currentOutcome ? (
+                            <CriterionOutcomeReceipt
+                              outcome={currentOutcome}
+                              workspaceId={workspaceId}
+                              recordId={recordId}
+                            />
+                          ) : proof.kind === "unknown" ? (
+                            <p className="mt-2 text-xs font-medium text-[var(--gray-11)]">
+                              Criterion evidence unknown: {proof.reason.replaceAll("_", " ")}. Aggregate review verdicts are not treated as criterion proof.
                             </p>
-                            <DetailCorrectionPacketCard packet={proof.packet} />
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                          ) : null}
+                          {proof.kind === "correction_packet" ? (
+                            <details className="mt-3">
+                              <summary className="cursor-pointer text-xs font-medium text-[var(--gray-11)]">
+                                {`Correction context (${proof.state === "failed" ? "failed" : "not proven"})`}
+                              </summary>
+                              <div className="mt-2">
+                                <DetailCorrectionPacketCard packet={proof.packet} />
+                              </div>
+                            </details>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
@@ -3318,8 +3687,14 @@ export function AcceptanceRecordDetailPanel({
 
         <div className="grid gap-3 border-t border-[var(--gray-05)] pt-5 sm:grid-cols-2">
           <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
-            <p className="text-xs font-medium text-[var(--gray-12)]">Artifact custody: Unknown</p>
-            <p className="mt-1 text-xs text-[var(--gray-09)]">Artifact access is unavailable; no artifact receipt is inferred.</p>
+            <p className="text-xs font-medium text-[var(--gray-12)]">
+              Current artifact receipts: {currentBundle ? currentArtifactCount : "Unknown"}
+            </p>
+            <p className="mt-1 text-xs text-[var(--gray-09)]">
+              {currentBundle
+                ? `${currentArtifactCount} receipt-bound artifact${currentArtifactCount === 1 ? "" : "s"} in the current bundle. Historical artifact access is not inferred.`
+                : "Artifact access is unavailable; no artifact receipt is inferred."}
+            </p>
           </div>
           <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
             <p className="text-xs font-medium text-[var(--gray-12)]">Gated issue custody: Unknown</p>
@@ -3399,7 +3774,7 @@ export function CorrectionsSection({
           </span>
         </div>
         <p className="mt-2 text-xs text-[var(--gray-09)]">
-          Validated immutable packets for the Change Record&apos;s authoritative current PR head and head cycle.
+          Validated immutable packet projections for the Change Record&apos;s authoritative current PR head and head cycle. Private artifact storage coordinates are withheld.
         </p>
       </div>
 
@@ -3424,7 +3799,7 @@ export function CorrectionsSection({
             <CorrectionDatum label="Record ID" mono>{binding.recordId}</CorrectionDatum>
             <CorrectionDatum label="Contract SHA-256" mono>{binding.acceptanceContract.sha256}</CorrectionDatum>
             <CorrectionDatum label="Packet set SHA-256" mono>{correctionPackets.packetSetSha256}</CorrectionDatum>
-            <CorrectionDatum label="Packet payload set SHA-256" mono>
+            <CorrectionDatum label="Canonical packet payload-set custody SHA-256" mono>
               {correctionPackets.correctionPacketPayloadSetSha256}
             </CorrectionDatum>
             <CorrectionDatum label="Packet IDs" mono>{correctionPackets.packetIds.join(", ")}</CorrectionDatum>
@@ -4261,7 +4636,12 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         </p>
       </div>
       <ChangeRecordAnchors record={data.record} />
-      <AcceptanceRecordDetailPanel acceptanceDetail={data.acceptanceDetail} />
+      <AcceptanceRecordDetailPanel
+        acceptanceDetail={data.acceptanceDetail}
+        criterionOutcomes={data.criterionOutcomes}
+        workspaceId={workspaceId}
+        recordId={recordId}
+      />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel
         finalDecision={data.finalDecision}

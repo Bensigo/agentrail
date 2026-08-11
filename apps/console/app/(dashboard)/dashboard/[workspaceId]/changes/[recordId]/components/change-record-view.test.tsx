@@ -16,13 +16,16 @@ import {
   isCorrectionPacketsEnvelope,
   isChangeRecordResponse,
   isAcceptanceRecordDetailEnvelope,
+  isCriterionOutcomesEnvelope,
   isDependencyObservationsEnvelope,
   isDependencyDraftProposal,
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
+  criterionArtifactApiPath,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceRecordDetailEnvelope,
+  type AcceptanceCriterionOutcomesEnvelope,
   type AcceptanceDependencyObservationsEnvelope,
   type AcceptanceDependencyDraftProposal,
   type AcceptanceFinalDecisionEnvelope,
@@ -54,6 +57,9 @@ function links(node: unknown): string[] {
   if (node == null || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap(links);
   const element = node as ElementLike;
+  if (typeof element.type === "function") {
+    return links((element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}));
+  }
   const href = typeof element.props?.href === "string" ? [element.props.href] : [];
   return [...href, ...links(element.props?.children)];
 }
@@ -1072,6 +1078,84 @@ const draftDependencyProposal: AcceptanceDependencyDraftProposal = {
   },
 };
 
+const CURRENT_BUNDLE_ID = "00000000-0000-5000-8000-000000000045";
+const CURRENT_UI_RECEIPT_EVENT_ID = "00000000-0000-4000-8000-000000000044";
+const CURRENT_DATA_RECEIPT_EVENT_ID = "00000000-0000-4000-8000-000000000043";
+const CURRENT_UI_ARTIFACT_ID = "00000000-0000-5000-8000-000000000042";
+const CURRENT_DATA_ARTIFACT_ID = "00000000-0000-5000-8000-000000000041";
+const currentCriterionOutcomes: AcceptanceCriterionOutcomesEnvelope = {
+  kind: "current",
+  bundle: {
+    id: CURRENT_BUNDLE_ID,
+    eventId: CURRENT_BUNDLE_ID,
+    eventKey: `review:criterion-outcomes:${currentFinalDecision.binding.headCycleId}`,
+    binding: {
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: 98,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      reviewJobId: currentFinalDecision.binding.reviewJobId,
+      acceptanceContract: detailContract.identity,
+      verificationPlanEventId: "00000000-0000-4000-8000-000000000040",
+      postedAttemptEventId: "00000000-0000-4000-8000-000000000039",
+      postedAttestationEventId: currentFinalDecision.binding.postedAttestationEventId,
+      outcomeDigest: "a".repeat(64),
+      postPayloadDigest: "b".repeat(64),
+      reviewVerdict: "failed",
+    },
+    outcomes: [
+      {
+        criterionId: "criterion-login",
+        criterionText: "A signed-in member can open the protected page.",
+        state: "failed",
+        expected: "A signed-in member can open the protected page.",
+        observed: "The protected page returned an error.",
+        evidence: {
+          kind: "execution_receipt",
+          modality: "ui",
+          executionId: `ui-${"1".repeat(48)}`,
+          receiptEventId: CURRENT_UI_RECEIPT_EVENT_ID,
+          evidenceRef: `review-ui-execution:ui-${"1".repeat(48)}`,
+          artifact: {
+            artifactId: CURRENT_UI_ARTIFACT_ID,
+            contentType: "image/png",
+            contentSha256: "c".repeat(64),
+          },
+        },
+      },
+      {
+        criterionId: "criterion-audit",
+        criterionText: "The result retains exact-head audit custody.",
+        state: "proven",
+        expected: "The result retains exact-head audit custody.",
+        observed: "The exact-head receipt matched the plan.",
+        evidence: {
+          kind: "execution_receipt",
+          modality: "data",
+          executionId: `data-${"2".repeat(48)}`,
+          receiptEventId: CURRENT_DATA_RECEIPT_EVENT_ID,
+          evidenceRef: `review-data-execution:data-${"2".repeat(48)}`,
+          artifact: {
+            artifactId: CURRENT_DATA_ARTIFACT_ID,
+            contentType: "application/json",
+            contentSha256: "d".repeat(64),
+          },
+        },
+      },
+    ],
+    outcomeSetSha256: "e".repeat(64),
+    sha256: "f".repeat(64),
+    recordedAt: "2026-08-11T09:00:01.000Z",
+  },
+};
+
+const criterionOutcomesNotReady: AcceptanceCriterionOutcomesEnvelope = {
+  kind: "not_ready",
+  reason: "criterion_outcome_bundle_not_recorded",
+};
+
 describe("Change Record detail view", () => {
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
@@ -1314,7 +1398,7 @@ describe("Change Record detail view", () => {
     expect(isFinalDecisionEnvelope(extraClaim)).toBe(false);
   });
 
-  it("renders every validated packet field under an explicit current exact-head cycle", () => {
+  it("renders the validated packet projection under an explicit current exact-head cycle", () => {
     const rendered = CorrectionsSection({ correctionPackets: currentCorrections });
     const content = textContent(rendered);
 
@@ -1332,7 +1416,8 @@ describe("Change Record detail view", () => {
     expect(content).toContain("member-opens-protected-page");
     expect(content).toContain('"expect_text"');
     expect(content).toContain("criterion:criterion-login:ui-result");
-    expect(content).toContain("artifacts/ui/protected.png");
+    expect(content).toContain("Private artifact storage coordinates are withheld");
+    expect(content).not.toContain("artifacts/ui/protected.png");
     expect(content).toContain("execution-17");
     expect(content).toContain("preview-boot-9");
     expect(content).toContain("Only criterion-login at the exact PR head.");
@@ -2107,7 +2192,12 @@ describe("Change Record detail view", () => {
   });
 
   it("renders full Contract, exact occurrences, selected context, and honest criterion unknowns without actions", () => {
-    const rendered = AcceptanceRecordDetailPanel({ acceptanceDetail: currentAcceptanceDetail });
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
     const content = textContent(rendered);
 
     expect(content).toContain("Confirmed Acceptance Contract");
@@ -2126,20 +2216,166 @@ describe("Change Record detail view", () => {
     expect(content).toContain(`apps/account/page.tsx@${DETAIL_BLOB_SHA}#L10-L18`);
     expect(content).toContain("apps/account/secret.ts");
     expect(content).toContain("raw source and snippets are not persisted");
-    expect(content).toContain("Correction-backed failed evidence");
+    expect(content).toContain("Correction context(failed)");
     expect(content).toContain("criterion result not durably rederivable");
     expect(content).toContain("Aggregate review verdicts are not treated as criterion proof");
-    expect(content).toContain("Artifact custody: Unknown");
+    expect(content).toContain("Current artifact receipts: Unknown");
     expect(content).toContain("Gated issue custody: Unknown");
     expect(elementTypes(rendered)).not.toContain("button");
     expect(elementTypes(rendered)).not.toContain("form");
     expect(links(rendered)).toEqual([]);
+    expect(content).not.toContain("artifacts/ui/protected.png");
+    expect(content).not.toContain("review-evidence/");
+    expect(content).not.toContain("Artifact key");
     expect(content).not.toMatch(/(?:Create issue|Merge PR|Delivered|Acknowledged|Repaired)/u);
+  });
+
+  it("strictly validates current criterion custody without accepting keys, URLs, or artifact claims on non-proof", () => {
+    expect(isCriterionOutcomesEnvelope(currentCriterionOutcomes)).toBe(true);
+    expect(isCriterionOutcomesEnvelope(criterionOutcomesNotReady)).toBe(true);
+    expect(isCriterionOutcomesEnvelope({
+      kind: "not_ready",
+      reason: "carrier_accepted",
+    })).toBe(false);
+
+    const rawKey = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const rawKeyBundle = rawKey.bundle as Record<string, unknown>;
+    const rawKeyOutcome = (rawKeyBundle.outcomes as Array<Record<string, unknown>>)[0]!;
+    const rawKeyEvidence = rawKeyOutcome.evidence as Record<string, unknown>;
+    (rawKeyEvidence.artifact as Record<string, unknown>).objectKey = "review-evidence/private.png";
+    expect(isCriterionOutcomesEnvelope(rawKey)).toBe(false);
+
+    const nonV5Bundle = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const nonV5BundleBody = nonV5Bundle.bundle as Record<string, unknown>;
+    nonV5BundleBody.id = "00000000-0000-4000-8000-000000000045";
+    nonV5BundleBody.eventId = "00000000-0000-4000-8000-000000000045";
+    expect(isCriterionOutcomesEnvelope(nonV5Bundle)).toBe(false);
+
+    const nonV5Artifact = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const nonV5ArtifactOutcome = (((nonV5Artifact.bundle as Record<string, unknown>)
+      .outcomes as Array<Record<string, unknown>>)[0]!);
+    (((nonV5ArtifactOutcome.evidence as Record<string, unknown>).artifact) as Record<string, unknown>)
+      .artifactId = "00000000-0000-4000-8000-000000000042";
+    expect(isCriterionOutcomesEnvelope(nonV5Artifact)).toBe(false);
+
+    const missingArtifact = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const missingBundle = missingArtifact.bundle as Record<string, unknown>;
+    const failedOutcome = (missingBundle.outcomes as Array<Record<string, unknown>>)[0]!;
+    (failedOutcome.evidence as Record<string, unknown>).artifact = null;
+    expect(isCriterionOutcomesEnvelope(missingArtifact)).toBe(false);
+
+    const malformedExecution = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const malformedExecutionOutcome = (((malformedExecution.bundle as Record<string, unknown>)
+      .outcomes as Array<Record<string, unknown>>)[0]!);
+    (malformedExecutionOutcome.evidence as Record<string, unknown>).executionId = `ui-${"a".repeat(47)}`;
+    expect(isCriterionOutcomesEnvelope(malformedExecution)).toBe(false);
+
+    const mismatchedExecutionRef = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const mismatchedExecutionOutcome = (((mismatchedExecutionRef.bundle as Record<string, unknown>)
+      .outcomes as Array<Record<string, unknown>>)[0]!);
+    (mismatchedExecutionOutcome.evidence as Record<string, unknown>).evidenceRef = "review-ui-execution:foreign";
+    expect(isCriterionOutcomesEnvelope(mismatchedExecutionRef)).toBe(false);
+
+    const wrongUiArtifactType = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const wrongUiOutcome = (((wrongUiArtifactType.bundle as Record<string, unknown>)
+      .outcomes as Array<Record<string, unknown>>)[0]!);
+    (((wrongUiOutcome.evidence as Record<string, unknown>).artifact) as Record<string, unknown>)
+      .contentType = "application/json";
+    expect(isCriterionOutcomesEnvelope(wrongUiArtifactType)).toBe(false);
+
+    const mismatchedPlan = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const mismatchedPlanBundle = mismatchedPlan.bundle as Record<string, unknown>;
+    const mismatchedPlanOutcome = (mismatchedPlanBundle.outcomes as Array<Record<string, unknown>>)[1]!;
+    mismatchedPlanOutcome.state = "not_testable";
+    mismatchedPlanOutcome.evidence = {
+      kind: "not_testable_plan",
+      planEventId: "00000000-0000-4000-8000-000000000099",
+    };
+    expect(isCriterionOutcomesEnvelope(mismatchedPlan)).toBe(false);
+
+    const malformedPreview = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    const malformedPreviewBundle = malformedPreview.bundle as Record<string, unknown>;
+    const malformedPreviewOutcome = (malformedPreviewBundle.outcomes as Array<Record<string, unknown>>)[1]!;
+    malformedPreviewOutcome.state = "not_proven";
+    malformedPreviewOutcome.evidence = {
+      kind: "preview_receipt",
+      previewBootId: "00000000-0000-4000-8000-0000000000AA",
+      evidenceRef: "preview-boot:00000000-0000-4000-8000-0000000000AA",
+    };
+    expect(isCriterionOutcomesEnvelope(malformedPreview)).toBe(false);
+
+    const falseVerdict = structuredClone(currentCriterionOutcomes) as Record<string, unknown>;
+    (((falseVerdict.bundle as Record<string, unknown>).binding) as Record<string, unknown>)
+      .reviewVerdict = "proven";
+    expect(isCriterionOutcomesEnvelope(falseVerdict)).toBe(false);
+
+    expect(criterionArtifactApiPath("workspace/1", "record/2", "artifact/3")).toBe(
+      "/api/v1/workspaces/workspace%2F1/change-records/record%2F2/criterion-outcomes/artifacts/artifact%2F3",
+    );
+  });
+
+  it("merges the current immutable bundle into the Contract-ordered proof matrix", () => {
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain(`Current immutable bundle ${"f".repeat(64)}`);
+    expect(content).toContain("Current recorded outcome: Failed");
+    expect(content).toContain("Current recorded outcome: Proven");
+    expect(content).toContain("The protected page returned an error.");
+    expect(content).toContain("The exact-head receipt matched the plan.");
+    expect(content).toContain("Correction context(failed)");
+    expect(content).not.toContain("criterion result not durably rederivable");
+    expect(content).toContain("Current artifact receipts: 2");
+    expect(content).toContain("2 receipt-bound artifacts in the current bundle");
+    expect(links(rendered)).toEqual([
+      criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
+      criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_DATA_ARTIFACT_ID),
+    ]);
+    expect(content).not.toContain("review-evidence/");
+  });
+
+  it("labels an exact zero artifact receipt count without claiming recorded custody", () => {
+    const noArtifactOutcomes = structuredClone(
+      currentCriterionOutcomes,
+    ) as AcceptanceCriterionOutcomesEnvelope;
+    if (noArtifactOutcomes.kind !== "current") throw new Error("expected current fixture");
+    noArtifactOutcomes.bundle.binding.reviewVerdict = "not_proven";
+    const firstOutcome = noArtifactOutcomes.bundle.outcomes[0]!;
+    firstOutcome.state = "not_proven";
+    if (firstOutcome.evidence.kind !== "execution_receipt") throw new Error("expected execution fixture");
+    firstOutcome.evidence.artifact = null;
+    const secondOutcome = noArtifactOutcomes.bundle.outcomes[1]!;
+    secondOutcome.state = "not_testable";
+    secondOutcome.evidence = {
+      kind: "not_testable_plan",
+      planEventId: noArtifactOutcomes.bundle.binding.verificationPlanEventId,
+    };
+    expect(isCriterionOutcomesEnvelope(noArtifactOutcomes)).toBe(true);
+
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: noArtifactOutcomes,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Current artifact receipts: 0");
+    expect(content).not.toContain("Current artifact receipts: Recorded");
+    expect(links(rendered)).toEqual([]);
   });
 
   it("renders closed unavailable detail without falling back to timeline inference", () => {
     const rendered = AcceptanceRecordDetailPanel({
       acceptanceDetail: { kind: "unavailable", reason: "invalid_review_custody" },
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
     });
 
     expect(textContent(rendered)).toContain("No detail is inferred from the raw timeline");
@@ -2156,11 +2392,29 @@ describe("Change Record detail view", () => {
       dependencyObservations: currentDependencyObservations,
       acceptanceDetail: currentAcceptanceDetail,
       dependencyDraftProposal: draftDependencyProposal,
+      criterionOutcomes: criterionOutcomesNotReady,
       canRecordFinalDecision: true,
       canRecordReviewEffort: true,
       canApproveDependencyObservation: true,
     };
     expect(isChangeRecordResponse(validResponse)).toBe(true);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      criterionOutcomes: currentCriterionOutcomes,
+    })).toBe(true);
+    const unpostedDetail = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const unpostedDetailBody = unpostedDetail.detail as Record<string, unknown>;
+    const unpostedPullRequest = unpostedDetailBody.pullRequest as Record<string, unknown>;
+    const unpostedCurrent = unpostedPullRequest.current as Record<string, unknown>;
+    (unpostedCurrent.reviewJob as Record<string, unknown>).state = "running";
+    const unpostedOccurrences = unpostedPullRequest.occurrences as Array<Record<string, unknown>>;
+    ((unpostedOccurrences[0]!.reviewJob) as Record<string, unknown>).state = "running";
+    expect(isAcceptanceRecordDetailEnvelope(unpostedDetail)).toBe(true);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      acceptanceDetail: unpostedDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+    })).toBe(false);
     expect(isChangeRecordResponse({
       ...validResponse,
       dependencyObservations: { kind: "current", binding: {}, observations: [] },
@@ -2210,6 +2464,10 @@ describe("Change Record detail view", () => {
         },
       }],
     })).toBe(true);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      criterionOutcomes: undefined,
+    })).toBe(false);
   });
 
   it("formats invalid timestamps without throwing", () => {

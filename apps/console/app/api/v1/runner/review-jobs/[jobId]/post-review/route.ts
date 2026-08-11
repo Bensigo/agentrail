@@ -1,12 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
-  appendChangeRecordEvent,
   appendCurrentReviewJobEventsAtomically,
+  AcceptanceCriterionOutcomeBundleConflictError,
   CurrentReviewJobNotCurrentError,
   getInstallationToken,
   getJaceSessionByEveSessionId,
   getRepositoryByName,
+  recordPostedAcceptanceCriterionOutcomeBundle,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../../lib/jace-console-auth";
 import { postGithubAdvisoryReview } from "../../../../../../../lib/github-advisory-review";
@@ -23,7 +24,6 @@ import {
   reviewPostAttemptPayload,
   reviewPostPayloadDigest,
   reviewPostedAttestationEventKey,
-  reviewPostedAttestationPayload,
 } from "../../../../../../../lib/review-job-proof-attestation";
 import {
   buildReviewJobCorrectionPackets,
@@ -46,6 +46,8 @@ interface PostReviewBody {
   summaryLine: string;
   evidenceKeys?: string[];
 }
+
+const MAX_INLINE_REVIEW_COMMENTS = 100;
 
 function nonBlank(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -102,7 +104,8 @@ function parseBody(value: unknown): PostReviewBody | null {
     !verdict ||
     !summaryLine ||
     typeof input.summary !== "string" ||
-    !Array.isArray(input.comments)
+    !Array.isArray(input.comments) ||
+    input.comments.length > MAX_INLINE_REVIEW_COMMENTS
   ) {
     return null;
   }
@@ -161,6 +164,20 @@ function replayResponse(
     },
     { status: 200 }
   );
+}
+
+function exactPostedReceipt(
+  attestation: Record<string, unknown> & { postedReviewUrl: string }
+): { inlineCommentsPosted: number; commentsFolded: boolean } | null {
+  return typeof attestation.inlineCommentsPosted === "number" &&
+    Number.isSafeInteger(attestation.inlineCommentsPosted) &&
+    attestation.inlineCommentsPosted >= 0 &&
+    typeof attestation.commentsFolded === "boolean"
+    ? {
+        inlineCommentsPosted: attestation.inlineCommentsPosted,
+        commentsFolded: attestation.commentsFolded,
+      }
+    : null;
 }
 
 /**
@@ -256,6 +273,39 @@ export async function POST(
       return NextResponse.json(
         { error: "posted review is missing its exact correction packet custody" },
         { status: 409 }
+      );
+    }
+    const priorReceipt = exactPostedReceipt(priorPosted);
+    if (!priorReceipt) {
+      return NextResponse.json(
+        { error: "posted review is missing its exact criterion outcome bundle custody" },
+        { status: 409 }
+      );
+    }
+    try {
+      const custody = await recordPostedAcceptanceCriterionOutcomeBundle({
+        workspaceId: proof.job.workspaceId,
+        recordId: proof.timeline.record.id,
+        reviewJobId: proof.job.id,
+        postedReviewUrl: priorPosted.postedReviewUrl,
+        ...priorReceipt,
+      });
+      if (custody.kind !== "recorded" && custody.kind !== "replayed") {
+        return NextResponse.json(
+          { error: "posted review is missing its exact criterion outcome bundle custody" },
+          { status: 409 }
+        );
+      }
+    } catch (error) {
+      if (error instanceof AcceptanceCriterionOutcomeBundleConflictError) {
+        return NextResponse.json(
+          { error: "posted review conflicts with its exact criterion outcome bundle custody" },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json(
+        { error: "posted review criterion outcome custody is unavailable" },
+        { status: 503 }
       );
     }
     return replayResponse(body, priorPosted);
@@ -448,36 +498,37 @@ export async function POST(
     return NextResponse.json({ error: posted.error }, { status: posted.status });
   }
 
-  const postedPayload = reviewPostedAttestationPayload({
-    proof: currentProof,
-    outcomeDigest,
-    postPayloadDigest,
-    postedReviewUrl: posted.reviewUrl,
-    inlineCommentsPosted: posted.inlineCommentsPosted,
-    commentsFolded: posted.foldedComments.length > 0,
-  });
-  let recorded: Awaited<ReturnType<typeof appendChangeRecordEvent>>;
   try {
-    recorded = await appendChangeRecordEvent({
+    const custody = await recordPostedAcceptanceCriterionOutcomeBundle({
+      workspaceId: currentProof.job.workspaceId,
       recordId: currentProof.timeline.record.id,
-      eventKey: postedEventKey,
-      stage: REVIEW_JOB_POST_STAGE,
-      actor: REVIEW_JOB_POST_ACTOR,
-      payloadRef: postedPayload,
+      reviewJobId: currentProof.job.id,
+      postedReviewUrl: posted.reviewUrl,
+      inlineCommentsPosted: posted.inlineCommentsPosted,
+      commentsFolded: posted.foldedComments.length > 0,
     });
-  } catch {
+    if (custody.kind !== "recorded" && custody.kind !== "replayed") {
+      return NextResponse.json(
+        {
+          error:
+            "GitHub accepted the review but its exact criterion outcome bundle could not be stored; automatic retry is held",
+        },
+        { status: 503 }
+      );
+    }
+  } catch (error) {
+    if (error instanceof AcceptanceCriterionOutcomeBundleConflictError) {
+      return NextResponse.json(
+        { error: "posted review conflicts with its exact criterion outcome bundle custody" },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       {
         error:
-          "GitHub accepted the review but its posted receipt could not be stored; automatic retry is held",
+          "GitHub accepted the review but its exact criterion outcome bundle could not be stored; automatic retry is held",
       },
       { status: 503 }
-    );
-  }
-  if (!isDeepStrictEqual(recorded.event.payloadRef, postedPayload)) {
-    return NextResponse.json(
-      { error: "posted review attestation conflicts with the existing receipt" },
-      { status: 409 }
     );
   }
 

@@ -16,8 +16,8 @@ interface UseCase {
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Keep dependencies moving",
-    line: "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+    title: "Review dependency proposals",
+    line: "Jace records bounded dependency observations and compatibility evidence, and refuses to present an unproven proposal as safe.",
     visual: "dependency",
   },
   {

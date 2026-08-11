@@ -8,6 +8,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getRepositoryByName: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
+  readCurrentAcceptanceCorrectionPackets: vi.fn(),
 }));
 
 import {
@@ -17,6 +18,7 @@ import {
   getRepositoryByName,
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
+  readCurrentAcceptanceCorrectionPackets,
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
 
@@ -24,6 +26,37 @@ const ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-secret";
 const ORIGINAL_ENV = process.env[ENV_KEY];
 const NOW = new Date("2026-08-03T12:00:00.000Z");
+const CORRECTION_PACKETS = {
+  kind: "current" as const,
+  binding: {
+    workspaceId: "ws-1",
+    recordId: "record-1",
+    reviewJobId: "cycle-1",
+    repo: "ada/widgets",
+    prNumber: 98,
+    headSha: "a".repeat(40),
+    headCycleId: "cycle-1",
+    authorityGeneration: 2,
+    acceptanceContract: { id: "contract-1", version: 3, sha256: "b".repeat(64) },
+  },
+  packetIds: ["packet-1"],
+  packetSetSha256: "c".repeat(64),
+  correctionPacketPayloadSetSha256: "d".repeat(64),
+  packets: [
+    {
+      kind: "review_job_correction_packet",
+      version: 1,
+      packetId: "packet-1",
+      workspaceId: "ws-1",
+      recordId: "record-1",
+      jobId: "cycle-1",
+      repo: "ada/widgets",
+      prNumber: 98,
+      headSha: "a".repeat(40),
+      acceptanceContract: { id: "contract-1", version: 3 },
+    },
+  ],
+};
 
 function req(body: unknown, withAuth = true): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/change-record/pr", {
@@ -45,6 +78,10 @@ function timeline(eventCount = 2) {
       issueNumber: 42,
       prNumber: 98,
       headShas: ["deadbeef"],
+      currentPrHeadSha: "a".repeat(40),
+      currentPrHeadCycleId: "cycle-1",
+      currentPrHeadAuthoritative: true,
+      currentPrHeadAuthorityGeneration: 2,
       mergedSha: null,
       state: "open",
       createdAt: NOW,
@@ -95,6 +132,7 @@ beforeEach(() => {
       },
     },
   ] as never);
+  vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue(CORRECTION_PACKETS as never);
 });
 
 afterEach(() => {
@@ -195,7 +233,32 @@ describe("POST /api/v1/runner/change-record/pr", () => {
           { id: "AC-1", text: "The change works.", userVisible: true },
         ],
       },
+      correctionPackets: CORRECTION_PACKETS,
     });
+    expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
+      recordId: "record-1",
+    });
+  });
+
+  it("returns exact server-derived non-current correction truth without delivery claims", async () => {
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({ kind: "not_current" } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98 }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).correctionPackets).toEqual({ kind: "not_current" });
+  });
+
+  it("downgrades a cross-read current envelope when the timeline authority generation differs", async () => {
+    const staleTimeline = timeline();
+    staleTimeline.record.currentPrHeadAuthorityGeneration = 1;
+    vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue(staleTimeline as never);
+
+    const res = await POST(req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98 }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).correctionPackets).toEqual({ kind: "not_current" });
   });
 
   it("returns a null contract rather than inventing criteria when no confirmed contract exists", async () => {

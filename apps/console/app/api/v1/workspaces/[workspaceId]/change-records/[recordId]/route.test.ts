@@ -6,23 +6,80 @@ vi.mock("@agentrail/auth", () => ({
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
+  readCurrentAcceptanceCorrectionPackets: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
+  readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
 import { GET } from "./route";
 
-const WS = "00000000-0000-0000-0000-000000000001";
-const OTHER_WS = "00000000-0000-0000-0000-000000000002";
-const RECORD = "00000000-0000-0000-0000-000000000111";
+const WS = "00000000-0000-4000-8000-000000000001";
+const OTHER_WS = "00000000-0000-4000-8000-000000000002";
+const RECORD = "00000000-0000-4000-8000-000000000111";
 const USER = "user-1";
+const HEAD = "f".repeat(40);
+const PRIOR_HEAD = "d".repeat(40);
+const CYCLE = "00000000-0000-4000-8000-000000000099";
+const CONTRACT = "00000000-0000-4000-8000-000000000088";
+const PACKET_ID = `correction-${"c".repeat(48)}`;
 const CREATED = new Date("2026-08-03T12:00:00.000Z");
 const UPDATED = new Date("2026-08-03T12:05:00.000Z");
 const REVIEW_AT = new Date("2026-08-03T12:04:00.000Z");
+
+const currentCorrectionPackets = {
+  kind: "current" as const,
+  binding: {
+    workspaceId: WS,
+    recordId: RECORD,
+    reviewJobId: CYCLE,
+    repo: "ada/widgets",
+    prNumber: 98,
+    headSha: HEAD,
+    headCycleId: CYCLE,
+    authorityGeneration: 1,
+    acceptanceContract: {
+      id: CONTRACT,
+      version: 1,
+      sha256: "a".repeat(64),
+    },
+  },
+  packetIds: [PACKET_ID],
+  packetSetSha256: "b".repeat(64),
+  correctionPacketPayloadSetSha256: "c".repeat(64),
+  packets: [{
+    kind: "review_job_correction_packet",
+    version: 1,
+    packetId: PACKET_ID,
+    workspaceId: WS,
+    repo: "ada/widgets",
+    prNumber: 98,
+    headSha: HEAD,
+    recordId: RECORD,
+    jobId: CYCLE,
+    acceptanceContract: { id: CONTRACT, version: 1 },
+    criterion: { id: "criterion-1", snapshot: "The saved page is visible." },
+    basis: "acceptance_contract",
+    state: "failed",
+    expected: "The saved page is visible.",
+    observed: "The page returned an error.",
+    affectedContext: {
+      modality: "ui",
+      environmentKind: "isolated_preview",
+      flow: "saved-page",
+      reproduction: { modality: "ui", steps: [{ action: "open", path: "/saved" }] },
+    },
+    evidence: { evidenceRef: "criterion:criterion-1:ui-result", previewBootId: "boot-1" },
+    scopeBoundary: "Only criterion-1 at the exact PR head.",
+    impact: "The saved page cannot be viewed.",
+    requiredCorrection: "Make the saved page visible.",
+    reverification: "Rerun criterion-1 against the next exact head.",
+  }],
+};
 
 function req(workspaceId = WS, recordId = RECORD): NextRequest {
   return new NextRequest(
@@ -42,10 +99,11 @@ const timeline = {
     repo: "ada/widgets",
     issueNumber: 42,
     prNumber: 98,
-    headShas: ["deadbeef", "feedface"],
-    currentPrHeadSha: "feedface",
-    currentPrHeadCycleId: "cycle-1",
+    headShas: [PRIOR_HEAD, HEAD],
+    currentPrHeadSha: HEAD,
+    currentPrHeadCycleId: CYCLE,
     currentPrHeadAuthoritative: true,
+    currentPrHeadAuthorityGeneration: 1,
     mergedSha: null,
     state: "open",
     createdAt: CREATED,
@@ -80,6 +138,7 @@ beforeEach(() => {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
+  vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue(currentCorrectionPackets as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -91,6 +150,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(401);
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -101,6 +161,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(403);
     expect(getWorkspaceMembership).toHaveBeenCalledWith(USER, WS);
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
+    expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -113,6 +174,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -128,6 +190,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: OTHER_WS,
       recordId: RECORD,
     });
+    expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
   });
 
   it("200 with deterministic record and ordered timeline event shape", async () => {
@@ -141,9 +204,9 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         repo: "ada/widgets",
         issueNumber: 42,
         prNumber: 98,
-        headShas: ["deadbeef", "feedface"],
-        currentPrHeadSha: "feedface",
-        currentPrHeadCycleId: "cycle-1",
+        headShas: [PRIOR_HEAD, HEAD],
+        currentPrHeadSha: HEAD,
+        currentPrHeadCycleId: CYCLE,
         currentPrHeadAuthoritative: true,
         mergedSha: null,
         state: "open",
@@ -172,6 +235,54 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           createdAt: "2026-08-03T12:04:00.000Z",
         },
       ],
+      correctionPackets: currentCorrectionPackets,
+    });
+    expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+  });
+
+  it("downgrades a current packet set when the separately read Record head cycle changed", async () => {
+    const nextHead = "e".repeat(40);
+    const nextCycle = "00000000-0000-4000-8000-000000000100";
+    const nextPacketId = `correction-${"e".repeat(48)}`;
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({
+      ...currentCorrectionPackets,
+      binding: {
+        ...currentCorrectionPackets.binding,
+        reviewJobId: nextCycle,
+        headSha: nextHead,
+        headCycleId: nextCycle,
+        authorityGeneration: 2,
+      },
+      packetIds: [nextPacketId],
+      packets: [{
+        ...currentCorrectionPackets.packets[0],
+        packetId: nextPacketId,
+        headSha: nextHead,
+        jobId: nextCycle,
+      }],
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).correctionPackets).toEqual({ kind: "not_current" });
+  });
+
+  it("returns invalid packet custody as a closed not-ready envelope", async () => {
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue({
+      kind: "not_ready",
+      reason: "invalid_packet_custody",
+    });
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).correctionPackets).toEqual({
+      kind: "not_ready",
+      reason: "invalid_packet_custody",
     });
   });
 
@@ -182,7 +293,19 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({
-      error: "Failed to load change record timeline",
+      error: "Failed to load change record detail",
+    });
+    expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
+  });
+
+  it("500 when current correction packet storage fails", async () => {
+    vi.mocked(readCurrentAcceptanceCorrectionPackets).mockRejectedValue(new Error("db down"));
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: "Failed to load change record detail",
     });
   });
 });

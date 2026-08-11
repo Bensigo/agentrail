@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { CopyId } from "../../../../../../components/copy-id";
 import { PageHeader } from "../../../../../../components/page-header";
@@ -29,10 +29,336 @@ export type ChangeRecordEvent = {
   createdAt: string;
 };
 
+type SafeDataRequestDescriptor = {
+  method: "GET";
+  path: string;
+  expectedStatus: number;
+  digestAlgorithm: "hmac-sha256-v1";
+  digestKeyId: string;
+  digestContext: string;
+  expectedJson: Array<{
+    pointer: string;
+    equalsType: "null" | "boolean" | "number" | "string";
+    equalsHmacSha256: string;
+  }>;
+};
+
+type CorrectionReproduction =
+  | {
+      modality: "ui";
+      steps: Array<
+        | { action: "open"; path: string }
+        | { action: "click"; selector: string }
+        | { action: "fill"; selector: string; value: "[REDACTED_FILL]" }
+        | { action: "press"; key: string }
+        | { action: "expect_text"; text: string }
+        | { action: "screenshot"; label: string }
+      >;
+    }
+  | { modality: "api"; request: { method: "GET"; path: string; expectedStatus: number } }
+  | { modality: "data"; request: SafeDataRequestDescriptor }
+  | {
+      modality: "job";
+      request: {
+        trigger: { method: "POST"; path: string; expectedStatus: number };
+        readback: SafeDataRequestDescriptor;
+      };
+    };
+
+export type AcceptanceCorrectionPacket = {
+  kind: "review_job_correction_packet";
+  version: 1;
+  packetId: string;
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  recordId: string;
+  jobId: string;
+  acceptanceContract: { id: string; version: number };
+  criterion: { id: string; snapshot: string };
+  basis: "acceptance_contract";
+  state: "failed" | "not_proven";
+  expected: string;
+  observed: string;
+  affectedContext: {
+    modality: "ui" | "api" | "data" | "job";
+    environmentKind: "isolated_preview" | null;
+    flow: string;
+    reproduction: CorrectionReproduction;
+  };
+  evidence: {
+    evidenceRef: string;
+    artifactKey?: string;
+    executionId?: string;
+    previewBootId: string;
+  };
+  scopeBoundary: string;
+  impact: string;
+  requiredCorrection: string;
+  reverification: string;
+};
+
+export type AcceptanceCorrectionPacketsEnvelope =
+  | {
+      kind: "current";
+      binding: {
+        workspaceId: string;
+        recordId: string;
+        reviewJobId: string;
+        repo: string;
+        prNumber: number;
+        headSha: string;
+        headCycleId: string;
+        authorityGeneration: number;
+        acceptanceContract: { id: string; version: number; sha256: string };
+      };
+      packetIds: string[];
+      packetSetSha256: string;
+      correctionPacketPayloadSetSha256: string;
+      packets: AcceptanceCorrectionPacket[];
+    }
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | {
+      kind: "not_ready";
+      reason:
+        | "review_job_unavailable"
+        | "confirmed_contract_unavailable"
+        | "no_correction_packets"
+        | "invalid_packet_custody";
+    };
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
+  correctionPackets: AcceptanceCorrectionPacketsEnvelope;
 };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA1 = /^[a-f0-9]{40}$/i;
+const SHA256 = /^[a-f0-9]{64}$/i;
+const CORRECTION_PACKET_ID = /^correction-[a-f0-9]{48}$/i;
+const SAFE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
+
+function isSafeText(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value) && !SECRET_LIKE.test(value);
+}
+
+function isSafeRepo(value: unknown): value is string {
+  return typeof value === "string" && SAFE_REPO.test(value)
+    && value.split("/").every((segment) => segment !== "." && segment !== "..");
+}
+
+function isHttpStatus(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isOptionalSafeText(value: Record<string, unknown>, key: string, max: number): boolean {
+  return !Object.prototype.hasOwnProperty.call(value, key) || isSafeText(value[key], max);
+}
+
+function isSafeDataRequestDescriptor(value: unknown): value is SafeDataRequestDescriptor {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "method", "path", "expectedStatus", "digestAlgorithm", "digestKeyId", "digestContext", "expectedJson",
+  ]) || value.method !== "GET" || !isSafeText(value.path, 2_048)
+    || !isHttpStatus(value.expectedStatus) || value.digestAlgorithm !== "hmac-sha256-v1"
+    || !isSafeText(value.digestKeyId, 64) || typeof value.digestContext !== "string"
+    || !SHA256.test(value.digestContext) || !Array.isArray(value.expectedJson)
+    || value.expectedJson.length === 0 || value.expectedJson.length > 12) return false;
+  return value.expectedJson.every((assertion) => isObject(assertion)
+    && hasExactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])
+    && isSafeText(assertion.pointer, 1_024)
+    && (assertion.equalsType === "null" || assertion.equalsType === "boolean"
+      || assertion.equalsType === "number" || assertion.equalsType === "string")
+    && typeof assertion.equalsHmacSha256 === "string" && SHA256.test(assertion.equalsHmacSha256));
+}
+
+function isUiReproductionStep(value: unknown): boolean {
+  if (!isObject(value) || typeof value.action !== "string") return false;
+  switch (value.action) {
+    case "open":
+      return hasExactKeys(value, ["action", "path"]) && isSafeText(value.path, 2_048);
+    case "click":
+      return hasExactKeys(value, ["action", "selector"]) && isSafeText(value.selector, 2_048);
+    case "fill":
+      return hasExactKeys(value, ["action", "selector", "value"])
+        && isSafeText(value.selector, 2_048) && value.value === "[REDACTED_FILL]";
+    case "press":
+      return hasExactKeys(value, ["action", "key"]) && isSafeText(value.key, 128);
+    case "expect_text":
+      return hasExactKeys(value, ["action", "text"]) && isSafeText(value.text, 2_048);
+    case "screenshot":
+      return hasExactKeys(value, ["action", "label"]) && isSafeText(value.label, 512);
+    default:
+      return false;
+  }
+}
+
+function isCorrectionReproduction(value: unknown, modality: unknown): value is CorrectionReproduction {
+  if (!isObject(value) || value.modality !== modality) return false;
+  if (modality === "ui") {
+    return hasExactKeys(value, ["modality", "steps"])
+      && Array.isArray(value.steps) && value.steps.length > 0 && value.steps.length <= 12
+      && value.steps.every(isUiReproductionStep);
+  }
+  if (modality === "api") {
+    return hasExactKeys(value, ["modality", "request"])
+      && isObject(value.request)
+      && hasExactKeys(value.request, ["method", "path", "expectedStatus"])
+      && value.request.method === "GET"
+      && isSafeText(value.request.path, 2_048)
+      && isHttpStatus(value.request.expectedStatus);
+  }
+  if (modality === "data") {
+    return hasExactKeys(value, ["modality", "request"])
+      && isSafeDataRequestDescriptor(value.request);
+  }
+  if (modality === "job") {
+    return hasExactKeys(value, ["modality", "request"])
+      && isObject(value.request)
+      && hasExactKeys(value.request, ["trigger", "readback"])
+      && isObject(value.request.trigger)
+      && hasExactKeys(value.request.trigger, ["method", "path", "expectedStatus"])
+      && value.request.trigger.method === "POST"
+      && isSafeText(value.request.trigger.path, 2_048)
+      && isHttpStatus(value.request.trigger.expectedStatus)
+      && isSafeDataRequestDescriptor(value.request.readback);
+  }
+  return false;
+}
+
+function isAcceptanceCorrectionPacket(value: unknown): value is AcceptanceCorrectionPacket {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "kind", "version", "packetId", "workspaceId", "repo", "prNumber", "headSha", "recordId", "jobId",
+    "acceptanceContract", "criterion", "basis", "state", "expected", "observed", "affectedContext", "evidence",
+    "scopeBoundary", "impact", "requiredCorrection", "reverification",
+  ])) return false;
+  if (!isObject(value.acceptanceContract)
+    || !hasExactKeys(value.acceptanceContract, ["id", "version"])
+    || typeof value.acceptanceContract.id !== "string" || !UUID.test(value.acceptanceContract.id)
+    || !isPositiveInteger(value.acceptanceContract.version)
+    || !isObject(value.criterion)
+    || !hasExactKeys(value.criterion, ["id", "snapshot"])
+    || !isSafeText(value.criterion.id, 512)
+    || !isSafeText(value.criterion.snapshot, 2_000)
+    || !isObject(value.affectedContext)
+    || !hasExactKeys(value.affectedContext, ["modality", "environmentKind", "flow", "reproduction"])
+    || (value.affectedContext.modality !== "ui" && value.affectedContext.modality !== "api"
+      && value.affectedContext.modality !== "data" && value.affectedContext.modality !== "job")
+    || (value.affectedContext.environmentKind !== null
+      && value.affectedContext.environmentKind !== "isolated_preview")
+    || !isSafeText(value.affectedContext.flow, 2_000)
+    || !isCorrectionReproduction(value.affectedContext.reproduction, value.affectedContext.modality)
+    || !isObject(value.evidence)
+    || !Object.keys(value.evidence).every((key) =>
+      key === "evidenceRef" || key === "artifactKey" || key === "executionId" || key === "previewBootId")
+    || !Object.prototype.hasOwnProperty.call(value.evidence, "evidenceRef")
+    || !Object.prototype.hasOwnProperty.call(value.evidence, "previewBootId")
+    || !isSafeText(value.evidence.evidenceRef, 2_000)
+    || !isOptionalSafeText(value.evidence, "artifactKey", 2_000)
+    || !isOptionalSafeText(value.evidence, "executionId", 512)
+    || !isSafeText(value.evidence.previewBootId, 512)) return false;
+  return value.kind === "review_job_correction_packet"
+    && value.version === 1
+    && typeof value.packetId === "string" && CORRECTION_PACKET_ID.test(value.packetId)
+    && typeof value.workspaceId === "string" && UUID.test(value.workspaceId)
+    && isSafeRepo(value.repo)
+    && isPositiveInteger(value.prNumber)
+    && typeof value.headSha === "string" && SHA1.test(value.headSha)
+    && typeof value.recordId === "string" && UUID.test(value.recordId)
+    && typeof value.jobId === "string" && UUID.test(value.jobId)
+    && value.basis === "acceptance_contract"
+    && (value.state === "failed" || value.state === "not_proven")
+    && isSafeText(value.expected, 2_000)
+    && value.expected === value.criterion.snapshot
+    && isSafeText(value.observed, 2_000)
+    && isSafeText(value.scopeBoundary, 2_000)
+    && isSafeText(value.impact, 2_000)
+    && isSafeText(value.requiredCorrection, 2_000)
+    && isSafeText(value.reverification, 2_000);
+}
+
+export function isCorrectionPacketsEnvelope(value: unknown): value is AcceptanceCorrectionPacketsEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found" || value.kind === "not_current") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind === "not_ready") {
+    return hasExactKeys(value, ["kind", "reason"]) && (
+      value.reason === "review_job_unavailable"
+      || value.reason === "confirmed_contract_unavailable"
+      || value.reason === "no_correction_packets"
+      || value.reason === "invalid_packet_custody"
+    );
+  }
+  if (value.kind !== "current" || !hasExactKeys(value, [
+    "kind", "binding", "packetIds", "packetSetSha256", "correctionPacketPayloadSetSha256", "packets",
+  ]) || !isObject(value.binding) || !hasExactKeys(value.binding, [
+    "workspaceId", "recordId", "reviewJobId", "repo", "prNumber", "headSha", "headCycleId",
+    "authorityGeneration", "acceptanceContract",
+  ])) return false;
+  if (!(typeof value.binding.workspaceId === "string" && UUID.test(value.binding.workspaceId)
+    && typeof value.binding.recordId === "string" && UUID.test(value.binding.recordId)
+    && typeof value.binding.reviewJobId === "string" && UUID.test(value.binding.reviewJobId)
+    && isSafeRepo(value.binding.repo)
+    && isPositiveInteger(value.binding.prNumber)
+    && typeof value.binding.headSha === "string" && SHA1.test(value.binding.headSha)
+    && typeof value.binding.headCycleId === "string" && UUID.test(value.binding.headCycleId)
+    && value.binding.headCycleId === value.binding.reviewJobId
+    && isNonNegativeInteger(value.binding.authorityGeneration)
+    && isObject(value.binding.acceptanceContract)
+    && hasExactKeys(value.binding.acceptanceContract, ["id", "version", "sha256"])
+    && typeof value.binding.acceptanceContract.id === "string" && UUID.test(value.binding.acceptanceContract.id)
+    && isPositiveInteger(value.binding.acceptanceContract.version)
+    && typeof value.binding.acceptanceContract.sha256 === "string"
+    && SHA256.test(value.binding.acceptanceContract.sha256)
+    && Array.isArray(value.packetIds)
+    && value.packetIds.length > 0 && value.packetIds.length <= 100
+    && value.packetIds.every((packetId) => typeof packetId === "string" && CORRECTION_PACKET_ID.test(packetId))
+    && typeof value.packetSetSha256 === "string" && SHA256.test(value.packetSetSha256)
+    && typeof value.correctionPacketPayloadSetSha256 === "string"
+    && SHA256.test(value.correctionPacketPayloadSetSha256)
+    && Array.isArray(value.packets)
+    && value.packets.length > 0
+    && value.packetIds.length === value.packets.length
+    && new Set(value.packetIds).size === value.packetIds.length)) return false;
+  const packets = value.packets;
+  const packetIds = value.packetIds;
+  const binding = value.binding;
+  if (!isObject(binding.acceptanceContract)) return false;
+  const acceptanceContract = binding.acceptanceContract;
+  return packetIds.every((packetId, index) => index === 0 || packetIds[index - 1]! < packetId)
+    && packets.every((packet, index) => isAcceptanceCorrectionPacket(packet)
+    && packet.packetId === packetIds[index]
+    && packet.workspaceId === binding.workspaceId
+    && packet.recordId === binding.recordId
+    && packet.jobId === binding.reviewJobId
+    && packet.repo === binding.repo
+    && packet.prNumber === binding.prNumber
+    && packet.headSha === binding.headSha
+    && packet.acceptanceContract.id === acceptanceContract.id
+    && packet.acceptanceContract.version === acceptanceContract.version);
+}
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
@@ -138,6 +464,213 @@ export function ChangeRecordAnchors({ record }: { record: ChangeRecord }) {
   );
 }
 
+function CorrectionDatum({
+  label,
+  children,
+  mono = false,
+}: {
+  label: string;
+  children: ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <dt className="text-[var(--gray-09)]">{label}</dt>
+      <dd className={`mt-1 break-words text-[var(--gray-12)]${mono ? " font-mono" : ""}`}>
+        {children}
+      </dd>
+    </div>
+  );
+}
+
+function CorrectionPacketCard({ packet }: { packet: AcceptanceCorrectionPacket }) {
+  return (
+    <article className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-mono text-xs text-[var(--gray-09)]">{packet.criterion.id}</p>
+          <h3 className="mt-1 text-sm font-medium text-[var(--gray-12)]">
+            {packet.criterion.snapshot}
+          </h3>
+        </div>
+        <span className="rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-2 py-1 text-xs font-medium text-[var(--gray-11)]">
+          {packet.state === "not_proven" ? "Not proven" : "Failed"}
+        </span>
+      </div>
+
+      <dl className="mt-4 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+        <CorrectionDatum label="Expected">{packet.expected}</CorrectionDatum>
+        <CorrectionDatum label="Observed">{packet.observed}</CorrectionDatum>
+        <CorrectionDatum label="Impact">{packet.impact}</CorrectionDatum>
+        <CorrectionDatum label="Required correction">{packet.requiredCorrection}</CorrectionDatum>
+        <CorrectionDatum label="Scope boundary">{packet.scopeBoundary}</CorrectionDatum>
+        <CorrectionDatum label="Re-verification">{packet.reverification}</CorrectionDatum>
+      </dl>
+
+      <div className="mt-4 border-t border-[var(--gray-05)] pt-4">
+        <h4 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Affected context and reproduction
+        </h4>
+        <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-3">
+          <CorrectionDatum label="Modality" mono>{packet.affectedContext.modality}</CorrectionDatum>
+          <CorrectionDatum label="Environment" mono>
+            {packet.affectedContext.environmentKind ?? "Not recorded"}
+          </CorrectionDatum>
+          <CorrectionDatum label="Flow" mono>{packet.affectedContext.flow ?? "Not recorded"}</CorrectionDatum>
+        </dl>
+        {packet.affectedContext.reproduction == null ? (
+          <p className="mt-3 text-xs text-[var(--gray-09)]">No bounded reproduction was recorded.</p>
+        ) : (
+          <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">
+            {JSON.stringify(packet.affectedContext.reproduction, null, 2)}
+          </pre>
+        )}
+      </div>
+
+      <div className="mt-4 border-t border-[var(--gray-05)] pt-4">
+        <h4 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Evidence custody
+        </h4>
+        <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Evidence reference" mono>{packet.evidence.evidenceRef}</CorrectionDatum>
+          <CorrectionDatum label="Artifact key" mono>{packet.evidence.artifactKey ?? "Not recorded"}</CorrectionDatum>
+          <CorrectionDatum label="Execution ID" mono>{packet.evidence.executionId ?? "Not recorded"}</CorrectionDatum>
+          <CorrectionDatum label="Preview boot ID" mono>{packet.evidence.previewBootId ?? "Not recorded"}</CorrectionDatum>
+        </dl>
+      </div>
+
+      <details className="mt-4 border-t border-[var(--gray-05)] pt-4">
+        <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+          Packet identity
+        </summary>
+        <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Packet ID" mono>{packet.packetId}</CorrectionDatum>
+          <CorrectionDatum label="Format" mono>{packet.kind} v{packet.version}</CorrectionDatum>
+          <CorrectionDatum label="Workspace ID" mono>{packet.workspaceId}</CorrectionDatum>
+          <CorrectionDatum label="Record ID" mono>{packet.recordId}</CorrectionDatum>
+          <CorrectionDatum label="Repository / PR" mono>{packet.repo}#{packet.prNumber}</CorrectionDatum>
+          <CorrectionDatum label="Exact head" mono>{packet.headSha}</CorrectionDatum>
+          <CorrectionDatum label="Review job ID" mono>{packet.jobId}</CorrectionDatum>
+          <CorrectionDatum label="Acceptance Contract" mono>
+            {packet.acceptanceContract.id} v{packet.acceptanceContract.version}
+          </CorrectionDatum>
+          <CorrectionDatum label="Basis" mono>{packet.basis}</CorrectionDatum>
+        </dl>
+      </details>
+    </article>
+  );
+}
+
+function correctionUnavailableCopy(
+  correctionPackets: Exclude<AcceptanceCorrectionPacketsEnvelope, { kind: "current" }>
+): { label: string; message: string } {
+  if (correctionPackets.kind === "not_found") {
+    return {
+      label: "Unavailable",
+      message: "Correction custody was not found for this Change Record.",
+    };
+  }
+  if (correctionPackets.kind === "not_current") {
+    return {
+      label: "Unavailable for the current head",
+      message: "A stable authoritative current PR head and head cycle could not be read. Historical packet events remain in the lifecycle timeline.",
+    };
+  }
+  switch (correctionPackets.reason) {
+    case "no_correction_packets":
+      return {
+        label: "No current corrections",
+        message: "No failed or not-proven correction packet is recorded for the current exact head and head cycle.",
+      };
+    case "review_job_unavailable":
+      return {
+        label: "Not ready",
+        message: "The current exact-head cycle does not have a matching review job yet.",
+      };
+    case "confirmed_contract_unavailable":
+      return {
+        label: "Not ready",
+        message: "The required single confirmed Acceptance Contract is unavailable for the current head cycle.",
+      };
+    case "invalid_packet_custody":
+      return {
+        label: "Unavailable",
+        message: "Stored correction packet custody could not be validated, so no current packet set is presented.",
+      };
+  }
+}
+
+export function CorrectionsSection({
+  correctionPackets,
+}: {
+  correctionPackets: AcceptanceCorrectionPacketsEnvelope;
+}) {
+  if (correctionPackets.kind !== "current") {
+    const state = correctionUnavailableCopy(correctionPackets);
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Corrections</h2>
+        <p className="mt-3 text-sm font-medium text-[var(--gray-12)]">{state.label}</p>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">{state.message}</p>
+      </section>
+    );
+  }
+
+  const { binding } = correctionPackets;
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+            Corrections ({correctionPackets.packets.length})
+          </h2>
+          <span className="rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-2 py-1 text-xs font-medium text-[var(--gray-11)]">
+            Current exact head and cycle
+          </span>
+        </div>
+        <p className="mt-2 text-xs text-[var(--gray-09)]">
+          Validated immutable packets for the Change Record&apos;s authoritative current PR head and head cycle.
+        </p>
+      </div>
+
+      <div className="px-4 py-4">
+        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+          <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
+          <CorrectionDatum label="Exact head" mono>{binding.headSha}</CorrectionDatum>
+          <CorrectionDatum label="Head cycle ID" mono>{binding.headCycleId}</CorrectionDatum>
+          <CorrectionDatum label="Authority generation" mono>{binding.authorityGeneration}</CorrectionDatum>
+          <CorrectionDatum label="Review job ID" mono>{binding.reviewJobId}</CorrectionDatum>
+          <CorrectionDatum label="Acceptance Contract" mono>
+            {binding.acceptanceContract.id} v{binding.acceptanceContract.version}
+          </CorrectionDatum>
+        </dl>
+
+        <details className="mt-4">
+          <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+            Set custody identity
+          </summary>
+          <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+            <CorrectionDatum label="Workspace ID" mono>{binding.workspaceId}</CorrectionDatum>
+            <CorrectionDatum label="Record ID" mono>{binding.recordId}</CorrectionDatum>
+            <CorrectionDatum label="Contract SHA-256" mono>{binding.acceptanceContract.sha256}</CorrectionDatum>
+            <CorrectionDatum label="Packet set SHA-256" mono>{correctionPackets.packetSetSha256}</CorrectionDatum>
+            <CorrectionDatum label="Packet payload set SHA-256" mono>
+              {correctionPackets.correctionPacketPayloadSetSha256}
+            </CorrectionDatum>
+            <CorrectionDatum label="Packet IDs" mono>{correctionPackets.packetIds.join(", ")}</CorrectionDatum>
+          </dl>
+        </details>
+
+        <div className="mt-5 flex flex-col gap-3">
+          {correctionPackets.packets.map((packet) => (
+            <CorrectionPacketCard key={packet.packetId} packet={packet} />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   return (
     <section>
@@ -204,7 +737,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!response.ok) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        if (!body.record || !Array.isArray(body.events)) {
+        if (!body.record || !Array.isArray(body.events)
+          || !isCorrectionPacketsEnvelope(body.correctionPackets)) {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -258,6 +792,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         </p>
       </div>
       <ChangeRecordAnchors record={data.record} />
+      <CorrectionsSection correctionPackets={data.correctionPackets} />
       <LifecycleTimeline events={data.events} />
     </div>
   );

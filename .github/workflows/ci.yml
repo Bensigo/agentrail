@@ -108,6 +108,8 @@ jobs:
           version: 9
       - name: workspace — install
         run: pnpm install --frozen-lockfile
+      - name: mcp — build and bounded correction-read tests
+        run: pnpm --filter @agentrail/mcp typecheck && pnpm --filter @agentrail/mcp build && pnpm --filter @agentrail/mcp test
       # @agentrail/db-postgres imports @agentrail/github-app via its built dist
       # (one-directional package dep, GitHub App identity arc) — build + test the
       # pure client first or the db-postgres tsc build cannot resolve it.
@@ -143,6 +145,10 @@ jobs:
           app/api/v1/webhooks/github-actions/claude-ack/route.test.ts
           app/api/v1/webhooks/github-actions/claude-repair-observation/route.test.ts
           app/api/v1/runner/pr-review/route.test.ts
+          app/api/v1/runner/change-record/pr/route.test.ts
+          app/api/v1/agent/acceptance-correction-packets/route.test.ts
+          'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/route.test.ts'
+          'app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.test.tsx'
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts

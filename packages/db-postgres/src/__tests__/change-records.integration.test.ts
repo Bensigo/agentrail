@@ -69,6 +69,7 @@ import {
   githubClaudeRepairObservationAudience,
   GithubClaudeAgentAcknowledgementConflictError,
   GithubClaudeRepairObservationConflictError,
+  readCurrentAcceptanceCorrectionPackets,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -205,6 +206,88 @@ function completeContract(overrides: Record<string, unknown> = {}): Record<strin
     unresolvedQuestions: [],
     ...overrides,
   };
+}
+
+function exactCorrectionPacket(input: {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion?: number;
+  observed?: string;
+}) {
+  const acceptanceContractVersion = input.acceptanceContractVersion ?? 1;
+  const packetId = reviewJobCorrectionPacketId({
+    jobId: input.jobId,
+    criterionId: "AC-1",
+    headSha: input.headSha,
+    recordId: input.recordId,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion,
+  });
+  return {
+    kind: "review_job_correction_packet",
+    version: 1,
+    packetId,
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    recordId: input.recordId,
+    jobId: input.jobId,
+    acceptanceContract: { id: input.acceptanceContractId, version: acceptanceContractVersion },
+    criterion: { id: "AC-1", snapshot: "A user can save a filter" },
+    basis: "acceptance_contract",
+    state: "failed",
+    expected: "A user can save a filter",
+    observed: input.observed ?? "The saved filter was not retained.",
+    affectedContext: {
+      modality: "ui",
+      environmentKind: "isolated_preview",
+      flow: "Save a filter, reload, and inspect it.",
+      reproduction: {
+        modality: "ui",
+        steps: [
+          { action: "open", path: "/filters" },
+          { action: "expect_text", text: "Saved filters" },
+          { action: "screenshot", label: "saved-filter" },
+        ],
+      },
+    },
+    evidence: {
+      evidenceRef: "ui-execution:execution-1",
+      artifactKey: "review/ui/execution-1.png",
+      executionId: "execution-1",
+      previewBootId: "preview-boot-1",
+    },
+    scopeBoundary: `Only AC-1 for ${input.repo}#${input.prNumber} at ${input.headSha}.`,
+    impact: "The server-attested UI receipt shows this confirmed criterion failed on the exact head.",
+    requiredCorrection: "Make the persisted UI flow retain the saved filter.",
+    reverification: "Rerun the persisted UI plan against the next exact head.",
+  };
+}
+
+async function appendExactCurrentCorrectionPacket(input: Parameters<typeof exactCorrectionPacket>[0]) {
+  await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, input.jobId));
+  const packet = exactCorrectionPacket(input);
+  await appendCurrentReviewJobEventsAtomically({
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    jobId: input.jobId,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    events: [{
+      eventKey: `review:correction:${input.jobId}:AC-1`,
+      stage: "review",
+      actor: "reviewer-of-record",
+      payloadRef: packet,
+    }],
+  });
+  return packet;
 }
 
 describe.skipIf(!DB_AVAILABLE)(
@@ -1086,6 +1169,211 @@ describe.skipIf(!DB_AVAILABLE)(
         .rejects.toThrow("current PR head");
       expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
         .toMatchObject({ currentPrHeadSha: nextHead, headShas: [headSha, nextHead] });
+    });
+
+    it("reads only the complete current correction packet custody and fails closed for foreign or malformed rows", async () => {
+      const repo = "acme/widgets";
+      const prNumber = 145;
+      const headSha = "1".repeat(40);
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo, workKey: "current-correction-packet-read",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const current = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo, prNumber, headSha,
+        event: "opened", deliveryId: "current-correction-packet-open", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (current.kind !== "advanced") throw new Error("expected current correction packet head");
+
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "no_correction_packets" });
+
+      const packet = await appendExactCurrentCorrectionPacket({
+        workspaceId: wsId, recordId: draft.record.id, jobId: current.jobId,
+        repo, prNumber, headSha, acceptanceContractId: draft.contract.id,
+      });
+      const expectedContractSha256 = acceptanceContractSha256({
+        acceptanceContractId: draft.contract.id,
+        acceptanceContractVersion: draft.contract.version,
+        contract: draft.contract.contract,
+      });
+      const result = await readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      });
+      expect(result).toEqual({
+        kind: "current",
+        binding: {
+          workspaceId: wsId,
+          recordId: draft.record.id,
+          reviewJobId: current.jobId,
+          repo,
+          prNumber,
+          headSha,
+          headCycleId: current.jobId,
+          authorityGeneration: 1,
+          acceptanceContract: {
+            id: draft.contract.id,
+            version: draft.contract.version,
+            sha256: expectedContractSha256,
+          },
+        },
+        packetIds: [packet.packetId],
+        packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: [packet.packetId] }),
+        correctionPacketPayloadSetSha256: acceptanceCorrectionPacketPayloadSetSha256({ packets: [packet] }),
+        packets: [packet],
+      });
+
+      const foreignWorkspace = (await db.insert(workspaces).values({
+        name: "foreign current packet workspace",
+        slug: `foreign-current-packets-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        await expect(readCurrentAcceptanceCorrectionPackets({
+          workspaceId: foreignWorkspace.id,
+          recordId: draft.record.id,
+        })).resolves.toEqual({ kind: "not_found" });
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
+      }
+
+      await db.update(acceptanceContracts).set({ status: "draft" })
+        .where(eq(acceptanceContracts.id, draft.contract.id));
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "confirmed_contract_unavailable" });
+      await db.update(acceptanceContracts).set({ status: "confirmed" })
+        .where(eq(acceptanceContracts.id, draft.contract.id));
+
+      const packetEventWhere = and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, `review:correction:${current.jobId}:AC-1`),
+      );
+      await db.update(changeRecordEvents).set({ actor: "server:forged-packet" }).where(packetEventWhere);
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_packet_custody" });
+      await db.update(changeRecordEvents).set({ actor: "reviewer-of-record", stage: "builder_handoff" })
+        .where(packetEventWhere);
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_packet_custody" });
+      await db.update(changeRecordEvents).set({
+        stage: "review",
+        payloadRef: {
+          ...packet,
+          criterion: { id: "AC-1", snapshot: "A drifted criterion snapshot" },
+          expected: "A drifted criterion snapshot",
+        },
+      }).where(packetEventWhere);
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "invalid_packet_custody" });
+      await db.update(changeRecordEvents).set({ payloadRef: packet }).where(packetEventWhere);
+
+      await appendChangeRecordEvent({
+        recordId: draft.record.id,
+        eventKey: `review:correction:${current.jobId}:AC-FORGED`,
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: { ...packet, packetId: `correction-${"f".repeat(48)}` },
+      });
+      const partial = await readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      });
+      expect(partial).toEqual({ kind: "not_ready", reason: "invalid_packet_custody" });
+      expect(partial).not.toMatchObject({ kind: "current", packetIds: [packet.packetId] });
+    });
+
+    it("does not inherit or revive historical correction packets across A-to-B-to-A head cycles", async () => {
+      const repo = "acme/widgets";
+      const prNumber = 146;
+      const headA = "a".repeat(40);
+      const headB = "b".repeat(40);
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo, workKey: "correction-packet-cycle-revisit",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const a1 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo, prNumber, headSha: headA,
+        event: "opened", deliveryId: "correction-packet-cycle-a1", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (a1.kind !== "advanced") throw new Error("expected A1 correction packet cycle");
+      const packetA1 = await appendExactCurrentCorrectionPacket({
+        workspaceId: wsId, recordId: draft.record.id, jobId: a1.jobId,
+        repo, prNumber, headSha: headA, acceptanceContractId: draft.contract.id,
+        observed: "A1 did not retain the filter.",
+      });
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current", binding: { headSha: headA, headCycleId: a1.jobId },
+        packetIds: [packetA1.packetId],
+      });
+
+      const [racingRead, b] = await Promise.all([
+        readCurrentAcceptanceCorrectionPackets({ workspaceId: wsId, recordId: draft.record.id }),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId, recordId: draft.record.id, repo, prNumber, headSha: headB,
+          event: "synchronize", deliveryId: "correction-packet-cycle-b", admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB }, source: "github_webhook",
+        }),
+      ]);
+      if (b.kind !== "advanced") throw new Error("expected B correction packet cycle");
+      if (racingRead.kind === "current") {
+        expect(racingRead).toMatchObject({
+          binding: { headSha: headA, headCycleId: a1.jobId },
+          packetIds: [packetA1.packetId],
+        });
+      } else {
+        expect(racingRead).toEqual({ kind: "not_ready", reason: "no_correction_packets" });
+      }
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "no_correction_packets" });
+
+      const a2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo, prNumber, headSha: headA,
+        event: "synchronize", deliveryId: "correction-packet-cycle-a2", admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA }, source: "github_webhook",
+      });
+      if (a2.kind !== "advanced") throw new Error("expected A2 correction packet cycle");
+      expect(a2.jobId).not.toBe(a1.jobId);
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_ready", reason: "no_correction_packets" });
+
+      const packetA2 = await appendExactCurrentCorrectionPacket({
+        workspaceId: wsId, recordId: draft.record.id, jobId: a2.jobId,
+        repo, prNumber, headSha: headA, acceptanceContractId: draft.contract.id,
+        observed: "A2 still did not retain the filter.",
+      });
+      expect(packetA2.packetId).not.toBe(packetA1.packetId);
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        binding: { headSha: headA, headCycleId: a2.jobId, reviewJobId: a2.jobId },
+        packetIds: [packetA2.packetId],
+        packets: [expect.objectContaining({ jobId: a2.jobId, observed: "A2 still did not retain the filter." })],
+      });
+
+      await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent({
+        workspaceId: wsId, recordId: draft.record.id, repo, prNumber,
+        headSha: headA, event: "closed", deliveryId: "correction-packet-cycle-closed",
+        source: "github_webhook",
+      });
+      await expect(readCurrentAcceptanceCorrectionPackets({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toEqual({ kind: "not_current" });
     });
 
     it("keeps draft opened/reopened heads jobless and fail-closes a non-synchronize head change", async () => {

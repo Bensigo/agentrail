@@ -7133,11 +7133,11 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(events).toHaveLength(2);
     });
 
-    it("records the exact root Cargo profile and preserves its evidence through R10.2", async () => {
+    it("refuses fake-digest Cargo evidence and mints no approval or Pack events", async () => {
       const headSha = "1".repeat(40);
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
-        workKey: "dependency-observation-cargo-profile",
+        workKey: "dependency-observation-cargo-withdrawn-profile",
         prNumber: 560,
         headSha,
         manifestPath: "Cargo.toml",
@@ -7145,28 +7145,13 @@ describe.skipIf(!DB_AVAILABLE)(
           "[package]",
           'name = "widgets"',
           'version = "0.1.0"',
-          'edition = "2024"',
           "",
           "[dependencies]",
           'serde = "^1.0.203"',
           "",
         ].join("\n"),
         lockfilePath: "Cargo.lock",
-        lockfileContent: [
-          "version = 4",
-          "",
-          "[[package]]",
-          'name = "widgets"',
-          'version = "0.1.0"',
-          'dependencies = ["serde"]',
-          "",
-          "[[package]]",
-          'name = "serde"',
-          'version = "1.0.203"',
-          'source = "registry+https://github.com/rust-lang/crates.io-index"',
-          `checksum = "${"a".repeat(64)}"`,
-          "",
-        ].join("\n"),
+        lockfileContent: "# arbitrary lockfile bytes are not authenticated registry evidence\n",
         cargoConfigurationReads: {
           ".cargo/config.toml": "path_not_found",
           ".cargo/config": "path_not_found",
@@ -7175,7 +7160,6 @@ describe.skipIf(!DB_AVAILABLE)(
         compiledPackPolicyVersion: "bounded-exact-ranges-v4",
       });
       if (fixture.lockfileBlobSha === null) throw new Error("expected Cargo.lock custody");
-      expect(JSON.stringify(fixture.pack.manifest)).not.toContain(".cargo/config");
       const evidence = cargoAcceptanceDependencyObservationInput({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
@@ -7185,478 +7169,147 @@ describe.skipIf(!DB_AVAILABLE)(
         lockfileBlobSha: fixture.lockfileBlobSha,
       });
 
-      const recorded = await recordAcceptanceDependencyObservation(evidence);
-      expect(recorded).toMatchObject({
+      expect(evidence.runtime.evidenceSha256).toBe("1".repeat(64));
+      expect(evidence.packageManager.evidenceSha256).toBe("2".repeat(64));
+      expect(evidence.lockfile.evidenceSha256).toBe("3".repeat(64));
+      expect(evidence.security.reportSha256).toBe("4".repeat(64));
+      const refused = await recordAcceptanceDependencyObservation(evidence);
+      expect(refused).toMatchObject({
         kind: "recorded",
         observation: {
-          status: "observed",
-          reasons: [],
-          candidate: {
-            identity: evidence.candidate.identity,
-            package: "serde",
-            dependencyKind: "dependencies",
-            specifier: "^1.0.203",
-            currentVersion: "1.0.203",
-            targetVersion: "1.0.204",
-          },
-          runtime: { identity: evidence.runtime.identity, version: "1.97.1" },
-          packageManager: {
-            name: "cargo",
-            version: "1.97.1",
-            profile: "cargo_lock_registry_only_v1",
-            updateArgv: [
-              "cargo", "update", "--manifest-path", "Cargo.toml",
-              "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
-              "--precise", "1.0.204",
-            ],
-          },
-          manifest: { path: "Cargo.toml" },
-          lockfile: { path: "Cargo.lock", disposition: "present" },
-          security: { provider: "osv", reference: "osv:crates.io:serde@1.0.204" },
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+          candidate: { identity: evidence.candidate.identity },
         },
       });
-      if (recorded.kind !== "recorded") throw new Error("expected Cargo observation");
-      await expect(recordAcceptanceDependencyObservation(evidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: { eventId: recorded.observation.eventId, status: "observed" },
+      if (refused.kind !== "recorded") throw new Error("expected Cargo profile refusal");
+
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({
+        workspaceId: wsId,
+        userId: ownerId,
+        role: "owner",
       });
-      await expect(recordAcceptanceDependencyObservation({
-        ...evidence,
-        security: { ...evidence.security, reportSha256: "5".repeat(64) },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: refused.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({
+        kind: "observation_not_eligible",
+        reason: "observation_not_observed",
+      });
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        observations: [{
+          observation: {
+            eventId: refused.observation.eventId,
+            status: "refused_unsupported_profile",
+          },
+          approval: null,
+          externalBuilderPack: null,
+        }],
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+    });
+
+    it("retains a former observed Cargo row but denies replay, current read, approval, and Pack authority", async () => {
+      const headSha = "2".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-cargo-historical-observed",
+        prNumber: 561,
+        headSha,
+        manifestPath: "Cargo.toml",
+        manifestContent: [
+          "[package]",
+          'name = "widgets"',
+          'version = "0.1.0"',
+          "",
+          "[dependencies]",
+          'serde = "^1.0.203"',
+          "",
+        ].join("\n"),
+        lockfilePath: "Cargo.lock",
+        lockfileContent: "# historical Cargo.lock custody\n",
+        cargoConfigurationReads: {
+          ".cargo/config.toml": "path_not_found",
+          ".cargo/config": "path_not_found",
+        },
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected historical Cargo.lock");
+      const evidence = cargoAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+      const historical = await appendHistoricalDependencyObservationV2(evidence, {
+        status: "observed",
+        reasons: [],
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.id, historical.event.id),
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+      ))).toHaveLength(1);
 
       const selected = await selectDependencyExternalBuilderRoute({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
         repo: fixture.repo,
         adapter: "github_codex",
-        configurationVersion: 7,
       });
+      expect(selected.route.adapter).toBe("github_codex");
       const ownerId = randomUUID();
-      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
-      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
-        workspaceId: wsId,
-        recordId: fixture.draft.record.id,
-        observationEventId: recorded.observation.eventId,
-        approvedBy: `user:${ownerId}`,
-      });
-      expect(approved).toMatchObject({
-        kind: "approved",
-        observation: { eventId: recorded.observation.eventId, candidate: evidence.candidate },
-        externalBuilderPack: {
-          candidate: evidence.candidate,
-          runtime: evidence.runtime,
-          packageManager: evidence.packageManager,
-          manifest: evidence.manifest,
-          lockfile: evidence.lockfile,
-          security: evidence.security,
-          route: { id: selected.route.id, adapter: "github_codex", configurationVersion: 7 },
-          deliveryAuthority: "not_granted",
-          reviewRequirement: "exact_head_r7_reentry",
-        },
-      });
-    }, 20_000);
-
-    it("derives Cargo configuration custody and refuses runner, lock, security, and source drift", async () => {
-      const manifestContent = [
-        "[package]", 'name = "widgets"', 'version = "0.1.0"', 'edition = "2024"',
-        "", "[dependencies]", 'serde = "^1.0.203"', "",
-      ].join("\n");
-      const lockfileContent = [
-        "version = 4", "", "[[package]]", 'name = "widgets"', 'version = "0.1.0"',
-        'dependencies = ["serde"]', "", "[[package]]", 'name = "serde"',
-        'version = "1.0.203"',
-        'source = "registry+https://github.com/rust-lang/crates.io-index"',
-        `checksum = "${"b".repeat(64)}"`, "",
-      ].join("\n");
-      const custodyCases = [
-        {
-          key: "direct-record",
-          reads: { ".cargo/config.toml": "path_not_found", ".cargo/config": "record" },
-          changed: undefined,
-          status: "refused_unsafe_runtime",
-          reason: "unsafe_cargo_configuration_present",
-        },
-        {
-          key: "unsafe-content",
-          reads: { ".cargo/config.toml": "unsafe_content", ".cargo/config": "path_not_found" },
-          changed: undefined,
-          status: "refused_unsafe_runtime",
-          reason: "unsafe_cargo_configuration_present",
-        },
-        {
-          key: "changed-overlay",
-          reads: { ".cargo/config.toml": "path_not_found" },
-          changed: { ".cargo/config": "[source.crates-io]\nreplace-with = 'mirror'\n" },
-          status: "refused_unsafe_runtime",
-          reason: "unsafe_cargo_configuration_present",
-        },
-        {
-          key: "missing-receipt",
-          reads: { ".cargo/config.toml": "path_not_found" },
-          changed: undefined,
-          status: "not_proven",
-          reason: "cargo_configuration_absence_not_proven",
-        },
-      ] as const;
-      for (const [index, item] of custodyCases.entries()) {
-        const headSha = `${index + 2}`.repeat(40);
-        const fixture = await createAcceptanceDependencyObservationFixture({
-          workspaceId: wsId,
-          workKey: `dependency-observation-cargo-config-${item.key}`,
-          prNumber: 561 + index,
-          headSha,
-          manifestPath: "Cargo.toml",
-          manifestContent,
-          lockfilePath: "Cargo.lock",
-          lockfileContent,
-          cargoConfigurationReads: item.reads,
-          cargoConfigurationChanged: item.changed,
-        });
-        if (fixture.lockfileBlobSha === null) throw new Error("expected Cargo config lock custody");
-        await expect(recordAcceptanceDependencyObservation(cargoAcceptanceDependencyObservationInput({
-          workspaceId: wsId,
-          recordId: fixture.draft.record.id,
-          compiledPackId: fixture.pack.id,
-          headSha,
-          manifestBlobSha: fixture.manifestBlobSha,
-          lockfileBlobSha: fixture.lockfileBlobSha,
-        }))).resolves.toMatchObject({
-          kind: "recorded",
-          observation: { status: item.status, reasons: [item.reason] },
-        });
-      }
-
-      const oldPackHeadSha = "a".repeat(40);
-      const oldPack = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-cargo-old-pack",
-        prNumber: 569,
-        headSha: oldPackHeadSha,
-        manifestPath: "Cargo.toml",
-        manifestContent,
-        lockfilePath: "Cargo.lock",
-        lockfileContent,
-        cargoConfigurationReads: {
-          ".cargo/config.toml": "path_not_found",
-          ".cargo/config": "path_not_found",
-        },
-        compiledPackCompilerVersion: "exact-head-correction-pack-v5",
-        compiledPackPolicyVersion: "bounded-exact-ranges-v3",
-      });
-      if (oldPack.lockfileBlobSha === null) throw new Error("expected old Cargo Pack lock custody");
-      const oldPackRecorded = await recordAcceptanceDependencyObservation(
-        cargoAcceptanceDependencyObservationInput({
-          workspaceId: wsId,
-          recordId: oldPack.draft.record.id,
-          compiledPackId: oldPack.pack.id,
-          headSha: oldPackHeadSha,
-          manifestBlobSha: oldPack.manifestBlobSha,
-          lockfileBlobSha: oldPack.lockfileBlobSha,
-        }),
-      );
-      expect(oldPackRecorded).toMatchObject({
-        kind: "recorded",
-        observation: {
-          status: "not_proven",
-          reasons: ["cargo_configuration_absence_not_proven"],
-        },
-      });
-      if (oldPackRecorded.kind !== "recorded") throw new Error("expected old Cargo Pack observation");
-      await selectDependencyExternalBuilderRoute({
-        workspaceId: wsId,
-        recordId: oldPack.draft.record.id,
-        repo: oldPack.repo,
-        adapter: "github_codex",
-      });
-      const oldPackOwnerId = randomUUID();
       await db.insert(workspaceMemberships).values({
         workspaceId: wsId,
-        userId: oldPackOwnerId,
+        userId: ownerId,
         role: "owner",
       });
+
+      await expect(recordAcceptanceDependencyObservation(evidence))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
       await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
         workspaceId: wsId,
-        recordId: oldPack.draft.record.id,
-        observationEventId: oldPackRecorded.observation.eventId,
-        approvedBy: `user:${oldPackOwnerId}`,
+        recordId: fixture.draft.record.id,
+        observationEventId: historical.event.id,
+        approvedBy: `user:${ownerId}`,
       })).resolves.toEqual({
-        kind: "observation_not_eligible",
-        reason: "observation_not_observed",
+        kind: "not_ready",
+        reason: "invalid_compiled_pack_custody",
       });
-      expect(await db.select().from(changeRecordEvents).where(and(
-        eq(changeRecordEvents.recordId, oldPack.draft.record.id),
-        eq(changeRecordEvents.stage, "dependency_observation"),
-      ))).toHaveLength(1);
-      expect(await db.select().from(changeRecordEvents).where(and(
-        eq(changeRecordEvents.recordId, oldPack.draft.record.id),
-        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
-      ))).toHaveLength(0);
-
-      const headSha = "6".repeat(40);
-      const fixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-cargo-refusals",
-        prNumber: 565,
-        headSha,
-        manifestPath: "Cargo.toml",
-        manifestContent,
-        lockfilePath: "Cargo.lock",
-        lockfileContent,
-        cargoConfigurationReads: {
-          ".cargo/config.toml": "path_not_found",
-          ".cargo/config": "path_not_found",
-        },
-        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
-        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
-      });
-      if (fixture.lockfileBlobSha === null) throw new Error("expected Cargo refusal lock custody");
-      const base = (targetVersion: string) => cargoAcceptanceDependencyObservationInput({
+      await expect(readCurrentAcceptanceDependencyObservations({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
-        compiledPackId: fixture.pack.id,
-        headSha,
-        manifestBlobSha: fixture.manifestBlobSha,
-        lockfileBlobSha: fixture.lockfileBlobSha!,
-        targetVersion,
+      })).resolves.toEqual({
+        kind: "not_ready",
+        reason: "invalid_compiled_pack_custody",
       });
-      const argvDrift = base("1.0.205");
-      await expect(recordAcceptanceDependencyObservation({
-        ...argvDrift,
-        packageManager: {
-          ...argvDrift.packageManager,
-          updateArgv: ["cargo", "update", "-p", "serde", "--precise", "1.0.205"],
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"] },
-      });
-      const runtimeDrift = base("1.0.206");
-      await expect(recordAcceptanceDependencyObservation({
-        ...runtimeDrift,
-        runtime: { ...runtimeDrift.runtime, disposition: "unsafe" as const, version: "1.97.0" },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
-      });
-      const managerDrift = base("1.0.207");
-      await expect(recordAcceptanceDependencyObservation({
-        ...managerDrift,
-        packageManager: {
-          ...managerDrift.packageManager,
-          disposition: "unsafe" as const,
-          version: "1.97.0",
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager"] },
-      });
-      const affected = base("1.0.208");
-      await expect(recordAcceptanceDependencyObservation({
-        ...affected,
-        security: { ...affected.security, disposition: "affected" as const },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_security", reasons: ["security_affected"] },
-      });
-      const sourceDrift = base("1.0.209");
-      await expect(recordAcceptanceDependencyObservation({
-        ...sourceDrift,
-        manifest: { ...sourceDrift.manifest, blobSha: "f".repeat(40) },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "not_proven", reasons: ["manifest_source_not_proven"] },
-      });
-
-      const strictCases = [
-        (() => { const value = base("1.0.210"); return { ...value, candidate: { ...value.candidate, package: "Serde" } }; })(),
-        (() => { const value = base("1.0.211"); return { ...value, candidate: { ...value.candidate, package: "con" } }; })(),
-        (() => { const value = base("1.0.212"); return { ...value, candidate: { ...value.candidate, package: `a${"b".repeat(64)}` } }; })(),
-        (() => { const value = base("1.0.213"); return { ...value, candidate: { ...value.candidate, dependencyKind: "devDependencies" } }; })(),
-        (() => { const value = base("1.0.214"); return { ...value, candidate: { ...value.candidate, specifier: "~1.0.203" } }; })(),
-        (() => { const value = base("2.0.0"); return value; })(),
-        (() => { const value = base("1.0.215"); return { ...value, manifest: { ...value.manifest, path: "nested/Cargo.toml" } }; })(),
-        (() => { const value = base("1.0.216"); return { ...value, security: { ...value.security, reference: "osv:crates.io:serde@v1.0.216" } }; })(),
-        (() => { const value = base("1.0.217"); return { ...value, runtime: { ...value.runtime, version: "1.97.0" } }; })(),
-        (() => { const value = base("1.0.218"); return { ...value, packageManager: { ...value.packageManager, version: "1.97.0" } }; })(),
-      ];
-      for (const malformed of strictCases) {
-        await expect(recordAcceptanceDependencyObservation(malformed))
-          .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
-      }
-      const refusalEvents = await db.select().from(changeRecordEvents).where(and(
+      expect(await db.select().from(changeRecordEvents).where(and(
         eq(changeRecordEvents.recordId, fixture.draft.record.id),
-        eq(changeRecordEvents.stage, "dependency_observation"),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+      const retained = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.id, historical.event.id),
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
       ));
-      expect(refusalEvents).toHaveLength(5);
-
-      const missingHeadSha = "7".repeat(40);
-      const missing = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-cargo-lockfile-missing",
-        prNumber: 566,
-        headSha: missingHeadSha,
-        manifestPath: "Cargo.toml",
-        manifestContent,
-        lockfilePath: "Cargo.lock",
-        lockfileReadReason: "path_not_found",
-        cargoConfigurationReads: {
-          ".cargo/config.toml": "path_not_found",
-          ".cargo/config": "path_not_found",
-        },
-        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
-        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      expect(retained).toHaveLength(1);
+      expect(retained[0]!.payloadRef).toMatchObject({
+        candidate: { identity: evidence.candidate.identity },
+        status: "observed",
+        reasons: [],
       });
-      await expect(recordAcceptanceDependencyObservation({
-        ...cargoAcceptanceDependencyObservationInput({
-          workspaceId: wsId,
-          recordId: missing.draft.record.id,
-          compiledPackId: missing.pack.id,
-          headSha: missingHeadSha,
-          manifestBlobSha: missing.manifestBlobSha,
-          lockfileBlobSha: "0".repeat(40),
-        }),
-        lockfile: {
-          disposition: "missing" as const,
-          path: "Cargo.lock",
-          blobSha: null,
-          evidenceSha256: "3".repeat(64),
-        },
-      })).resolves.toMatchObject({
-        kind: "recorded",
-        observation: { status: "refused_lockfile", reasons: ["lockfile_missing"] },
-      });
-    }, 30_000);
-
-    it("replays frozen pre-support Cargo v2 refusals without admitting a new broad body", async () => {
-      const validHeadSha = "8".repeat(40);
-      const validFixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-historical-unsupported-cargo-valid",
-        prNumber: 567,
-        headSha: validHeadSha,
-        manifestPath: "Cargo.toml",
-        manifestContent: [
-          "[package]", 'name = "widgets"', 'version = "0.1.0"', 'edition = "2024"',
-          "", "[dependencies]", 'serde = "^1.0.203"', "",
-        ].join("\n"),
-        lockfilePath: "Cargo.lock",
-        lockfileContent: [
-          "version = 4", "", "[[package]]", 'name = "widgets"', 'version = "0.1.0"',
-          'dependencies = ["serde"]', "", "[[package]]", 'name = "serde"',
-          'version = "1.0.203"',
-          'source = "registry+https://github.com/rust-lang/crates.io-index"',
-          `checksum = "${"c".repeat(64)}"`, "",
-        ].join("\n"),
-        cargoConfigurationReads: {
-          ".cargo/config.toml": "path_not_found",
-          ".cargo/config": "path_not_found",
-        },
-      });
-      if (validFixture.lockfileBlobSha === null) throw new Error("expected historical Cargo.lock");
-      const validEvidence = cargoAcceptanceDependencyObservationInput({
-        workspaceId: wsId,
-        recordId: validFixture.draft.record.id,
-        compiledPackId: validFixture.pack.id,
-        headSha: validHeadSha,
-        manifestBlobSha: validFixture.manifestBlobSha,
-        lockfileBlobSha: validFixture.lockfileBlobSha,
-      });
-      const validHistorical = await appendHistoricalUnsupportedDependencyObservationV2(validEvidence);
-      await expect(recordAcceptanceDependencyObservation(validEvidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: {
-          eventId: validHistorical.event.id,
-          status: "refused_unsupported_profile",
-          reasons: ["unsupported_manager_profile"],
-        },
-      });
-
-      const broadHeadSha = "9".repeat(40);
-      const broadFixture = await createAcceptanceDependencyObservationFixture({
-        workspaceId: wsId,
-        workKey: "dependency-observation-historical-unsupported-cargo-broad",
-        prNumber: 568,
-        headSha: broadHeadSha,
-        manifestPath: "services/api/Cargo.toml",
-        manifestContent: "[dependencies]\nLOCAL_CRATE = '*'\n",
-        lockfilePath: "services/api/Cargo.lock",
-        lockfileContent: "legacy opaque lock body\n",
-      });
-      if (broadFixture.lockfileBlobSha === null) throw new Error("expected broad historical Cargo.lock");
-      const identity = {
-        ecosystem: "rust",
-        manager: "cargo",
-        profile: "cargo_lock_registry_only_v1",
-      };
-      const broadEvidence: RecordAcceptanceDependencyObservationInput = {
-        workspaceId: wsId,
-        recordId: broadFixture.draft.record.id,
-        compiledPackId: broadFixture.pack.id,
-        candidate: {
-          identity,
-          package: "LOCAL_CRATE",
-          dependencyKind: "build-dependencies",
-          specifier: "branch-main",
-          currentVersion: "release-1",
-          targetVersion: "release-2",
-        },
-        runtime: {
-          identity,
-          disposition: "safe",
-          version: "rust-release-legacy",
-          evidenceSha256: "1".repeat(64),
-        },
-        packageManager: {
-          disposition: "safe",
-          name: "cargo",
-          version: "cargo-preview",
-          profile: "cargo_lock_registry_only_v1",
-          updateArgv: ["cargo", "update", "LOCAL_CRATE", "--precise", "release-2"],
-          evidenceSha256: "2".repeat(64),
-        },
-        manifest: { path: "services/api/Cargo.toml", blobSha: broadFixture.manifestBlobSha },
-        lockfile: {
-          disposition: "present",
-          path: "services/api/Cargo.lock",
-          blobSha: broadFixture.lockfileBlobSha,
-          evidenceSha256: "3".repeat(64),
-        },
-        baseline: { headSha: broadHeadSha },
-        security: {
-          identity,
-          disposition: "clear",
-          provider: "opaque",
-          reference: "opaque:pre-support-cargo",
-          reportSha256: "4".repeat(64),
-        },
-      };
-      const broadHistorical = await appendHistoricalUnsupportedDependencyObservationV2(broadEvidence);
-      await expect(recordAcceptanceDependencyObservation(broadEvidence)).resolves.toMatchObject({
-        kind: "replayed",
-        observation: {
-          eventId: broadHistorical.event.id,
-          status: "refused_unsupported_profile",
-          candidate: broadEvidence.candidate,
-        },
-      });
-      await expect(recordAcceptanceDependencyObservation({
-        ...broadEvidence,
-        security: { ...broadEvidence.security, reportSha256: "5".repeat(64) },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
-      await expect(recordAcceptanceDependencyObservation({
-        ...broadEvidence,
-        candidate: { ...broadEvidence.candidate, targetVersion: "release-3" },
-      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
-      const events = await db.select().from(changeRecordEvents).where(and(
-        inArray(changeRecordEvents.recordId, [
-          validFixture.draft.record.id,
-          broadFixture.draft.record.id,
-        ]),
-        eq(changeRecordEvents.stage, "dependency_observation"),
-      ));
-      expect(events).toHaveLength(2);
-    }, 20_000);
+    });
 
     it("fails closed for npm command drift and rejects noncanonical new npm bodies without an event", async () => {
       const headSha = "b".repeat(40);

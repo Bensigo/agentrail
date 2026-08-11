@@ -1041,14 +1041,15 @@ async function compileAcceptanceContextPackInternal(
     readExactPath: reads.read,
     keywords,
   });
-  // Safe Yarn and Cargo root profiles require independently derived proof that
-  // repository-local configuration files are absent. A changed config is
-  // already present in exact overlay metadata and must not be re-read as a fallback.
-  // Otherwise probe only after dependencies have used their bounded budget. Cargo
-  // probes are admitted atomically only for exact root Cargo manifest+lockfile
-  // custody, so an unrelated Pack or a single remaining slot cannot gain a
-  // misleading half-proof. The custody projection persists only hashes/counts/
-  // outcome metadata, never the configuration body.
+  // Exact-head packs that bind Yarn or Cargo root files retain independently
+  // derived repository-configuration custody. A changed config is already present
+  // in exact overlay metadata and must not be re-read as a fallback. Otherwise
+  // probe only after dependencies have used their bounded budget. Cargo probes are
+  // admitted atomically only for exact root Cargo manifest+lockfile custody, so an
+  // unrelated Pack or a single remaining slot cannot gain a misleading half-proof.
+  // The custody projection persists only hashes/counts/outcome metadata, never the
+  // configuration body. These receipts do not register an evidence profile or
+  // grant approval, external-builder Pack, or execution authority.
   const changedConfigurationPaths = new Set(input.materialization.content.records
     .filter((record) => METADATA_ONLY_CONFIGURATION_PATHS.has(record.path))
     .map((record) => record.path));

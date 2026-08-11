@@ -65,6 +65,7 @@ import {
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   AcceptanceDependencyObservationConflictError,
   AcceptanceDependencyObservationInvalidEvidenceError,
+  type RecordAcceptanceDependencyObservationInput,
   AcceptanceDependencyExternalBuilderPackConflictError,
   registerAcceptanceBuilderRoute,
   recordAcceptanceBuilderRouteCapabilityProfile,
@@ -441,10 +442,14 @@ async function createAcceptanceDependencyObservationFixture(input: {
   prNumber: number;
   headSha: string;
   lockfileReadReason?: "path_not_found" | "github_unavailable";
+  yarnConfigurationRead?: "path_not_found" | "github_unavailable" | "record" | "unsafe_content";
+  yarnConfigurationChangedContent?: string;
   manifestPath?: string;
   manifestContent?: string;
   lockfilePath?: string;
   lockfileContent?: string;
+  compiledPackCompilerVersion?: string;
+  compiledPackPolicyVersion?: string;
   contractOverrides?: Record<string, unknown>;
 }) {
   const repoName = "acme/widgets";
@@ -534,6 +539,10 @@ async function createAcceptanceDependencyObservationFixture(input: {
     ...(input.lockfileReadReason ? [] : [{
       path: lockfilePath,
       content: input.lockfileContent ?? "lockfileVersion: '9.0'\n",
+    }]),
+    ...(input.yarnConfigurationChangedContent === undefined ? [] : [{
+      path: ".yarnrc.yml",
+      content: input.yarnConfigurationChangedContent,
     }]),
   ];
   const fileProofs = fileInput.map(({ path, content }, index) => {
@@ -630,7 +639,7 @@ async function createAcceptanceDependencyObservationFixture(input: {
     reason: null,
   });
 
-  const exactSources = fileProofs.map((file) => ({
+  const exactSources = fileProofs.filter((file) => file.path !== ".yarnrc.yml").map((file) => ({
     kind: "exact_head_overlay" as const,
     path: file.path,
     blobSha: file.blobSha,
@@ -642,6 +651,72 @@ async function createAcceptanceDependencyObservationFixture(input: {
     reason: "exact_patch_head_range",
     citation: `${file.path}@${file.blobSha}#L1-L${file.lineCount}`,
   }));
+  const directReadReceipts: Record<string, unknown>[] = [];
+  if (input.lockfileReadReason) {
+    directReadReceipts.push({
+      requestedPath: lockfilePath,
+      headSha: input.headSha,
+      headTreeSha,
+      outcome: "not_proven",
+      reason: input.lockfileReadReason,
+    });
+  }
+  if (input.yarnConfigurationRead) {
+    const requestedPath = ".yarnrc.yml";
+    if (input.yarnConfigurationRead === "record") {
+      const content = "enableScripts: false\n";
+      const bytes = Buffer.from(content, "utf8");
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "record",
+        record: {
+          path: requestedPath,
+          blobSha: createHash("sha1")
+            .update(`blob ${bytes.length}\0`, "utf8").update(bytes).digest("hex"),
+          previousPath: null,
+          contentSha256: createHash("sha256").update(bytes).digest("hex"),
+          byteCount: bytes.length,
+          lineCount: content.split("\n").length,
+          source: "exact_head_tree_fallback",
+          reason: "exact_head_tree_path",
+        },
+      });
+    } else if (input.yarnConfigurationRead === "unsafe_content") {
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "not_proven",
+        reason: "unsafe_content",
+        exclusion: {
+          path: requestedPath,
+          source: "exact_head_tree_fallback",
+          blobSha: "7".repeat(40),
+          byteCount: 64,
+          reason: "secret_content_policy",
+          secretKinds: ["credential"],
+          findingCount: 1,
+        },
+      });
+    } else {
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "not_proven",
+        reason: input.yarnConfigurationRead,
+      });
+    }
+  }
+  directReadReceipts.sort((left, right) => {
+    const key = (value: Record<string, unknown>) => {
+      const record = value["record"] as Record<string, unknown> | undefined;
+      return `${value["requestedPath"]}\0${value["outcome"]}\0${record?.["blobSha"] ?? value["reason"] ?? ""}`;
+    };
+    return Buffer.compare(Buffer.from(key(left), "utf8"), Buffer.from(key(right), "utf8"));
+  });
   const receiptCore = {
     kind: "exact_head_source_custody" as const,
     schemaVersion: 2 as const,
@@ -683,13 +758,7 @@ async function createAcceptanceDependencyObservationFixture(input: {
       reason: "exact_base_to_head_compare",
     })),
     exclusions: [],
-    directReadReceipts: input.lockfileReadReason ? [{
-      requestedPath: lockfilePath,
-      headSha: input.headSha,
-      headTreeSha,
-      outcome: "not_proven" as const,
-      reason: input.lockfileReadReason,
-    }] : [],
+    directReadReceipts,
     selectedExactRanges: exactSources.map(({ reason: _reason, citation: _citation, ...source }) => source),
   };
   const receipt = {
@@ -721,8 +790,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
     overlayManifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore),
   };
   const compiler = {
-    version: "dependency-observation-pack-v1",
-    policyVersion: "dependency-observation-policy-v1",
+    version: input.compiledPackCompilerVersion ?? "dependency-observation-pack-v1",
+    policyVersion: input.compiledPackPolicyVersion ?? "dependency-observation-policy-v1",
     byteCounter: "utf8_byte_upper_bound_v1",
     byteBudget: 65_536,
   };
@@ -772,7 +841,7 @@ async function createAcceptanceDependencyObservationFixture(input: {
     workspaceId: input.workspaceId,
     sourceSnapshotId: snapshot.snapshot.id,
     compiled,
-    exactSourceProofs: fileProofs.map((file) => ({
+    exactSourceProofs: fileProofs.filter((file) => file.path !== ".yarnrc.yml").map((file) => ({
       kind: "exact_head_overlay" as const,
       path: file.path,
       content: file.content,
@@ -908,6 +977,159 @@ function npmAcceptanceDependencyObservationInput(input: {
       reportSha256: "4".repeat(64),
     },
   };
+}
+
+function yarnAcceptanceDependencyObservationInput(input: {
+  workspaceId: string;
+  recordId: string;
+  compiledPackId: string;
+  headSha: string;
+  manifestBlobSha: string;
+  lockfileBlobSha: string;
+  targetVersion?: string;
+  dependencyKind?: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+}) {
+  const targetVersion = input.targetVersion ?? "4.17.21";
+  const dependencyKind = input.dependencyKind ?? "dependencies";
+  const identity = {
+    ecosystem: "node",
+    manager: "yarn",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+  };
+  const kindFlag = {
+    dependencies: null,
+    devDependencies: "--dev",
+    optionalDependencies: "--optional",
+    peerDependencies: "--peer",
+  }[dependencyKind];
+  return {
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    compiledPackId: input.compiledPackId,
+    candidate: {
+      identity,
+      package: "lodash",
+      dependencyKind,
+      specifier: "^4.17.20",
+      currentVersion: "4.17.20",
+      targetVersion,
+    },
+    runtime: {
+      identity,
+      disposition: "safe" as const,
+      version: "22.17.0",
+      evidenceSha256: "1".repeat(64),
+    },
+    packageManager: {
+      disposition: "safe" as const,
+      name: "yarn",
+      version: "4.18.0",
+      profile: "yarn_berry_v4_root_lockfile_only_v1",
+      updateArgv: [
+        "yarn", "add", `lodash@${targetVersion}`, "--mode=update-lockfile",
+        ...(kindFlag ? [kindFlag] : []),
+      ],
+      evidenceSha256: "2".repeat(64),
+    },
+    manifest: { path: "package.json", blobSha: input.manifestBlobSha },
+    lockfile: {
+      disposition: "present" as const,
+      path: "yarn.lock",
+      blobSha: input.lockfileBlobSha,
+      evidenceSha256: "3".repeat(64),
+    },
+    baseline: { headSha: input.headSha },
+    security: {
+      identity,
+      disposition: "clear" as const,
+      provider: "osv",
+      reference: `osv:npm:lodash@${targetVersion}`,
+      reportSha256: "4".repeat(64),
+    },
+  };
+}
+
+async function appendHistoricalUnsupportedDependencyObservationV2(
+  evidence: RecordAcceptanceDependencyObservationInput,
+) {
+  const record = (await db.select().from(changeRecords).where(and(
+    eq(changeRecords.id, evidence.recordId),
+    eq(changeRecords.workspaceId, evidence.workspaceId),
+  )))[0]!;
+  const contract = (await db.select().from(acceptanceContracts).where(and(
+    eq(acceptanceContracts.recordId, evidence.recordId),
+    eq(acceptanceContracts.status, "confirmed"),
+  )))[0]!;
+  const pack = (await db.select().from(acceptanceCompiledContextPacks).where(and(
+    eq(acceptanceCompiledContextPacks.id, evidence.compiledPackId),
+    eq(acceptanceCompiledContextPacks.workspaceId, evidence.workspaceId),
+  )))[0]!;
+  if (record.prNumber === null || record.currentPrHeadSha === null
+    || record.currentPrHeadCycleId === null) throw new Error("expected current dependency observation fixture");
+  const candidateFingerprint = `sha256:${acceptanceContextPackCanonicalSha256({
+    identity: evidence.candidate.identity,
+    manifestPath: evidence.manifest.path,
+    package: evidence.candidate.package,
+    dependencyKind: evidence.candidate.dependencyKind,
+    specifier: evidence.candidate.specifier,
+    currentVersion: evidence.candidate.currentVersion,
+    targetVersion: evidence.candidate.targetVersion,
+  })}`;
+  const eventKey = `acceptance-dependency-observation:v2:${record.currentPrHeadCycleId}:${candidateFingerprint.slice("sha256:".length)}`;
+  const binding = {
+    workspaceId: evidence.workspaceId,
+    recordId: evidence.recordId,
+    repo: record.repo,
+    prNumber: record.prNumber,
+    headSha: record.currentPrHeadSha,
+    headCycleId: record.currentPrHeadCycleId,
+    authorityGeneration: record.currentPrHeadAuthorityGeneration,
+    reviewJobId: record.currentPrHeadCycleId,
+    acceptanceContract: {
+      id: contract.id,
+      version: contract.version,
+      sha256: acceptanceContractSha256({
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        contract: contract.contract,
+      }),
+    },
+    compiledPack: {
+      id: pack.id,
+      sha256: pack.packSha256,
+      sourceSnapshotId: pack.sourceSnapshotId,
+      sourceCustodyIdentitySha256: pack.sourceCustodyIdentitySha256,
+      compilerVersion: pack.compilerVersion,
+      policyVersion: pack.policyVersion,
+      exactHeadDependencyTreeProofsSha256: acceptanceContextPackCanonicalSha256({
+        kind: "acceptance_dependency_tree_proof_set",
+        version: 1,
+        proofs: pack.exactHeadDependencyTreeProofs,
+      }),
+    },
+  };
+  const appended = await appendChangeRecordEvent({
+    recordId: evidence.recordId,
+    eventKey,
+    stage: "dependency_observation",
+    actor: "server:dependency-observation",
+    payloadRef: {
+      kind: "acceptance_dependency_observation",
+      version: 2,
+      binding,
+      candidateFingerprint,
+      candidate: evidence.candidate,
+      runtime: evidence.runtime,
+      packageManager: evidence.packageManager,
+      manifest: evidence.manifest,
+      lockfile: evidence.lockfile,
+      baseline: evidence.baseline,
+      security: evidence.security,
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    },
+  });
+  return { event: appended.event, eventKey, candidateFingerprint, binding };
 }
 
 async function selectDependencyExternalBuilderRoute(input: {
@@ -5665,6 +5887,579 @@ describe.skipIf(!DB_AVAILABLE)(
             candidate: { identity: recorded[0]!.evidence.candidate.identity },
             packageManager: recorded[0]!.evidence.packageManager,
           },
+      });
+    });
+
+    it("records the root Yarn 4 profile and preserves its exact identity through R10.2", async () => {
+      const headSha = "d".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-profile",
+        prNumber: 284,
+        headSha,
+        manifestContent: JSON.stringify({
+          packageManager: "yarn@4.18.0",
+          engines: { node: ">=18.12.0" },
+          dependencies: { lodash: "^4.17.20" },
+        }),
+        lockfilePath: "yarn.lock",
+        lockfileContent: "__metadata:\n  version: 8\n",
+        yarnConfigurationRead: "path_not_found",
+        compiledPackCompilerVersion: "exact-head-correction-pack-v5",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v3",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected Yarn lockfile custody");
+
+      const cases = [
+        ["dependencies", "4.17.21", null],
+        ["devDependencies", "4.17.22", "--dev"],
+        ["optionalDependencies", "4.17.23", "--optional"],
+        ["peerDependencies", "4.17.24", "--peer"],
+      ] as const;
+      const recorded = [];
+      for (const [dependencyKind, targetVersion, kindFlag] of cases) {
+        const evidence = yarnAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          headSha,
+          manifestBlobSha: fixture.manifestBlobSha,
+          lockfileBlobSha: fixture.lockfileBlobSha,
+          dependencyKind,
+          targetVersion,
+        });
+        const result = await recordAcceptanceDependencyObservation(evidence);
+        expect(result).toMatchObject({
+          kind: "recorded",
+          observation: {
+            status: "observed",
+            reasons: [],
+            candidate: { identity: evidence.candidate.identity, dependencyKind, targetVersion },
+            runtime: { version: "22.17.0" },
+            packageManager: {
+              name: "yarn",
+              version: "4.18.0",
+              profile: "yarn_berry_v4_root_lockfile_only_v1",
+              updateArgv: [
+                "yarn", "add", `lodash@${targetVersion}`, "--mode=update-lockfile",
+                ...(kindFlag ? [kindFlag] : []),
+              ],
+            },
+            manifest: { path: "package.json" },
+            lockfile: { path: "yarn.lock", disposition: "present" },
+            security: { provider: "osv", reference: `osv:npm:lodash@${targetVersion}` },
+          },
+        });
+        if (result.kind !== "recorded") throw new Error("expected Yarn observation");
+        recorded.push({ result, evidence });
+      }
+
+      await expect(recordAcceptanceDependencyObservation(recorded[0]!.evidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: { eventId: recorded[0]!.result.observation.eventId, status: "observed" },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...recorded[0]!.evidence,
+        security: { ...recorded[0]!.evidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+
+      const selected = await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_codex",
+        configurationVersion: 5,
+      });
+      const ownerId = "14141414-1414-4141-8141-141414141414";
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: recorded[0]!.result.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      });
+      expect(approved).toMatchObject({
+        kind: "approved",
+        observation: { candidate: { identity: recorded[0]!.evidence.candidate.identity } },
+        externalBuilderPack: {
+          candidate: { identity: recorded[0]!.evidence.candidate.identity },
+          runtime: { identity: recorded[0]!.evidence.runtime.identity },
+          packageManager: recorded[0]!.evidence.packageManager,
+          manifest: { path: "package.json" },
+          lockfile: { path: "yarn.lock" },
+          security: { identity: recorded[0]!.evidence.security.identity, provider: "osv" },
+          route: { id: selected.route.id, adapter: "github_codex", configurationVersion: 5 },
+          deliveryAuthority: "not_granted",
+          reviewRequirement: "exact_head_r7_reentry",
+        },
+      });
+      const current = await readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      expect(current).toMatchObject({ kind: "current" });
+      if (current.kind !== "current") throw new Error("expected current Yarn observations");
+      expect(current.observations.find(
+        (item) => item.observation.eventId === recorded[0]!.result.observation.eventId,
+      )).toMatchObject({
+          payloadVersion: 2,
+          observation: { eventId: recorded[0]!.result.observation.eventId, status: "observed" },
+          approval: { approvedBy: `user:${ownerId}` },
+          externalBuilderPack: {
+            candidate: { identity: recorded[0]!.evidence.candidate.identity },
+            packageManager: recorded[0]!.evidence.packageManager,
+          },
+      });
+    });
+
+    it("derives Yarn configuration safety from exact compiled-Pack read custody and rejects profile drift", async () => {
+      const custodyCases = [
+        ["record", "refused_unsafe_runtime", "unsafe_yarn_configuration_present"],
+        ["unsafe_content", "refused_unsafe_runtime", "unsafe_yarn_configuration_present"],
+        ["github_unavailable", "not_proven", "yarn_configuration_absence_not_proven"],
+        [undefined, "not_proven", "yarn_configuration_absence_not_proven"],
+      ] as const;
+      for (const [ordinal, [configurationRead, status, reason]] of custodyCases.entries()) {
+        const headSha = String(ordinal + 1).repeat(40);
+        const fixture = await createAcceptanceDependencyObservationFixture({
+          workspaceId: wsId,
+          workKey: `dependency-observation-yarn-config-${configurationRead ?? "missing"}`,
+          prNumber: 285 + ordinal,
+          headSha,
+          lockfilePath: "yarn.lock",
+          lockfileContent: "__metadata:\n  version: 8\n",
+          yarnConfigurationRead: configurationRead,
+          ...(configurationRead === undefined ? {
+            compiledPackCompilerVersion: "exact-head-correction-pack-v4",
+            compiledPackPolicyVersion: "bounded-exact-ranges-v2",
+          } : {}),
+        });
+        if (fixture.lockfileBlobSha === null) throw new Error("expected Yarn lockfile custody");
+        const evidence = yarnAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          headSha,
+          manifestBlobSha: fixture.manifestBlobSha,
+          lockfileBlobSha: fixture.lockfileBlobSha,
+        });
+        const result = await recordAcceptanceDependencyObservation(evidence);
+        expect(result).toMatchObject({
+          kind: "recorded",
+          observation: { status, reasons: [reason] },
+        });
+        if (configurationRead === undefined) {
+          expect(result).toMatchObject({
+            kind: "recorded",
+            binding: {
+              compiledPack: {
+                compilerVersion: "exact-head-correction-pack-v4",
+                policyVersion: "bounded-exact-ranges-v2",
+              },
+            },
+            observation: {
+              status: "not_proven",
+              reasons: ["yarn_configuration_absence_not_proven"],
+            },
+          });
+          if (result.kind !== "recorded") throw new Error("expected legacy Pack Yarn refusal");
+          const ownerId = "16161616-1616-4161-8161-161616161616";
+          await db.insert(workspaceMemberships).values({
+            workspaceId: wsId,
+            userId: ownerId,
+            role: "owner",
+          });
+          await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+            workspaceId: wsId,
+            recordId: fixture.draft.record.id,
+            observationEventId: result.observation.eventId,
+            approvedBy: `user:${ownerId}`,
+          })).resolves.toEqual({
+            kind: "observation_not_eligible",
+            reason: "observation_not_observed",
+          });
+          const projected = await readCurrentAcceptanceDependencyObservations({
+            workspaceId: wsId,
+            recordId: fixture.draft.record.id,
+          });
+          expect(projected).toMatchObject({
+            kind: "current",
+            observations: [{
+              observation: {
+                eventId: result.observation.eventId,
+                status: "not_proven",
+                reasons: ["yarn_configuration_absence_not_proven"],
+              },
+              approval: null,
+              externalBuilderPack: null,
+            }],
+          });
+        }
+      }
+
+      const changedHeadSha = "e".repeat(40);
+      const changed = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-config-changed-overlay",
+        prNumber: 295,
+        headSha: changedHeadSha,
+        lockfilePath: "yarn.lock",
+        lockfileContent: "__metadata:\n  version: 8\n",
+        yarnConfigurationChangedContent: "enableScripts: false\n",
+        compiledPackCompilerVersion: "exact-head-correction-pack-v5",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v3",
+      });
+      if (changed.lockfileBlobSha === null) throw new Error("expected changed-config Yarn lockfile");
+      await expect(recordAcceptanceDependencyObservation(
+        yarnAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: changed.draft.record.id,
+          compiledPackId: changed.pack.id,
+          headSha: changedHeadSha,
+          manifestBlobSha: changed.manifestBlobSha,
+          lockfileBlobSha: changed.lockfileBlobSha,
+        }),
+      )).resolves.toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsafe_runtime",
+          reasons: ["unsafe_yarn_configuration_present"],
+        },
+      });
+
+      const headSha = "6".repeat(40);
+      const strict = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-strict-profile",
+        prNumber: 289,
+        headSha,
+        lockfilePath: "yarn.lock",
+        lockfileContent: "__metadata:\n  version: 8\n",
+        yarnConfigurationRead: "path_not_found",
+      });
+      if (strict.lockfileBlobSha === null) throw new Error("expected strict Yarn lockfile custody");
+      const base = yarnAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: strict.draft.record.id,
+        compiledPackId: strict.pack.id,
+        headSha,
+        manifestBlobSha: strict.manifestBlobSha,
+        lockfileBlobSha: strict.lockfileBlobSha,
+      });
+      const argvDrift = { ...base, candidate: { ...base.candidate, targetVersion: "4.18.0" } };
+      await expect(recordAcceptanceDependencyObservation({
+        ...argvDrift,
+        packageManager: {
+          ...argvDrift.packageManager,
+          updateArgv: ["yarn", "up", "lodash@4.18.0", "-R"],
+        },
+        security: { ...argvDrift.security, reference: "osv:npm:lodash@4.18.0" },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"] },
+      });
+
+      for (const malformed of [
+        { ...base, packageManager: { ...base.packageManager, version: "3.8.7" } },
+        { ...base, packageManager: { ...base.packageManager, version: "5.0.0" } },
+        { ...base, packageManager: { ...base.packageManager, version: "4.18.0-rc.1" } },
+        { ...base, runtime: { ...base.runtime, version: "18.11.0" } },
+        { ...base, runtime: { ...base.runtime, version: "18.12.0-rc.1" } },
+        { ...base, candidate: { ...base.candidate, specifier: "npm:underscore@1.13.6" } },
+        { ...base, candidate: { ...base.candidate, specifier: "workspace:^" } },
+        { ...base, candidate: { ...base.candidate, specifier: ">=4.17.0 <5" } },
+        { ...base, candidate: { ...base.candidate, specifier: "latest" } },
+        { ...base, candidate: { ...base.candidate, specifier: "*" } },
+        {
+          ...base,
+          manifest: { ...base.manifest, path: "services/api/package.json" },
+          lockfile: { ...base.lockfile, path: "services/api/yarn.lock" },
+        },
+        { ...base, security: { ...base.security, reference: "osv:npm:lodash@4.17.20" } },
+      ]) {
+        await expect(recordAcceptanceDependencyObservation(malformed))
+          .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+      }
+      const events = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, strict.draft.record.id),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ));
+      expect(events).toHaveLength(1);
+    }, 15_000);
+
+    it("replays frozen pre-support Yarn v2 refusals without reinterpreting valid or broad evidence", async () => {
+      const broadHeadSha = "7".repeat(40);
+      const broadFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-yarn-broad",
+        prNumber: 290,
+        headSha: broadHeadSha,
+        manifestPath: "services/api/package.json",
+        manifestContent: JSON.stringify({ dependencies: { lodash: "release-channel" } }),
+        lockfilePath: "services/api/yarn.lock",
+        lockfileContent: "__metadata:\n  version: broad\n",
+      });
+      if (broadFixture.lockfileBlobSha === null) throw new Error("expected historical Yarn lockfile");
+      const identity = {
+        ecosystem: "node",
+        manager: "yarn",
+        profile: "yarn_berry_v4_root_lockfile_only_v1",
+      };
+      const broadEvidence: RecordAcceptanceDependencyObservationInput = {
+        workspaceId: wsId,
+        recordId: broadFixture.draft.record.id,
+        compiledPackId: broadFixture.pack.id,
+        candidate: {
+          identity,
+          package: "lodash",
+          dependencyKind: "runtime",
+          specifier: "release-channel",
+          currentVersion: "release-1",
+          targetVersion: "release-2",
+        },
+        runtime: {
+          identity,
+          disposition: "safe",
+          version: "node-release-22",
+          evidenceSha256: "1".repeat(64),
+        },
+        packageManager: {
+          disposition: "safe",
+          name: "yarn",
+          version: "yarn-release-berry",
+          profile: "yarn_berry_v4_root_lockfile_only_v1",
+          updateArgv: ["yarn", "up", "lodash@release-2"],
+          evidenceSha256: "2".repeat(64),
+        },
+        manifest: { path: "services/api/package.json", blobSha: broadFixture.manifestBlobSha },
+        lockfile: {
+          disposition: "present",
+          path: "services/api/yarn.lock",
+          blobSha: broadFixture.lockfileBlobSha,
+          evidenceSha256: "3".repeat(64),
+        },
+        baseline: { headSha: broadHeadSha },
+        security: {
+          identity,
+          disposition: "clear",
+          provider: "opaque",
+          reference: "opaque:pre-support-yarn",
+          reportSha256: "4".repeat(64),
+        },
+      };
+      const broadHistorical = await appendHistoricalUnsupportedDependencyObservationV2(broadEvidence);
+      await expect(recordAcceptanceDependencyObservation(broadEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: broadHistorical.event.id,
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+          candidate: broadEvidence.candidate,
+        },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        security: { ...broadEvidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        candidate: { ...broadEvidence.candidate, targetVersion: "release-3" },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+
+      const validHeadSha = "8".repeat(40);
+      const validFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-yarn-valid",
+        prNumber: 291,
+        headSha: validHeadSha,
+        lockfilePath: "yarn.lock",
+        lockfileContent: "__metadata:\n  version: 8\n",
+        yarnConfigurationRead: "path_not_found",
+      });
+      if (validFixture.lockfileBlobSha === null) throw new Error("expected valid historical Yarn lockfile");
+      const validEvidence = yarnAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        compiledPackId: validFixture.pack.id,
+        headSha: validHeadSha,
+        manifestBlobSha: validFixture.manifestBlobSha,
+        lockfileBlobSha: validFixture.lockfileBlobSha,
+      });
+      const validHistorical = await appendHistoricalUnsupportedDependencyObservationV2(validEvidence);
+      await expect(recordAcceptanceDependencyObservation(validEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: validHistorical.event.id,
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+        },
+      });
+      const ownerId = "15151515-1515-4151-8151-151515151515";
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        repo: validFixture.repo,
+        adapter: "github_codex",
+      });
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        observationEventId: validHistorical.event.id,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({
+        kind: "observation_not_eligible",
+        reason: "observation_not_observed",
+      });
+      const events = await db.select().from(changeRecordEvents).where(and(
+        inArray(changeRecordEvents.recordId, [broadFixture.draft.record.id, validFixture.draft.record.id]),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ));
+      expect(events).toHaveLength(2);
+    });
+
+    it("projects Yarn-specific baseline, runtime, manager, lockfile, and OSV refusals", async () => {
+      const headSha = "9".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-refusal-matrix",
+        prNumber: 292,
+        headSha,
+        lockfilePath: "yarn.lock",
+        lockfileContent: "__metadata:\n  version: 8\n",
+        yarnConfigurationRead: "path_not_found",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected Yarn refusal lockfile");
+      const base = (targetVersion: string) => yarnAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+        targetVersion,
+      });
+
+      const baseline = base("4.18.1");
+      await expect(recordAcceptanceDependencyObservation({
+        ...baseline,
+        baseline: { headSha: "f".repeat(40) },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_baseline", reasons: ["baseline_head_mismatch"] },
+      });
+      const unsafeRuntime = base("4.18.2");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeRuntime,
+        runtime: { ...unsafeRuntime.runtime, disposition: "unsafe" as const, version: "0.1.0" },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
+      });
+      const unavailableRuntime = base("4.18.3");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unavailableRuntime,
+        runtime: { ...unavailableRuntime.runtime, disposition: "unavailable" as const, version: null },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "not_proven", reasons: ["runtime_evidence_unavailable"] },
+      });
+      const unsafeManager = base("4.18.4");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeManager,
+        packageManager: {
+          ...unsafeManager.packageManager,
+          disposition: "unsafe" as const,
+          version: "4.18.0",
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager"] },
+      });
+      const unavailableManager = base("4.18.5");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unavailableManager,
+        packageManager: {
+          ...unavailableManager.packageManager,
+          disposition: "unavailable" as const,
+          version: null,
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "not_proven", reasons: ["package_manager_evidence_unavailable"] },
+      });
+      for (const [targetVersion, disposition, reason] of [
+        ["4.18.6", "affected", "security_affected"],
+        ["4.18.7", "unavailable", "security_evidence_unavailable"],
+      ] as const) {
+        const evidence = base(targetVersion);
+        await expect(recordAcceptanceDependencyObservation({
+          ...evidence,
+          security: { ...evidence.security, disposition },
+        })).resolves.toMatchObject({
+          kind: "recorded",
+          observation: { status: "refused_security", reasons: [reason] },
+        });
+      }
+
+      const missingHeadSha = "a".repeat(40);
+      const missing = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-lockfile-missing",
+        prNumber: 293,
+        headSha: missingHeadSha,
+        lockfilePath: "yarn.lock",
+        lockfileReadReason: "path_not_found",
+        yarnConfigurationRead: "path_not_found",
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...yarnAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: missing.draft.record.id,
+          compiledPackId: missing.pack.id,
+          headSha: missingHeadSha,
+          manifestBlobSha: missing.manifestBlobSha,
+          lockfileBlobSha: "0".repeat(40),
+        }),
+        lockfile: {
+          disposition: "missing" as const,
+          path: "yarn.lock",
+          blobSha: null,
+          evidenceSha256: "3".repeat(64),
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_lockfile", reasons: ["lockfile_missing"] },
+      });
+
+      const unavailableHeadSha = "b".repeat(40);
+      const unavailable = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-yarn-lockfile-unavailable",
+        prNumber: 294,
+        headSha: unavailableHeadSha,
+        lockfilePath: "yarn.lock",
+        lockfileReadReason: "github_unavailable",
+        yarnConfigurationRead: "path_not_found",
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...yarnAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: unavailable.draft.record.id,
+          compiledPackId: unavailable.pack.id,
+          headSha: unavailableHeadSha,
+          manifestBlobSha: unavailable.manifestBlobSha,
+          lockfileBlobSha: "0".repeat(40),
+        }),
+        lockfile: {
+          disposition: "unavailable" as const,
+          path: "yarn.lock",
+          blobSha: null,
+          evidenceSha256: "3".repeat(64),
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_lockfile", reasons: ["lockfile_evidence_unavailable"] },
       });
     });
 

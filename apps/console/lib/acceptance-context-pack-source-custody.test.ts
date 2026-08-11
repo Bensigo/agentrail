@@ -181,6 +181,47 @@ describe("projectExactHeadSourceCustody", () => {
     expect(JSON.stringify(result.receipt)).not.toContain(HELPER);
   });
 
+  it("projects only metadata for a secret-bearing Yarn configuration direct read", () => {
+    const secretConfiguration = "npmAuthToken: github_pat_abcdefghijklmnopqrstuvwxyz\n";
+    const value = input();
+    value.directReadReceipts.push({
+      requestedPath: ".yarnrc.yml",
+      headSha: HEAD,
+      headTreeSha: TREE,
+      result: {
+        ok: false,
+        kind: "not_proven",
+        reason: "unsafe_content",
+        exclusion: {
+          path: ".yarnrc.yml",
+          source: "exact_head_tree_fallback",
+          blobSha: exactHeadGitBlobSha1(secretConfiguration),
+          byteCount: Buffer.byteLength(secretConfiguration),
+          reason: "secret_content_policy",
+          secretKinds: ["github_pat"],
+          findingCount: 1,
+        },
+      },
+    });
+
+    const result = projectExactHeadSourceCustody(value);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.receipt.directReadReceipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestedPath: ".yarnrc.yml",
+        outcome: "not_proven",
+        reason: "unsafe_content",
+        exclusion: expect.objectContaining({
+          path: ".yarnrc.yml",
+          reason: "secret_content_policy",
+        }),
+      }),
+    ]));
+    expect(JSON.stringify(result.receipt)).not.toContain(secretConfiguration);
+  });
+
   it("rejects forged SHA-1 blob ids, including legacy e*40 fixtures", () => {
     const forged = record("src/widget.ts", WIDGET, "exact_head_overlay");
     forged.blobSha = "e".repeat(40);

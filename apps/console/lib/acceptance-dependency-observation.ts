@@ -4,6 +4,7 @@ export const ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES = 64 * 1024;
 export const ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS = 8_000;
 export const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
+export const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -65,6 +66,7 @@ export type AcceptanceDependencyObservationInput = {
 
 type AcceptanceDependencyObservationProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
+  readonly frozenUnsupportedReplayOnMismatch: boolean;
   candidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -86,11 +88,20 @@ const NPM_SAVE_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string>> = {
   optionalDependencies: "--save-optional",
   peerDependencies: "--save-peer",
 };
+const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
+  dependencies: null,
+  devDependencies: "--dev",
+  optionalDependencies: "--optional",
+  peerDependencies: "--peer",
+};
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
 const ACCEPTANCE_DEPENDENCY_NPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "npm", profile: ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
+};
+const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "node", manager: "yarn", profile: ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
 };
 
 function nodeCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
@@ -104,6 +115,33 @@ function npmCandidateIsValid(candidate: AcceptanceDependencyObservationInput["ca
   return nodeCandidateIsValid(candidate) && !NPM_ALIAS_SPECIFIER.test(candidate.specifier);
 }
 
+function yarnCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
+  const specifier = candidate.specifier.startsWith("^") || candidate.specifier.startsWith("~")
+    ? candidate.specifier.slice(1)
+    : candidate.specifier;
+  return nodeCandidateIsValid(candidate)
+    && !NPM_ALIAS_SPECIFIER.test(candidate.specifier)
+    && SEMVER.test(specifier);
+}
+
+function stableSemverParts(value: string): [number, number, number] | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger)
+    ? [parts[0]!, parts[1]!, parts[2]!]
+    : null;
+}
+
+function stableNodeAtLeast1812(version: string): boolean {
+  const parts = stableSemverParts(version);
+  return parts !== null && (parts[0] > 18 || (parts[0] === 18 && parts[1] >= 12));
+}
+
+function stableYarn4(version: string): boolean {
+  return stableSemverParts(version)?.[0] === 4;
+}
+
 function osvNpmSecurityIsValid(
   security: AcceptanceDependencyObservationInput["security"],
   candidate: AcceptanceDependencyObservationInput["candidate"],
@@ -115,6 +153,7 @@ function osvNpmSecurityIsValid(
 const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: false,
     candidateIsValid: nodeCandidateIsValid,
     runtimeVersionIsValid: (version) => SEMVER.test(version),
     packageManagerVersionIsValid: (version) => SEMVER.test(version),
@@ -128,6 +167,7 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
   }],
   ["node:npm:npm_package_lock_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_NPM_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: true,
     candidateIsValid: npmCandidateIsValid,
     runtimeVersionIsValid: (version) => SEMVER.test(version),
     packageManagerVersionIsValid: (version) => SEMVER.test(version),
@@ -139,6 +179,24 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
       "--package-lock-only", "--ignore-scripts", "--no-audit",
       NPM_SAVE_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind] ?? "",
     ],
+  }],
+  ["node:yarn:yarn_berry_v4_root_lockfile_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_YARN_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: true,
+    candidateIsValid: yarnCandidateIsValid,
+    runtimeVersionIsValid: stableNodeAtLeast1812,
+    packageManagerVersionIsValid: stableYarn4,
+    manifestPathIsValid: (path) => path === "package.json",
+    lockfilePathIsValid: (path) => path === "yarn.lock",
+    securityIsValid: osvNpmSecurityIsValid,
+    expectedArgv: (candidate) => {
+      const argv = [
+        "yarn", "add", `${candidate.package}@${candidate.targetVersion}`,
+        "--mode=update-lockfile",
+      ];
+      const dependencyFlag = YARN_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind];
+      return dependencyFlag ? [...argv, dependencyFlag] : argv;
+    },
   }],
 ]);
 
@@ -409,9 +467,6 @@ export function parseAcceptanceDependencyObservationForStorage(
     security,
   };
   const profile = operationalProfile(input.candidate.identity);
-  const npmProfile = profile?.identity.ecosystem === "node"
-    && profile.identity.manager === "npm"
-    && profile.identity.profile === ACCEPTANCE_DEPENDENCY_NPM_PROFILE;
   const candidateMatchesProfile = profile?.candidateIsValid(input.candidate) ?? true;
   const evidenceMatchesProfile = !profile || (
     candidateMatchesProfile
@@ -426,7 +481,9 @@ export function parseAcceptanceDependencyObservationForStorage(
     )
   );
   if (!evidenceMatchesProfile) {
-    return npmProfile ? { kind: "historical_replay_candidate", input } : null;
+    return profile?.frozenUnsupportedReplayOnMismatch
+      ? { kind: "historical_replay_candidate", input }
+      : null;
   }
   return {
     kind: "current",

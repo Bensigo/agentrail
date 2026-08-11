@@ -28,6 +28,7 @@ import {
   type ExactHeadSourceCustodyReceipt,
 } from "./acceptance-context-pack-source-custody";
 import {
+  MAX_EXACT_HEAD_DIRECT_PATH_READS,
   type ExactHeadContentMaterializationResult,
   type ExactHeadContentReadResult,
   type ExactHeadContentRecord,
@@ -44,8 +45,8 @@ import { scanForSecrets } from "./secret-scan";
  * head. It consumes only server-resolved custody, retains source text only in
  * the returned delivery view, and performs no persistence or network writes.
  */
-export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v4";
-export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v2";
+export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v5";
+export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v3";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER = "utf8_byte_upper_bound_v1";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET = 65_536;
 
@@ -60,6 +61,7 @@ const MAX_LINES_PER_WIKI_PAGE = 60;
 const MAX_WIKI_PAGE_BYTES = 256 * 1024;
 const MAX_WIKI_TOTAL_BYTES = 512 * 1024;
 const MAX_PACK_SOURCES = 64;
+const YARN_CONFIGURATION_PATH = ".yarnrc.yml";
 const SHA1 = /^[a-f0-9]{40}$/iu;
 const SHA256 = /^[a-f0-9]{64}$/iu;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -458,6 +460,15 @@ function changedSources(input: {
     }
     const record = byPath.get(file.path);
     if (!record || record.source !== "exact_head_overlay" || record.blobSha.toLowerCase() !== file.blobSha?.toLowerCase()) return null;
+    if (record.path === YARN_CONFIGURATION_PATH) {
+      exclusions.push(exclusion(
+        "exact_head_overlay",
+        record.path,
+        "metadata_only_configuration_path",
+        record.contentSha256,
+      ));
+      continue;
+    }
     if (!Array.isArray(file.headRanges) || file.headRanges.length === 0 || !file.patchSha256) {
       exclusions.push(exclusion("exact_head_overlay", file.path, "missing_patch_ranges", record.contentSha256));
       continue;
@@ -621,6 +632,15 @@ async function dependencySources(input: {
     for (const candidate of item.candidates) {
       if (attempted >= MAX_DEPENDENCY_CANDIDATES) break;
       if (changedPaths.has(candidate) || resolvedPaths.has(candidate)) break;
+      if (candidate === YARN_CONFIGURATION_PATH) {
+        exclusions.push(exclusion(
+          "exact_head_dependency",
+          candidate,
+          "metadata_only_configuration_path",
+          sha256(`${item.importer}\u0000${item.specifier}`),
+        ));
+        break;
+      }
       attempted += 1;
       const read = await input.readExactPath(candidate);
       if (read.ok) {
@@ -932,6 +952,8 @@ function memoizedExactReads(input: {
   };
   return {
     read,
+    hasReceipt: (candidate: string) => completed.has(candidate),
+    receiptCount: () => completed.size,
     receipts: () => [...completed.values()].sort((left, right) => compareText(left.requestedPath, right.requestedPath)),
   };
 }
@@ -1012,6 +1034,21 @@ async function compileAcceptanceContextPackInternal(
     readExactPath: reads.read,
     keywords,
   });
+  // Yarn's safe root profile requires independently derived proof that a
+  // repository-local configuration file is absent. A changed config is already
+  // present in exact overlay metadata and must not be re-read as a fallback.
+  // Otherwise probe only after dependencies have used their bounded budget; a
+  // full budget yields no receipt and remains `not_proven` rather than
+  // displacing context or invalidating the Pack with a seventeenth receipt. The
+  // custody projection persists only hashes/counts/outcome metadata, never the
+  // configuration body.
+  const yarnConfigurationIsChanged = input.materialization.content.records.some(
+    (record) => record.path === YARN_CONFIGURATION_PATH,
+  );
+  if (!yarnConfigurationIsChanged && (reads.hasReceipt(YARN_CONFIGURATION_PATH)
+    || reads.receiptCount() < MAX_EXACT_HEAD_DIRECT_PATH_READS)) {
+    await reads.read(YARN_CONFIGURATION_PATH);
+  }
   const background = wikiSources({ baseIndex: source.baseIndex, wikiPages: input.custody.wikiPages, keywords });
   if (!background) return { ok: false, kind: "not_proven", reason: "source_snapshot_mismatch" };
   const binding: AcceptanceContextPackBinding = {

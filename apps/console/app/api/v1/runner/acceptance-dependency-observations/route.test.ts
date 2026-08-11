@@ -129,6 +129,28 @@ function npmRequestBody() {
   return value;
 }
 
+function yarnRequestBody() {
+  const value = structuredClone(VALID);
+  const identity = {
+    ecosystem: "node",
+    manager: "yarn",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+  };
+  value.candidate.identity = identity;
+  value.runtime.identity = identity;
+  value.packageManager = {
+    ...value.packageManager,
+    name: "yarn",
+    version: "4.9.2",
+    profile: "yarn_berry_v4_root_lockfile_only_v1",
+    updateArgv: ["yarn", "add", "@acme/widget@1.3.0", "--mode=update-lockfile"],
+  };
+  value.manifest.path = "package.json";
+  value.lockfile.path = "yarn.lock";
+  value.security.identity = identity;
+  return value;
+}
+
 function historicalNpmReplayBody() {
   const value = npmRequestBody();
   Object.assign(value.candidate, {
@@ -195,6 +217,36 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm);
     expect(JSON.stringify(await response.json())).not.toMatch(/install|save-prod|security|approv/iu);
+  });
+
+  it("passes one exact Yarn 4 lockfile-only observation without caller configuration authority", async () => {
+    const yarn = yarnRequestBody();
+    const response = await POST(request(yarn));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(yarn);
+    expect(yarn).not.toHaveProperty("yarnConfiguration");
+    expect(JSON.stringify(await response.json())).not.toMatch(/yarnrc|update-lockfile|security|approv/iu);
+  });
+
+  it("lets a bounded former Yarn profile reach only the exact DB replay seam", async () => {
+    const historical = yarnRequestBody();
+    historical.packageManager.version = "yarn-current";
+    historical.candidate.specifier = "workspace:^";
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+
+    const response = await POST(request(historical));
+
+    expect(response.status).toBe(200);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "replayed",
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    });
   });
 
   it("passes bounded npm command drift once so the DB can persist refusal truth", async () => {

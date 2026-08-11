@@ -24,6 +24,8 @@ import {
 import {
   ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET,
   ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER,
+  ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION,
+  ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
   compileAndRecordAcceptanceContextPack,
   compileAcceptanceContextPack,
   searchAcceptanceContextPackSources,
@@ -31,6 +33,7 @@ import {
 import { exactHeadGitBlobSha1 } from "./acceptance-context-pack-source-custody";
 import {
   exactHeadContentMaterializationIdentity,
+  MAX_EXACT_HEAD_DIRECT_PATH_READS,
   type ExactHeadContentReadResult,
   type ExactHeadContentRecord,
 } from "./github-exact-head-content";
@@ -324,6 +327,7 @@ function contentRecord(
 function materialization(exact = snapshot(), overrides: {
   identity?: string;
   dependency?: ExactHeadContentRecord;
+  additionalChangedRecords?: ExactHeadContentRecord[];
   changedContent?: string;
   read?: (candidate: string) => Promise<ExactHeadContentReadResult>;
   treeProof?: ExactGitTreeInclusionProof | null;
@@ -336,7 +340,7 @@ function materialization(exact = snapshot(), overrides: {
       ? { ok: true, record: dependency, ...(treeProof ? { treeInclusionProof: treeProof } : {}) }
       : { ok: false, kind: "not_proven", reason: "path_not_found" }
   ));
-  const records = [changed];
+  const records = [changed, ...(overrides.additionalChangedRecords ?? [])];
   const exclusions: never[] = [];
   return {
     content: {
@@ -395,6 +399,7 @@ describe("compileAcceptanceContextPack", () => {
       reason: "background_only",
     });
     expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual([
+      expect.objectContaining({ requestedPath: ".yarnrc.yml", outcome: "not_proven", reason: "path_not_found" }),
       expect.objectContaining({ requestedPath: "src/helper.ts", outcome: "record" }),
     ]);
     expect(result.compiled.sourceCustodyReceipt).toMatchObject({
@@ -424,6 +429,10 @@ describe("compileAcceptanceContextPack", () => {
     }]);
     expect(JSON.stringify(result.compiled)).not.toContain(HELPER_TREE_PROOF.trees[0]!.bodyBase64);
     expect(result.compiled.compiler.byteCounter).toBe(ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER);
+    expect(result.compiled.compiler).toMatchObject({
+      version: ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION,
+      policyVersion: ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
+    });
     expect(result.compiled.renderedByteCount).toBeLessThanOrEqual(ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET);
     expect(result.compiled.representations).toEqual({
       jsonSha256: hash(result.rendered.json),
@@ -460,6 +469,9 @@ describe("compileAcceptanceContextPack", () => {
     });
     expect(JSON.stringify(call?.compiled)).not.toContain(WIDGET);
     expect(JSON.stringify(call?.compiled)).not.toContain(HELPER);
+    expect(call?.exactSourceProofs).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".yarnrc.yml" }),
+    ]));
     expect(result).not.toHaveProperty("exactSourceProofs");
     expect(result).not.toHaveProperty("exactGitTreeInclusionProofs");
   });
@@ -615,11 +627,258 @@ describe("compileAcceptanceContextPack", () => {
     const source = materialization(exact, { changedContent: unsafe });
     const result = await compileAcceptanceContextPack({ custody: custody(exact), snapshot: exact, materialization: source });
     expect(result.ok).toBe(true);
-    expect(source.readExactPath).not.toHaveBeenCalled();
+    expect(source.readExactPath).toHaveBeenCalledTimes(1);
+    expect(source.readExactPath).toHaveBeenCalledWith(".yarnrc.yml");
     if (result.ok) {
       expect(result.compiled.manifest.exclusions).toEqual(expect.arrayContaining([
         expect.objectContaining({ source: "exact_head_dependency", reason: "unsupported_dependency_expression" }),
       ]));
+    }
+  });
+
+  it("records present Yarn configuration as metadata without selecting or persisting its content", async () => {
+    const exact = snapshot();
+    const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+    const yarnConfiguration = contentRecord(
+      ".yarnrc.yml",
+      "nodeLinker: node-modules\n",
+      "exact_head_tree_fallback",
+    );
+    const source = materialization(exact, {
+      read: async (candidate) => candidate === helper.path
+        ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+        : candidate === yarnConfiguration.path
+          ? { ok: true, record: yarnConfiguration }
+          : { ok: false, kind: "not_proven", reason: "path_not_found" },
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestedPath: ".yarnrc.yml",
+        outcome: "record",
+        record: expect.objectContaining({
+          path: ".yarnrc.yml",
+          blobSha: yarnConfiguration.blobSha,
+          contentSha256: yarnConfiguration.contentSha256,
+          byteCount: yarnConfiguration.byteCount,
+        }),
+      }),
+    ]));
+    expect(result.compiled.manifest.sources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".yarnrc.yml" }),
+    ]));
+    expect(JSON.stringify(result.compiled)).not.toContain(yarnConfiguration.content);
+    expect(result.rendered.json).not.toContain(yarnConfiguration.content);
+    expect(result.rendered.markdown).not.toContain(yarnConfiguration.content);
+  });
+
+  it("keeps changed root Yarn configuration metadata-only while retaining other exact context", async () => {
+    const yarnConfigurationContent = "nodeLinker: node-modules\n";
+    const yarnConfigurationOverlay = contentRecord(
+      ".yarnrc.yml",
+      yarnConfigurationContent,
+      "exact_head_overlay",
+    );
+    const exact = snapshot([
+      ...snapshot().changedFiles,
+      {
+        path: ".yarnrc.yml",
+        status: "modified",
+        blobSha: yarnConfigurationOverlay.blobSha,
+        previousPath: null,
+        headRanges: [{ startLine: 1, endLine: 1 }],
+        patchSha256: hash(PATCH),
+        patchByteCount: Buffer.byteLength(PATCH),
+      },
+    ].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))));
+    const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+    const source = materialization(exact, {
+      additionalChangedRecords: [yarnConfigurationOverlay],
+      read: async (candidate) => candidate === helper.path
+        ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+        : { ok: false, kind: "not_proven", reason: "path_not_found" },
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.compiled.manifest.sources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".yarnrc.yml" }),
+    ]));
+    expect(result.compiled.manifest.exclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "exact_head_overlay",
+        path: ".yarnrc.yml",
+        reason: "metadata_only_configuration_path",
+      }),
+    ]));
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".yarnrc.yml");
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestedPath: ".yarnrc.yml" }),
+    ]));
+    expect(result.compiled.sourceCustodyReceipt.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: ".yarnrc.yml",
+        source: "exact_head_overlay",
+        reason: "exact_base_to_head_compare",
+      }),
+    ]));
+    expect(result.rendered.json).not.toContain(yarnConfigurationContent);
+    expect(result.rendered.markdown).not.toContain(yarnConfigurationContent);
+  });
+
+  it("never promotes root Yarn configuration discovered as a dependency into Pack source", async () => {
+    const changedContent = [
+      'import configuration from "../.yarnrc.yml";',
+      "export const widget = Boolean(configuration);",
+    ].join("\n");
+    const changedBlob = exactHeadGitBlobSha1(changedContent);
+    const exact = snapshot([{
+      path: "src/widget.ts",
+      status: "modified",
+      blobSha: changedBlob,
+      previousPath: null,
+      headRanges: [{ startLine: 1, endLine: 2 }],
+      patchSha256: hash(PATCH),
+      patchByteCount: Buffer.byteLength(PATCH),
+    }]);
+    const yarnConfiguration = contentRecord(
+      ".yarnrc.yml",
+      "nodeLinker: node-modules\n",
+      "exact_head_tree_fallback",
+    );
+    const source = materialization(exact, {
+      changedContent,
+      read: async (candidate) => candidate === yarnConfiguration.path
+        ? { ok: true, record: yarnConfiguration }
+        : { ok: false, kind: "not_proven", reason: "path_not_found" },
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(source.readExactPath).toHaveBeenCalledTimes(1);
+    if (!result.ok) return;
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual([
+      expect.objectContaining({ requestedPath: ".yarnrc.yml", outcome: "record" }),
+    ]);
+    expect(result.compiled.manifest.exclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "exact_head_dependency",
+        path: ".yarnrc.yml",
+        reason: "metadata_only_configuration_path",
+      }),
+    ]));
+    expect(result.compiled.manifest.sources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".yarnrc.yml" }),
+    ]));
+    expect(result.rendered.json).not.toContain(yarnConfiguration.content);
+    expect(result.rendered.markdown).not.toContain(yarnConfiguration.content);
+  });
+
+  it("retains only exclusion metadata when Yarn configuration contains secret-like content", async () => {
+    const exact = snapshot();
+    const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+    const secretConfiguration = "npmAuthToken: github_pat_abcdefghijklmnopqrstuvwxyz\n";
+    const yarnBlobSha = exactHeadGitBlobSha1(secretConfiguration);
+    const source = materialization(exact, {
+      read: async (candidate) => candidate === helper.path
+        ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+        : candidate === ".yarnrc.yml"
+          ? {
+              ok: false,
+              kind: "not_proven",
+              reason: "unsafe_content",
+              exclusion: {
+                path: ".yarnrc.yml",
+                source: "exact_head_tree_fallback",
+                blobSha: yarnBlobSha,
+                byteCount: Buffer.byteLength(secretConfiguration),
+                reason: "secret_content_policy",
+                secretKinds: ["github_pat"],
+                findingCount: 1,
+              },
+            }
+          : { ok: false, kind: "not_proven", reason: "path_not_found" },
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+      {
+        requestedPath: ".yarnrc.yml",
+        headSha: HEAD,
+        headTreeSha: TREE,
+        outcome: "not_proven",
+        reason: "unsafe_content",
+        exclusion: {
+          path: ".yarnrc.yml",
+          source: "exact_head_tree_fallback",
+          blobSha: yarnBlobSha,
+          byteCount: Buffer.byteLength(secretConfiguration),
+          reason: "secret_content_policy",
+          secretKinds: ["github_pat"],
+          findingCount: 1,
+        },
+      },
+    ]));
+    expect(JSON.stringify(result.compiled)).not.toContain(secretConfiguration);
+    expect(result.rendered.json).not.toContain(secretConfiguration);
+    expect(result.rendered.markdown).not.toContain(secretConfiguration);
+  });
+
+  it("does not displace dependency reads or create a seventeenth receipt for the Yarn probe", async () => {
+    const imports = Array.from(
+      { length: MAX_EXACT_HEAD_DIRECT_PATH_READS },
+      (_, index) => `import \"./missing-${String(index).padStart(2, "0")}.ts\";`,
+    );
+    const changedContent = [...imports, "export const widget = true;"].join("\n");
+    const changedBlob = exactHeadGitBlobSha1(changedContent);
+    const exact = snapshot([{
+      path: "src/widget.ts",
+      status: "modified",
+      blobSha: changedBlob,
+      previousPath: null,
+      headRanges: [{ startLine: 1, endLine: imports.length + 1 }],
+      patchSha256: hash(PATCH),
+      patchByteCount: Buffer.byteLength(PATCH),
+    }]);
+    const source = materialization(exact, {
+      changedContent,
+      read: async () => ({ ok: false, kind: "not_proven", reason: "path_not_found" }),
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(source.readExactPath).toHaveBeenCalledTimes(MAX_EXACT_HEAD_DIRECT_PATH_READS);
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".yarnrc.yml");
+    if (result.ok) {
+      expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toHaveLength(
+        MAX_EXACT_HEAD_DIRECT_PATH_READS,
+      );
     }
   });
 

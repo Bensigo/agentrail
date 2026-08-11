@@ -18,6 +18,8 @@ import {
   githubClaudeRepairObservationAudience,
   GithubClaudeRepairObservationConflictError,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
+  recordSignedAcceptanceRecordMerge,
+  validateAcceptancePostMergeOutcome,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
   type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
 } from "../queries/change_records.js";
@@ -345,5 +347,56 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
     } as typeof RECONCILE_BASE)).rejects.toThrow(
       "bounded exact authenticated provenance"
     );
+  });
+
+  it("rejects extra caller authority and malformed signed merge metadata before storage", async () => {
+    const valid = {
+      workspaceId: BASE.workspaceId,
+      recordId: BASE.recordId,
+      repo: BASE.repo,
+      prNumber: BASE.prNumber,
+      deliveryId: "merge-delivery-1",
+      headSha: HEAD,
+      baseSha: BEFORE,
+      mergeSha: "c".repeat(40),
+      mergedAt: new Date("2026-08-11T08:00:00.000Z"),
+      prUrl: "https://github.com/acme/widgets/pull/42",
+      githubActor: { id: 123, login: "octocat", type: "User" as const },
+      source: "github_webhook" as const,
+    };
+    for (const input of [
+      { ...valid, decision: "approved" },
+      { ...valid, headSha: "A".repeat(40) },
+      { ...valid, baseSha: "b".repeat(39) },
+      { ...valid, mergeSha: "not-a-sha" },
+      { ...valid, mergedAt: "2026-08-11T08:00:00.000Z" },
+      { ...valid, prUrl: `${valid.prUrl}?forged=1` },
+      { ...valid, repo: "acme/../widgets" },
+      { ...valid, deliveryId: " merge-delivery-1" },
+      { ...valid, githubActor: { ...valid.githubActor, id: 0 } },
+      { ...valid, githubActor: { ...valid.githubActor, login: "@codex" } },
+      { ...valid, githubActor: { ...valid.githubActor, type: "Unknown" } },
+      { ...valid, source: "github_api" },
+    ]) {
+      await expect(recordSignedAcceptanceRecordMerge(input as never))
+        .rejects.toThrow("exact GitHub webhook provenance");
+    }
+  });
+
+  it("removes manual merged outcomes from the exported DB validator", () => {
+    expect(validateAcceptancePostMergeOutcome({
+      kind: "merged",
+      prNumber: 42,
+      baseSha: BEFORE,
+      headSha: HEAD,
+      mergeSha: "c".repeat(40),
+      mergeReference: "github-delivery-1",
+    })).toBe(false);
+    expect(validateAcceptancePostMergeOutcome({
+      kind: "deployed",
+      revisionSha: "c".repeat(40),
+      environment: "production",
+      deploymentReference: "railway:deployment:1",
+    })).toBe(true);
   });
 });

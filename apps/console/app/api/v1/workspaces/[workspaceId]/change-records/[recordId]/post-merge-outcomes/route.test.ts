@@ -16,12 +16,11 @@ import {
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
 
-const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
-const RECORD_ID = "00000000-0000-0000-0000-000000000002";
+const WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
+const RECORD_ID = "00000000-0000-4000-8000-000000000002";
+const USER_ID = "00000000-0000-4000-8000-000000000003";
 const NOW = new Date("2026-08-08T12:00:00.000Z");
-const BASE_SHA = "c".repeat(40);
 const MERGE_SHA = "a".repeat(40);
-const HEAD_SHA = "b".repeat(40);
 
 function params() {
   return Promise.resolve({ workspaceId: WORKSPACE_ID, recordId: RECORD_ID });
@@ -35,25 +34,23 @@ function request(body: unknown) {
 }
 
 const outcome = {
-  kind: "merged",
-  prNumber: 12,
-  baseSha: BASE_SHA,
-  headSha: HEAD_SHA,
-  mergeSha: MERGE_SHA,
-  mergeReference: "https://github.com/acme/widgets/pull/12",
+  kind: "deployed",
+  revisionSha: MERGE_SHA,
+  environment: "production",
+  deploymentReference: "deploy-2026-08-08-1",
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+  vi.mocked(auth).mockResolvedValue({ user: { id: USER_ID } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "membership-1", role: "owner" } as never);
   vi.mocked(validateAcceptancePostMergeOutcome).mockReturnValue(true);
   vi.mocked(recordAcceptancePostMergeOutcome).mockResolvedValue({
     inserted: true,
     event: {
       id: "event-1", recordId: RECORD_ID,
-      eventKey: `acceptance-post-merge:merged:${MERGE_SHA}`,
-      stage: "post_merge_outcome", actor: "user:user-1",
+      eventKey: `acceptance-post-merge:deployed:${outcome.deploymentReference}`,
+      stage: "post_merge_outcome", actor: `user:${USER_ID}`,
       at: NOW, payloadRef: { kind: "acceptance_post_merge_outcome", outcome }, createdAt: NOW,
     },
   } as never);
@@ -65,7 +62,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-m
     expect((await POST(request({ outcome }), { params: params() })).status).toBe(401);
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
 
-    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER_ID } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "membership-1", role: "member" } as never);
     expect((await POST(request({ outcome }), { params: params() })).status).toBe(403);
     expect(recordAcceptancePostMergeOutcome).not.toHaveBeenCalled();
@@ -74,7 +71,24 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-m
   it("rejects an invalid outcome before recording any timeline event", async () => {
     vi.mocked(validateAcceptancePostMergeOutcome).mockReturnValue(false);
 
-    const response = await POST(request({ outcome: { kind: "merged" } }), { params: params() });
+    const response = await POST(request({ outcome: { kind: "unknown" } }), { params: params() });
+
+    expect(response.status).toBe(400);
+    expect(recordAcceptancePostMergeOutcome).not.toHaveBeenCalled();
+  });
+
+  it("rejects a caller-supplied merged outcome even when the generic validator accepts it", async () => {
+    vi.mocked(validateAcceptancePostMergeOutcome).mockReturnValue(true);
+    const legacyMergedOutcome = {
+      kind: "merged",
+      prNumber: 12,
+      baseSha: "c".repeat(40),
+      headSha: "b".repeat(40),
+      mergeSha: MERGE_SHA,
+      mergeReference: "https://github.com/acme/widgets/pull/12",
+    };
+
+    const response = await POST(request({ outcome: legacyMergedOutcome }), { params: params() });
 
     expect(response.status).toBe(400);
     expect(recordAcceptancePostMergeOutcome).not.toHaveBeenCalled();
@@ -87,14 +101,14 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-m
     expect(recordAcceptancePostMergeOutcome).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       recordId: RECORD_ID,
-      recordedBy: "user:user-1",
+      recordedBy: `user:${USER_ID}`,
       outcome,
     });
     await expect(response.json()).resolves.toEqual({
       inserted: true,
       event: {
         id: "event-1",
-        eventKey: `acceptance-post-merge:merged:${MERGE_SHA}`,
+        eventKey: `acceptance-post-merge:deployed:${outcome.deploymentReference}`,
         stage: "post_merge_outcome",
         at: NOW.toISOString(),
         payloadRef: { kind: "acceptance_post_merge_outcome", outcome },
@@ -102,12 +116,37 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-m
     });
   });
 
+  it.each([
+    {
+      kind: "incident",
+      revisionSha: MERGE_SHA,
+      incidentReference: "incident-2026-08-11-1",
+    },
+    {
+      kind: "reverted",
+      revertedSha: MERGE_SHA,
+      revertSha: "d".repeat(40),
+      revertReference: "revert-2026-08-11-1",
+    },
+  ] as const)("retains the $kind outcome for DB-enforced signed-merge lineage", async (retained) => {
+    const response = await POST(request({ outcome: retained }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptancePostMergeOutcome).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      recordId: RECORD_ID,
+      recordedBy: `user:${USER_ID}`,
+      outcome: retained,
+    });
+  });
+
   it("reports an idempotent replay without claiming a second append", async () => {
     vi.mocked(recordAcceptancePostMergeOutcome).mockResolvedValue({
       inserted: false,
       event: {
-        id: "event-1", recordId: RECORD_ID, eventKey: `acceptance-post-merge:merged:${MERGE_SHA}`,
-        stage: "post_merge_outcome", actor: "user:user-1", at: NOW,
+        id: "event-1", recordId: RECORD_ID,
+        eventKey: `acceptance-post-merge:deployed:${outcome.deploymentReference}`,
+        stage: "post_merge_outcome", actor: `user:${USER_ID}`, at: NOW,
         payloadRef: { kind: "acceptance_post_merge_outcome", outcome }, createdAt: NOW,
       },
     } as never);

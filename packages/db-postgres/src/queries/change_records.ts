@@ -1846,11 +1846,16 @@ export type AcceptancePostMergeOutcome =
       revertReference: string;
     };
 
+export type HumanAcceptancePostMergeOutcome = Exclude<
+  AcceptancePostMergeOutcome,
+  { kind: "merged" }
+>;
+
 export type RecordAcceptancePostMergeOutcomeInput = {
   workspaceId: string;
   recordId: string;
   recordedBy: string;
-  outcome: AcceptancePostMergeOutcome;
+  outcome: HumanAcceptancePostMergeOutcome;
   occurredAt?: Date;
 };
 
@@ -1861,17 +1866,12 @@ export type RecordAcceptancePostMergeOutcomeInput = {
  */
 export function validateAcceptancePostMergeOutcome(
   value: unknown
-): value is AcceptancePostMergeOutcome {
+): value is HumanAcceptancePostMergeOutcome {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
   const outcome = value as Record<string, unknown>;
-  if (outcome.kind === "merged") {
-    return Number.isInteger(outcome.prNumber)
-      && (outcome.prNumber as number) > 0
-      && gitSha(outcome.baseSha)
-      && gitSha(outcome.headSha)
-      && gitSha(outcome.mergeSha)
-      && boundedOutcomeReference(outcome.mergeReference);
-  }
+  // A merge is authoritative only when it comes through the authenticated
+  // GitHub webhook convergence API. The manual outcome lane cannot mint it.
+  if (outcome.kind === "merged") return false;
   if (outcome.kind === "deployed") {
     return gitSha(outcome.revisionSha)
       && boundedOutcomeReference(outcome.environment, OUTCOME_ENVIRONMENT_LIMIT)
@@ -1889,10 +1889,8 @@ export function validateAcceptancePostMergeOutcome(
   return false;
 }
 
-function outcomeEventKey(outcome: AcceptancePostMergeOutcome): string {
+function outcomeEventKey(outcome: HumanAcceptancePostMergeOutcome): string {
   switch (outcome.kind) {
-    case "merged":
-      return `acceptance-post-merge:merged:${outcome.mergeSha}`;
     case "deployed":
       return `acceptance-post-merge:deployed:${outcome.deploymentReference}`;
     case "incident":
@@ -1902,8 +1900,19 @@ function outcomeEventKey(outcome: AcceptancePostMergeOutcome): string {
   }
 }
 
-function outcomePayload(record: ChangeRecordRow, outcome: AcceptancePostMergeOutcome): Record<string, unknown> {
-  return { kind: "acceptance_post_merge_outcome", repository: record.repo, outcome };
+function outcomePayload(
+  record: ChangeRecordRow,
+  outcome: HumanAcceptancePostMergeOutcome,
+  signedMerge: { event: ChangeRecordEventRow; payload: SignedAcceptanceRecordMergePayload }
+): Record<string, unknown> {
+  return {
+    kind: "acceptance_post_merge_outcome",
+    repository: record.repo,
+    signedMergeEventId: signedMerge.event.id,
+    signedMergeDeliveryEventId: signedMerge.payload.deliveryEventId,
+    signedMergeSha: signedMerge.payload.mergeSha,
+    outcome,
+  };
 }
 
 /**
@@ -1914,7 +1923,11 @@ function outcomePayload(record: ChangeRecordRow, outcome: AcceptancePostMergeOut
 export async function recordAcceptancePostMergeOutcome(
   input: RecordAcceptancePostMergeOutcomeInput
 ): Promise<{ event: ChangeRecordEventRow; inserted: boolean }> {
-  if (!validateAcceptancePostMergeOutcome(input.outcome)) {
+  const untrustedOutcome: unknown = input.outcome;
+  if (isRecord(untrustedOutcome) && untrustedOutcome["kind"] === "merged") {
+    throw new Error("Acceptance Record merge outcomes require the signed GitHub webhook boundary");
+  }
+  if (!validateAcceptancePostMergeOutcome(untrustedOutcome)) {
     throw new Error("Invalid Acceptance Record post-merge outcome");
   }
   if (!boundedOutcomeReference(input.recordedBy, 256)) {
@@ -1938,6 +1951,12 @@ export async function recordAcceptancePostMergeOutcome(
     const record = mapChangeRecordRow(rawRecord);
     const outcome = input.outcome;
 
+    const signedMerge = await resolveStoredSignedAcceptanceRecordMergeInTransaction(tx, record);
+    if (!signedMerge) {
+      throw new Error("Post-merge outcome requires canonical signed merge custody");
+    }
+    const expectedPayload = outcomePayload(record, outcome, signedMerge);
+
     // A retry must return the immutable original event even if a later outcome
     // changed the Record summary (for example, a later revert). The event key
     // is derived from the immutable external reference, not its current state.
@@ -1946,20 +1965,15 @@ export async function recordAcceptancePostMergeOutcome(
       eq(changeRecordEvents.eventKey, eventKey),
     )).limit(1))[0];
     if (existing) {
+      if (existing.id !== changeRecordEventId({ recordId: input.recordId, eventKey })
+        || existing.stage !== "post_merge_outcome" || existing.actor !== input.recordedBy
+        || !isDeepStrictEqual(existing.payloadRef, expectedPayload)) {
+        throw new Error("Acceptance Record post-merge outcome replay conflicts with immutable custody");
+      }
       return { event: existing as ChangeRecordEventRow, inserted: false };
     }
 
-    if (outcome.kind === "merged") {
-      if (record.prNumber !== outcome.prNumber || !record.headShas.includes(outcome.headSha)) {
-        throw new Error("Merge outcome does not match this Acceptance Record PR and exact head");
-      }
-      if (record.mergedSha != null && record.mergedSha !== outcome.mergeSha) {
-        throw new Error("Acceptance Record already has a different merge SHA");
-      }
-      if (record.state === "reverted") {
-        throw new Error("A reverted Acceptance Record cannot record another merge outcome");
-      }
-    } else if (outcome.kind === "deployed" || outcome.kind === "incident") {
+    if (outcome.kind === "deployed" || outcome.kind === "incident") {
       if (record.mergedSha == null || record.mergedSha !== outcome.revisionSha) {
         throw new Error("Post-merge outcome does not reference this Acceptance Record merge SHA");
       }
@@ -1973,7 +1987,7 @@ export async function recordAcceptancePostMergeOutcome(
       ) VALUES (
         ${changeRecordEventId({ recordId: input.recordId, eventKey })},
         ${input.recordId}, ${eventKey}, 'post_merge_outcome', ${at},
-        ${input.recordedBy}, ${JSON.stringify(outcomePayload(record, outcome))}::jsonb
+        ${input.recordedBy}, ${JSON.stringify(expectedPayload)}::jsonb
       )
       ON CONFLICT (record_id, event_key) DO NOTHING
       RETURNING *
@@ -1984,13 +1998,11 @@ export async function recordAcceptancePostMergeOutcome(
       eq(changeRecordEvents.eventKey, eventKey),
     )).limit(1))[0];
     if (!rawEvent) throw new Error("Acceptance Record post-merge outcome was not recorded");
-
-    if (inserted[0] && outcome.kind === "merged") {
-      await tx.execute(sql`
-        UPDATE change_records
-        SET merged_sha = ${outcome.mergeSha}, state = 'merged', updated_at = now()
-        WHERE id = ${input.recordId}
-      `);
+    const recordedEvent = mapChangeRecordEventRow(rawEvent as Record<string, unknown>);
+    if (recordedEvent.id !== changeRecordEventId({ recordId: input.recordId, eventKey })
+      || recordedEvent.stage !== "post_merge_outcome" || recordedEvent.actor !== input.recordedBy
+      || !isDeepStrictEqual(recordedEvent.payloadRef, expectedPayload)) {
+      throw new Error("Acceptance Record post-merge outcome custody could not be revalidated");
     }
     if (inserted[0] && outcome.kind === "reverted") {
       await tx.execute(sql`
@@ -2001,7 +2013,7 @@ export async function recordAcceptancePostMergeOutcome(
     }
 
     return {
-      event: mapChangeRecordEventRow(rawEvent as Record<string, unknown>),
+      event: recordedEvent,
       inserted: Boolean(inserted[0]),
     };
   });
@@ -4382,6 +4394,839 @@ export async function recordAcceptancePrDecision(
       kind: appended.events[0]!.inserted ? "recorded" : "replayed",
       binding: resolved.binding,
       decision: recorded,
+    };
+  });
+}
+
+export type SignedAcceptanceRecordMergeGithubActor = {
+  id: number;
+  login: string;
+  type: "User" | "Bot" | "Organization";
+};
+
+export type SignedAcceptanceRecordMergeDecisionAlignment =
+  | {
+      kind: "aligned";
+      decision: "approved" | "approved_with_exception";
+      decisionEventId: string;
+      binding: CurrentAcceptancePrDecisionBinding;
+    }
+  | {
+      kind: "decision_conflicts_merge";
+      decision: "changes_requested" | "rejected";
+      decisionEventId: string;
+      binding: CurrentAcceptancePrDecisionBinding;
+    }
+  | {
+      kind: "not_recorded";
+      binding: CurrentAcceptancePrDecisionBinding;
+    }
+  | {
+      kind: "not_current";
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+      authorityGeneration: number;
+      currentBinding: CurrentAcceptancePrDecisionBinding | null;
+      currentDecision: AcceptancePrDecision | null;
+      currentDecisionEventId: string | null;
+    }
+  | {
+      kind: "custody_unavailable";
+      reason: ReadCurrentAcceptancePrDecisionNotReadyReason;
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+      authorityGeneration: number;
+    };
+
+export type RecordSignedAcceptanceRecordMergeInput = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  deliveryId: string;
+  headSha: string;
+  baseSha: string;
+  mergeSha: string;
+  mergedAt: Date;
+  prUrl: string;
+  githubActor: SignedAcceptanceRecordMergeGithubActor;
+  source: "github_webhook";
+};
+
+export type RecordSignedAcceptanceRecordMergeResult =
+  | {
+      kind: "recorded" | "replayed";
+      mergeEventId: string;
+      deliveryEventId: string;
+      decisionAlignment: SignedAcceptanceRecordMergeDecisionAlignment;
+      superseded: number;
+      previewBootsTornDown: number;
+      correctionDispatchesInvalidated: number;
+    }
+  | { kind: "not_found" | "not_attached" };
+
+/** Stable immutable-custody conflict; database outages remain ordinary errors. */
+export class SignedAcceptanceRecordMergeConflictError extends Error {
+  readonly code = "SIGNED_ACCEPTANCE_RECORD_MERGE_CONFLICT" as const;
+
+  constructor() {
+    super("The Acceptance Record is already bound to different signed merge custody");
+    this.name = "SignedAcceptanceRecordMergeConflictError";
+  }
+}
+
+const SIGNED_ACCEPTANCE_RECORD_MERGE_KIND = "signed_acceptance_record_merge";
+const SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND = "signed_acceptance_record_merge_delivery";
+const SIGNED_ACCEPTANCE_RECORD_MERGE_VERSION = 1;
+const SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE = "merge";
+const SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR = "github_webhook";
+const EXACT_LOWER_GITHUB_SHA = /^[0-9a-f]{40}$/;
+const GITHUB_ACTOR_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*|[A-Za-z0-9-]*\[bot\])$/;
+
+function signedAcceptanceRecordMergeDeliveryEventKey(input: {
+  prNumber: number;
+  deliveryId: string;
+}): string {
+  return `external-pr:signed-merge:${input.prNumber}:${input.deliveryId}`;
+}
+
+function signedAcceptanceRecordMergeEventKey(mergeSha: string): string {
+  return `acceptance-pr:signed-merge:${mergeSha}`;
+}
+
+function canonicalSignedAcceptanceRecordMergePrUrl(
+  value: unknown,
+  repo: string,
+  prNumber: number
+): value is string {
+  return typeof value === "string" && value === `https://github.com/${repo}/pull/${prNumber}`;
+}
+
+function isSignedAcceptanceRecordMergeGithubActor(
+  value: unknown
+): value is SignedAcceptanceRecordMergeGithubActor {
+  return isRecord(value)
+    && hasExactKeys(value, ["id", "login", "type"])
+    && Number.isSafeInteger(value["id"]) && (value["id"] as number) > 0
+    && typeof value["login"] === "string" && value["login"].length <= 100
+    && GITHUB_ACTOR_LOGIN.test(value["login"])
+    && (value["type"] === "User" || value["type"] === "Bot" || value["type"] === "Organization");
+}
+
+function parseRecordSignedAcceptanceRecordMergeInput(
+  value: unknown
+): RecordSignedAcceptanceRecordMergeInput | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "workspaceId", "recordId", "repo", "prNumber", "deliveryId", "headSha",
+    "baseSha", "mergeSha", "mergedAt", "prUrl", "githubActor", "source",
+  ])) return null;
+  if (!isUuid(value["workspaceId"]) || !isUuid(value["recordId"])
+    || !safeRepo(value["repo"]) || (value["repo"] as string).length > 201
+    || !(value["repo"] as string).split("/").every((segment) => segment.length <= 100)
+    || !Number.isInteger(value["prNumber"]) || (value["prNumber"] as number) <= 0
+    || !boundedPullRequestProvenanceText(value["deliveryId"], 256)
+    || typeof value["headSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(value["headSha"])
+    || typeof value["baseSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(value["baseSha"])
+    || typeof value["mergeSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(value["mergeSha"])
+    || !(value["mergedAt"] instanceof Date) || Number.isNaN(value["mergedAt"].valueOf())
+    || !canonicalSignedAcceptanceRecordMergePrUrl(
+      value["prUrl"], value["repo"] as string, value["prNumber"] as number
+    )
+    || !isSignedAcceptanceRecordMergeGithubActor(value["githubActor"])
+    || value["source"] !== "github_webhook") return null;
+  return value as RecordSignedAcceptanceRecordMergeInput;
+}
+
+function parseSignedMergeDecisionBinding(
+  value: unknown
+): CurrentAcceptancePrDecisionBinding | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "bindingId", "workspaceId", "recordId", "repo", "prNumber", "headSha",
+    "headCycleId", "authorityGeneration", "reviewJobId", "reviewVerdict",
+    "postedReviewUrl", "postedAttestationEventId", "acceptanceContract",
+  ]) || !isUuid(value["bindingId"]) || !isUuid(value["workspaceId"])
+    || !isUuid(value["recordId"]) || !safeRepo(value["repo"])
+    || !Number.isInteger(value["prNumber"]) || (value["prNumber"] as number) <= 0
+    || typeof value["headSha"] !== "string" || !EXACT_SHA1.test(value["headSha"])
+    || !isUuid(value["headCycleId"]) || !Number.isInteger(value["authorityGeneration"])
+    || (value["authorityGeneration"] as number) < 0 || !isUuid(value["reviewJobId"])
+    || !isAcceptanceReviewVerdict(value["reviewVerdict"])
+    || !isUuid(value["postedAttestationEventId"])
+    || !isRecord(value["acceptanceContract"])
+    || !hasExactKeys(value["acceptanceContract"], ["id", "version", "sha256"])
+    || !isUuid(value["acceptanceContract"]["id"])
+    || !Number.isInteger(value["acceptanceContract"]["version"])
+    || (value["acceptanceContract"]["version"] as number) <= 0
+    || typeof value["acceptanceContract"]["sha256"] !== "string"
+    || !LOWER_SHA256.test(value["acceptanceContract"]["sha256"])
+    || !canonicalSignedAcceptanceRecordMergePrUrl(
+      value["postedReviewUrl"], value["repo"] as string, value["prNumber"] as number
+    ) && !isCanonicalGithubReviewUrl(
+      value["postedReviewUrl"], value["repo"] as string, value["prNumber"] as number
+    )) return null;
+  const binding = value as CurrentAcceptancePrDecisionBinding;
+  const { bindingId, ...base } = binding;
+  return acceptancePrDecisionBindingId(base) === bindingId ? binding : null;
+}
+
+function isAcceptancePrDecisionNotReadyReason(
+  value: unknown
+): value is ReadCurrentAcceptancePrDecisionNotReadyReason {
+  return value === "review_job_unavailable"
+    || value === "confirmed_contract_unavailable"
+    || value === "posted_attestation_unavailable"
+    || value === "invalid_review_custody"
+    || value === "invalid_decision_custody";
+}
+
+function signedMergeDecisionAlignment(input: {
+  resolved: ResolveCurrentAcceptancePrDecisionResult;
+  record: ChangeRecordRow;
+  signedHeadSha: string;
+}): SignedAcceptanceRecordMergeDecisionAlignment {
+  const { resolved, record } = input;
+  // Head occurrence alignment is independently known from the locked Record
+  // snapshot. Do not let missing review/attestation custody on a newer head
+  // blur a signed A merge into a generic custody failure for current B.
+  if (record.currentPrHeadSha !== input.signedHeadSha) {
+    return {
+      kind: "not_current",
+      currentHeadSha: record.currentPrHeadSha,
+      currentHeadCycleId: record.currentPrHeadCycleId,
+      authorityGeneration: record.currentPrHeadAuthorityGeneration,
+      currentBinding: resolved.kind === "current" ? resolved.binding : null,
+      currentDecision: resolved.kind === "current" ? resolved.decision?.decision ?? null : null,
+      currentDecisionEventId: resolved.kind === "current" ? resolved.decision?.eventId ?? null : null,
+    };
+  }
+  if (resolved.kind === "current") {
+    if (resolved.binding.headSha !== input.signedHeadSha) {
+      return {
+        kind: "not_current",
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        currentBinding: resolved.binding,
+        currentDecision: resolved.decision?.decision ?? null,
+        currentDecisionEventId: resolved.decision?.eventId ?? null,
+      };
+    }
+    if (!resolved.decision) return { kind: "not_recorded", binding: resolved.binding };
+    if (resolved.decision.decision === "approved"
+      || resolved.decision.decision === "approved_with_exception") {
+      return {
+        kind: "aligned",
+        decision: resolved.decision.decision,
+        decisionEventId: resolved.decision.eventId,
+        binding: resolved.binding,
+      };
+    }
+    return {
+      kind: "decision_conflicts_merge",
+      decision: resolved.decision.decision,
+      decisionEventId: resolved.decision.eventId,
+      binding: resolved.binding,
+    };
+  }
+  if (resolved.kind === "not_ready") {
+    return {
+      kind: "custody_unavailable",
+      reason: resolved.reason,
+      currentHeadSha: record.currentPrHeadSha,
+      currentHeadCycleId: record.currentPrHeadCycleId,
+      authorityGeneration: record.currentPrHeadAuthorityGeneration,
+    };
+  }
+  return {
+    kind: "not_current",
+    currentHeadSha: record.currentPrHeadSha,
+    currentHeadCycleId: record.currentPrHeadCycleId,
+    authorityGeneration: record.currentPrHeadAuthorityGeneration,
+    currentBinding: null,
+    currentDecision: null,
+    currentDecisionEventId: null,
+  };
+}
+
+function parseSignedMergeDecisionAlignment(
+  value: unknown,
+  signedHeadSha: string
+): SignedAcceptanceRecordMergeDecisionAlignment | null {
+  if (!isRecord(value) || typeof value["kind"] !== "string") return null;
+  if (value["kind"] === "aligned" || value["kind"] === "decision_conflicts_merge") {
+    if (!hasExactKeys(value, ["kind", "decision", "decisionEventId", "binding"])
+      || !isUuid(value["decisionEventId"])) return null;
+    const binding = parseSignedMergeDecisionBinding(value["binding"]);
+    if (!binding || binding.headSha !== signedHeadSha) return null;
+    if (value["kind"] === "aligned"
+      ? value["decision"] !== "approved" && value["decision"] !== "approved_with_exception"
+      : value["decision"] !== "changes_requested" && value["decision"] !== "rejected") return null;
+    return { ...value, binding } as SignedAcceptanceRecordMergeDecisionAlignment;
+  }
+  if (value["kind"] === "not_recorded") {
+    if (!hasExactKeys(value, ["kind", "binding"])) return null;
+    const binding = parseSignedMergeDecisionBinding(value["binding"]);
+    return binding?.headSha === signedHeadSha ? { kind: "not_recorded", binding } : null;
+  }
+  if (value["kind"] === "not_current") {
+    if (!hasExactKeys(value, [
+      "kind", "currentHeadSha", "currentHeadCycleId", "authorityGeneration",
+      "currentBinding", "currentDecision", "currentDecisionEventId",
+    ]) || (value["currentHeadSha"] !== null
+      && (typeof value["currentHeadSha"] !== "string" || !EXACT_SHA1.test(value["currentHeadSha"])))
+      || (value["currentHeadCycleId"] !== null && !isUuid(value["currentHeadCycleId"]))
+      || !Number.isInteger(value["authorityGeneration"]) || (value["authorityGeneration"] as number) < 0
+      || (value["currentDecision"] !== null && !isAcceptancePrDecision(value["currentDecision"]))
+      || (value["currentDecisionEventId"] !== null && !isUuid(value["currentDecisionEventId"]))) return null;
+    const currentBinding = value["currentBinding"] === null
+      ? null : parseSignedMergeDecisionBinding(value["currentBinding"]);
+    if (value["currentBinding"] !== null && !currentBinding) return null;
+    if (currentBinding) {
+      if (currentBinding.headSha === signedHeadSha
+        || currentBinding.headSha !== value["currentHeadSha"]
+        || currentBinding.headCycleId !== value["currentHeadCycleId"]
+        || currentBinding.authorityGeneration !== value["authorityGeneration"]
+        || (value["currentDecision"] === null) !== (value["currentDecisionEventId"] === null)) return null;
+    } else if (value["currentDecision"] !== null || value["currentDecisionEventId"] !== null) return null;
+    return { ...value, currentBinding } as SignedAcceptanceRecordMergeDecisionAlignment;
+  }
+  if (value["kind"] === "custody_unavailable") {
+    if (!hasExactKeys(value, [
+      "kind", "reason", "currentHeadSha", "currentHeadCycleId", "authorityGeneration",
+    ]) || !isAcceptancePrDecisionNotReadyReason(value["reason"])
+      || (value["currentHeadSha"] !== null
+        && (typeof value["currentHeadSha"] !== "string" || !EXACT_SHA1.test(value["currentHeadSha"])))
+      || (value["currentHeadCycleId"] !== null && !isUuid(value["currentHeadCycleId"]))
+      || !Number.isInteger(value["authorityGeneration"])
+      || (value["authorityGeneration"] as number) < 0) return null;
+    return value as SignedAcceptanceRecordMergeDecisionAlignment;
+  }
+  return null;
+}
+
+async function revalidateSignedMergeDecisionAlignmentInTransaction(
+  tx: DbTransaction,
+  alignment: SignedAcceptanceRecordMergeDecisionAlignment
+): Promise<boolean> {
+  if (alignment.kind === "custody_unavailable") return true;
+  if (alignment.kind === "not_current" && !alignment.currentBinding) return true;
+  const binding = alignment.kind === "not_current"
+    ? alignment.currentBinding!
+    : alignment.binding;
+
+  const job = (await tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, binding.reviewJobId), eq(reviewJobs.workspaceId, binding.workspaceId),
+    eq(reviewJobs.repo, binding.repo), eq(reviewJobs.prNumber, binding.prNumber),
+    eq(reviewJobs.headSha, binding.headSha),
+  )).limit(1))[0];
+  if (!job || job.state !== "posted" || job.verdict !== binding.reviewVerdict
+    || job.postedReviewUrl !== binding.postedReviewUrl) return false;
+
+  const contract = (await tx.select().from(acceptanceContracts).where(and(
+    eq(acceptanceContracts.id, binding.acceptanceContract.id),
+    eq(acceptanceContracts.recordId, binding.recordId),
+    eq(acceptanceContracts.version, binding.acceptanceContract.version),
+    eq(acceptanceContracts.status, "confirmed"),
+  )).limit(1))[0];
+  if (!contract || !isNonBlankString(contract.confirmedBy)
+    || !(contract.confirmedAt instanceof Date) || Number.isNaN(contract.confirmedAt.valueOf())
+    || !projectConfirmedAcceptanceContract(contract.contract)) return false;
+  let contractSha256: string;
+  try {
+    contractSha256 = acceptanceContractSha256({
+      acceptanceContractId: contract.id,
+      acceptanceContractVersion: contract.version,
+      contract: contract.contract,
+    });
+  } catch {
+    return false;
+  }
+  if (contractSha256 !== binding.acceptanceContract.sha256) return false;
+
+  const attestation = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.id, binding.postedAttestationEventId),
+    eq(changeRecordEvents.recordId, binding.recordId),
+    eq(changeRecordEvents.eventKey, reviewJobPostedAttestationEventKey(binding.reviewJobId)),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  if (!attestation || !matchesCanonicalPostedReviewAttestation({
+    event: attestation,
+    binding: {
+      workspaceId: binding.workspaceId, recordId: binding.recordId, repo: binding.repo,
+      prNumber: binding.prNumber, headSha: binding.headSha, headCycleId: binding.headCycleId,
+      authorityGeneration: binding.authorityGeneration, reviewJobId: binding.reviewJobId,
+      acceptanceContract: binding.acceptanceContract,
+    },
+    postedReviewUrl: binding.postedReviewUrl,
+  })) return false;
+
+  const decisionEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, binding.recordId),
+    eq(changeRecordEvents.eventKey, acceptancePrDecisionEventKey(binding.headCycleId)),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  const decision = decisionEvent
+    ? parseCurrentAcceptancePrDecisionEvent({ event: decisionEvent, binding })
+    : null;
+  if (decisionEvent && !decision) return false;
+  if (alignment.kind === "not_recorded") return decision === null;
+  if (alignment.kind === "not_current") {
+    return (decision?.decision ?? null) === alignment.currentDecision
+      && (decision?.eventId ?? null) === alignment.currentDecisionEventId;
+  }
+  return decision != null
+    && decision.decision === alignment.decision
+    && decision.eventId === alignment.decisionEventId;
+}
+
+type SignedAcceptanceRecordMergePayload = {
+  kind: typeof SIGNED_ACCEPTANCE_RECORD_MERGE_KIND;
+  version: typeof SIGNED_ACCEPTANCE_RECORD_MERGE_VERSION;
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  deliveryId: string;
+  headSha: string;
+  baseSha: string;
+  mergeSha: string;
+  mergedAt: string;
+  prUrl: string;
+  githubActor: SignedAcceptanceRecordMergeGithubActor;
+  source: "github_webhook";
+  deliveryEventId: string;
+  currentHeadSha: string | null;
+  currentHeadCycleId: string | null;
+  currentHeadAuthoritative: boolean;
+  authorityGenerationBefore: number;
+  authorityGenerationAfter: number;
+  decisionAlignment: SignedAcceptanceRecordMergeDecisionAlignment;
+  superseded: number;
+  previewBootsTornDown: number;
+  correctionDispatchesInvalidated: number;
+};
+
+function signedAcceptanceRecordMergeMetadata(
+  input: RecordSignedAcceptanceRecordMergeInput
+): Omit<SignedAcceptanceRecordMergePayload,
+  | "kind" | "version" | "deliveryEventId" | "currentHeadSha" | "currentHeadCycleId"
+  | "currentHeadAuthoritative" | "authorityGenerationBefore" | "authorityGenerationAfter"
+  | "decisionAlignment" | "superseded" | "previewBootsTornDown"
+  | "correctionDispatchesInvalidated"> {
+  return {
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    deliveryId: input.deliveryId,
+    headSha: input.headSha,
+    baseSha: input.baseSha,
+    mergeSha: input.mergeSha,
+    mergedAt: input.mergedAt.toISOString(),
+    prUrl: input.prUrl,
+    githubActor: { ...input.githubActor },
+    source: input.source,
+  };
+}
+
+function signedAcceptanceRecordMergeDeliveryPayload(
+  metadata: ReturnType<typeof signedAcceptanceRecordMergeMetadata>
+): Record<string, unknown> {
+  return {
+    kind: SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND,
+    version: SIGNED_ACCEPTANCE_RECORD_MERGE_VERSION,
+    ...metadata,
+  };
+}
+
+function signedAcceptanceRecordMergeCanonicalTupleMatches(
+  payload: SignedAcceptanceRecordMergePayload,
+  input: RecordSignedAcceptanceRecordMergeInput
+): boolean {
+  const metadata = signedAcceptanceRecordMergeMetadata(input);
+  return isDeepStrictEqual({
+    workspaceId: payload.workspaceId,
+    recordId: payload.recordId,
+    repo: payload.repo,
+    prNumber: payload.prNumber,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    mergeSha: payload.mergeSha,
+    mergedAt: payload.mergedAt,
+    prUrl: payload.prUrl,
+    githubActor: payload.githubActor,
+    source: payload.source,
+  }, {
+    workspaceId: metadata.workspaceId,
+    recordId: metadata.recordId,
+    repo: metadata.repo,
+    prNumber: metadata.prNumber,
+    headSha: metadata.headSha,
+    baseSha: metadata.baseSha,
+    mergeSha: metadata.mergeSha,
+    mergedAt: metadata.mergedAt,
+    prUrl: metadata.prUrl,
+    githubActor: metadata.githubActor,
+    source: metadata.source,
+  });
+}
+
+async function readExactSignedAcceptanceRecordMergeDeliveryInTransaction(
+  tx: DbTransaction,
+  input: RecordSignedAcceptanceRecordMergeInput
+): Promise<ChangeRecordEventRow | null> {
+  const eventKey = signedAcceptanceRecordMergeDeliveryEventKey(input);
+  const event = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, input.recordId),
+    eq(changeRecordEvents.eventKey, eventKey),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  const payload = signedAcceptanceRecordMergeDeliveryPayload(
+    signedAcceptanceRecordMergeMetadata(input)
+  );
+  return event
+    && event.id === changeRecordEventId({ recordId: input.recordId, eventKey })
+    && event.stage === SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    && event.actor === SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR
+    && isDeepStrictEqual(event.payloadRef, payload)
+    ? event : null;
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const date = new Date(value);
+  return !Number.isNaN(date.valueOf()) && date.toISOString() === value;
+}
+
+function parseSignedAcceptanceRecordMergePayload(
+  event: ChangeRecordEventRow,
+  record: ChangeRecordRow
+): SignedAcceptanceRecordMergePayload | null {
+  const payload = event.payloadRef;
+  if (event.stage !== SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    || event.actor !== SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR
+    || !isRecord(payload) || !hasExactKeys(payload, [
+      "kind", "version", "workspaceId", "recordId", "repo", "prNumber", "deliveryId",
+      "headSha", "baseSha", "mergeSha", "mergedAt", "prUrl", "githubActor", "source",
+      "deliveryEventId", "currentHeadSha", "currentHeadCycleId", "currentHeadAuthoritative",
+      "authorityGenerationBefore", "authorityGenerationAfter", "decisionAlignment",
+      "superseded", "previewBootsTornDown", "correctionDispatchesInvalidated",
+    ]) || payload["kind"] !== SIGNED_ACCEPTANCE_RECORD_MERGE_KIND
+    || payload["version"] !== SIGNED_ACCEPTANCE_RECORD_MERGE_VERSION
+    || payload["workspaceId"] !== record.workspaceId || payload["recordId"] !== record.id
+    || payload["repo"] !== record.repo || payload["prNumber"] !== record.prNumber
+    || typeof payload["deliveryId"] !== "string"
+    || !boundedPullRequestProvenanceText(payload["deliveryId"], 256)
+    || typeof payload["headSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(payload["headSha"])
+    || typeof payload["baseSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(payload["baseSha"])
+    || typeof payload["mergeSha"] !== "string" || !EXACT_LOWER_GITHUB_SHA.test(payload["mergeSha"])
+    || !isCanonicalIsoTimestamp(payload["mergedAt"])
+    || !canonicalSignedAcceptanceRecordMergePrUrl(payload["prUrl"], record.repo, record.prNumber!)
+    || !isSignedAcceptanceRecordMergeGithubActor(payload["githubActor"])
+    || payload["source"] !== "github_webhook" || !isUuid(payload["deliveryEventId"])
+    || (payload["currentHeadSha"] !== null
+      && (typeof payload["currentHeadSha"] !== "string" || !EXACT_SHA1.test(payload["currentHeadSha"])))
+    || (payload["currentHeadCycleId"] !== null && !isUuid(payload["currentHeadCycleId"]))
+    || typeof payload["currentHeadAuthoritative"] !== "boolean"
+    || !Number.isInteger(payload["authorityGenerationBefore"])
+    || (payload["authorityGenerationBefore"] as number) < 0
+    || !Number.isInteger(payload["authorityGenerationAfter"])
+    || payload["authorityGenerationAfter"] !== (payload["authorityGenerationBefore"] as number)
+      + (payload["currentHeadAuthoritative"] ? 1 : 0)
+    || !Number.isInteger(payload["superseded"]) || (payload["superseded"] as number) < 0
+    || !Number.isInteger(payload["previewBootsTornDown"])
+    || (payload["previewBootsTornDown"] as number) < 0
+    || !Number.isInteger(payload["correctionDispatchesInvalidated"])
+    || (payload["correctionDispatchesInvalidated"] as number) < 0) return null;
+  const decisionAlignment = parseSignedMergeDecisionAlignment(
+    payload["decisionAlignment"], payload["headSha"]
+  );
+  if (!decisionAlignment) return null;
+  const snapshotMatches = decisionAlignment.kind === "aligned"
+    || decisionAlignment.kind === "decision_conflicts_merge"
+    || decisionAlignment.kind === "not_recorded"
+    ? payload["currentHeadAuthoritative"] === true
+      && decisionAlignment.binding.headSha === payload["currentHeadSha"]
+      && decisionAlignment.binding.headCycleId === payload["currentHeadCycleId"]
+      && decisionAlignment.binding.authorityGeneration === payload["authorityGenerationBefore"]
+    : decisionAlignment.kind === "not_current"
+      ? decisionAlignment.currentHeadSha === payload["currentHeadSha"]
+        && decisionAlignment.currentHeadCycleId === payload["currentHeadCycleId"]
+        && decisionAlignment.authorityGeneration === payload["authorityGenerationBefore"]
+      : decisionAlignment.currentHeadSha === payload["currentHeadSha"]
+        && decisionAlignment.currentHeadCycleId === payload["currentHeadCycleId"]
+        && decisionAlignment.authorityGeneration === payload["authorityGenerationBefore"];
+  if (!snapshotMatches) return null;
+  const parsed = { ...payload, decisionAlignment } as SignedAcceptanceRecordMergePayload;
+  const eventKey = signedAcceptanceRecordMergeEventKey(parsed.mergeSha);
+  return event.id === changeRecordEventId({ recordId: record.id, eventKey })
+    && event.eventKey === eventKey ? parsed : null;
+}
+
+async function resolveStoredSignedAcceptanceRecordMergeInTransaction(
+  tx: DbTransaction,
+  record: ChangeRecordRow,
+  expected?: RecordSignedAcceptanceRecordMergeInput
+): Promise<{
+  event: ChangeRecordEventRow;
+  payload: SignedAcceptanceRecordMergePayload;
+} | null> {
+  const mergeSha = expected?.mergeSha ?? record.mergedSha;
+  if (!mergeSha || !EXACT_LOWER_GITHUB_SHA.test(mergeSha)) return null;
+  const eventKey = signedAcceptanceRecordMergeEventKey(mergeSha);
+  const event = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, record.id), eq(changeRecordEvents.eventKey, eventKey),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  if (!event) return null;
+  const payload = parseSignedAcceptanceRecordMergePayload(event, record);
+  // A delayed signed delivery can raise the now-terminal authority generation,
+  // but it cannot replace the immutable merge SHA or restore authority.
+  if (!payload || record.mergedSha !== payload.mergeSha
+    || record.currentPrHeadAuthoritative
+    || record.currentPrHeadAuthorityGeneration < payload.authorityGenerationAfter) return null;
+  if (expected) {
+    const metadata = signedAcceptanceRecordMergeMetadata(expected);
+    if (!isDeepStrictEqual({
+      workspaceId: payload.workspaceId, recordId: payload.recordId, repo: payload.repo,
+      prNumber: payload.prNumber, deliveryId: payload.deliveryId, headSha: payload.headSha,
+      baseSha: payload.baseSha, mergeSha: payload.mergeSha, mergedAt: payload.mergedAt,
+      prUrl: payload.prUrl, githubActor: payload.githubActor, source: payload.source,
+    }, metadata)) return null;
+  }
+  const deliveryEventKey = signedAcceptanceRecordMergeDeliveryEventKey({
+    prNumber: payload.prNumber, deliveryId: payload.deliveryId,
+  });
+  const delivery = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.id, payload.deliveryEventId),
+    eq(changeRecordEvents.recordId, record.id),
+    eq(changeRecordEvents.eventKey, deliveryEventKey),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  const deliveryPayload = signedAcceptanceRecordMergeDeliveryPayload({
+    workspaceId: payload.workspaceId, recordId: payload.recordId, repo: payload.repo,
+    prNumber: payload.prNumber, deliveryId: payload.deliveryId, headSha: payload.headSha,
+    baseSha: payload.baseSha, mergeSha: payload.mergeSha, mergedAt: payload.mergedAt,
+    prUrl: payload.prUrl, githubActor: payload.githubActor, source: payload.source,
+  });
+  if (!delivery
+    || delivery.id !== changeRecordEventId({ recordId: record.id, eventKey: deliveryEventKey })
+    || delivery.stage !== SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    || delivery.actor !== SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR
+    || !isDeepStrictEqual(delivery.payloadRef, deliveryPayload)
+    || !await revalidateSignedMergeDecisionAlignmentInTransaction(tx, payload.decisionAlignment)) {
+    return null;
+  }
+  return { event, payload };
+}
+
+/**
+ * Converges one authenticated GitHub `pull_request.closed+merged` delivery
+ * onto its tracked Acceptance Record. This records the signed merge fact even
+ * when no aligned approval exists; it never treats merge as human approval.
+ */
+export async function recordSignedAcceptanceRecordMerge(
+  input: RecordSignedAcceptanceRecordMergeInput
+): Promise<RecordSignedAcceptanceRecordMergeResult> {
+  const parsed = parseRecordSignedAcceptanceRecordMergeInput(input);
+  if (!parsed) throw new Error("Signed Acceptance Record merge requires exact GitHub webhook provenance");
+  const lockKey = acceptanceRecordPullRequestLockKey(parsed);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const rawRecord = (Array.from(await tx.execute(sql`
+      SELECT * FROM change_records
+      WHERE id = ${parsed.recordId}
+        AND workspace_id = ${parsed.workspaceId}
+        AND repo = ${parsed.repo}
+      FOR UPDATE
+    `)) as Array<Record<string, unknown>>)[0];
+    if (!rawRecord) return { kind: "not_found" };
+    const record = mapChangeRecordRow(rawRecord);
+    if (record.prNumber !== parsed.prNumber) return { kind: "not_attached" };
+
+    const deliveryEventKey = signedAcceptanceRecordMergeDeliveryEventKey(parsed);
+    const deliveryEventId = changeRecordEventId({ recordId: record.id, eventKey: deliveryEventKey });
+    const existingDelivery = (await tx.select({ id: changeRecordEvents.id }).from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, record.id), eq(changeRecordEvents.eventKey, deliveryEventKey),
+    )).limit(1))[0];
+    if (existingDelivery) {
+      const stored = await resolveStoredSignedAcceptanceRecordMergeInTransaction(tx, record);
+      const exactDelivery = await readExactSignedAcceptanceRecordMergeDeliveryInTransaction(tx, parsed);
+      if (!stored || !exactDelivery
+        || !signedAcceptanceRecordMergeCanonicalTupleMatches(stored.payload, parsed)) {
+        throw new SignedAcceptanceRecordMergeConflictError();
+      }
+      return {
+        kind: "replayed",
+        mergeEventId: stored.event.id,
+        deliveryEventId,
+        decisionAlignment: stored.payload.decisionAlignment,
+        superseded: stored.payload.superseded,
+        previewBootsTornDown: stored.payload.previewBootsTornDown,
+        correctionDispatchesInvalidated: stored.payload.correctionDispatchesInvalidated,
+      };
+    }
+
+    const storedMerge = await resolveStoredSignedAcceptanceRecordMergeInTransaction(tx, record);
+    if (storedMerge) {
+      if (!signedAcceptanceRecordMergeCanonicalTupleMatches(storedMerge.payload, parsed)) {
+        throw new SignedAcceptanceRecordMergeConflictError();
+      }
+      let replayDelivery: AppendChangeRecordEventsAtomicallyResult;
+      try {
+        replayDelivery = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+          recordId: record.id,
+          eventKey: deliveryEventKey,
+          stage: SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE,
+          actor: SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR,
+          at: parsed.mergedAt,
+          payloadRef: signedAcceptanceRecordMergeDeliveryPayload(
+            signedAcceptanceRecordMergeMetadata(parsed)
+          ),
+        }]);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("event key is already bound")) {
+          throw new SignedAcceptanceRecordMergeConflictError();
+        }
+        throw error;
+      }
+      if (!replayDelivery.events[0]!.inserted
+        || replayDelivery.events[0]!.event.id !== deliveryEventId) {
+        throw new SignedAcceptanceRecordMergeConflictError();
+      }
+      return {
+        kind: "replayed",
+        mergeEventId: storedMerge.event.id,
+        deliveryEventId,
+        decisionAlignment: storedMerge.payload.decisionAlignment,
+        superseded: storedMerge.payload.superseded,
+        previewBootsTornDown: storedMerge.payload.previewBootsTornDown,
+        correctionDispatchesInvalidated: storedMerge.payload.correctionDispatchesInvalidated,
+      };
+    }
+
+    const existingSignedMerge = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, record.id),
+      eq(changeRecordEvents.stage, SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE),
+    ))).some((event) => event.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_KIND);
+    if (existingSignedMerge || record.mergedSha !== null || record.state !== "open") {
+      throw new SignedAcceptanceRecordMergeConflictError();
+    }
+
+    const resolvedDecision = await resolveCurrentAcceptancePrDecisionInTransaction(
+      tx, { workspaceId: parsed.workspaceId, recordId: parsed.recordId },
+      { repo: parsed.repo, prNumber: parsed.prNumber }
+    );
+    const decisionAlignment = signedMergeDecisionAlignment({
+      resolved: resolvedDecision,
+      record,
+      signedHeadSha: parsed.headSha,
+    });
+    const metadata = signedAcceptanceRecordMergeMetadata(parsed);
+    let receipt: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      receipt = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: record.id,
+        eventKey: deliveryEventKey,
+        stage: SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE,
+        actor: SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR,
+        at: parsed.mergedAt,
+        payloadRef: signedAcceptanceRecordMergeDeliveryPayload(metadata),
+      }]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("event key is already bound")) {
+        throw new SignedAcceptanceRecordMergeConflictError();
+      }
+      throw error;
+    }
+    if (!receipt.events[0]!.inserted || receipt.events[0]!.event.id !== deliveryEventId) {
+      throw new SignedAcceptanceRecordMergeConflictError();
+    }
+
+    const superseded = Array.from(await tx.execute(sql`
+      UPDATE review_jobs
+      SET state = 'superseded', updated_at = now()
+      WHERE workspace_id = ${parsed.workspaceId}
+        AND repo = ${parsed.repo}
+        AND pr_number = ${parsed.prNumber}
+        AND state IN ('queued', 'running')
+      RETURNING id
+    `)).length;
+    const previewBootsTornDown = Array.from(await tx.execute(sql`
+      UPDATE preview_boots
+      SET status = 'torn_down', reason = 'acceptance record PR merged', updated_at = now()
+      WHERE workspace_id = ${parsed.workspaceId}
+        AND repo = ${parsed.repo}
+        AND pr_number = ${parsed.prNumber}
+        AND status IN ('pending', 'claimed', 'booting', 'ready')
+      RETURNING id
+    `)).length;
+    const correctionDispatchesInvalidated = await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+      workspaceId: parsed.workspaceId,
+      recordId: parsed.recordId,
+      headSha: record.currentPrHeadSha,
+      headCycleId: record.currentPrHeadCycleId,
+      reason: "terminal",
+    });
+    const authorityGenerationAfter = record.currentPrHeadAuthorityGeneration
+      + (record.currentPrHeadAuthoritative ? 1 : 0);
+    const updated = await tx.update(changeRecords).set({
+      mergedSha: parsed.mergeSha,
+      state: "merged",
+      currentPrHeadAuthoritative: false,
+      currentPrHeadAuthorityGeneration: authorityGenerationAfter,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(changeRecords.id, record.id),
+      eq(changeRecords.workspaceId, parsed.workspaceId),
+      isNull(changeRecords.mergedSha),
+      eq(changeRecords.state, record.state),
+      eq(changeRecords.currentPrHeadAuthorityGeneration, record.currentPrHeadAuthorityGeneration),
+    )).returning({ id: changeRecords.id });
+    if (updated.length !== 1) throw new SignedAcceptanceRecordMergeConflictError();
+
+    const mergeEventKey = signedAcceptanceRecordMergeEventKey(parsed.mergeSha);
+    const mergeEventId = changeRecordEventId({ recordId: record.id, eventKey: mergeEventKey });
+    const payload: SignedAcceptanceRecordMergePayload = {
+      kind: SIGNED_ACCEPTANCE_RECORD_MERGE_KIND,
+      version: SIGNED_ACCEPTANCE_RECORD_MERGE_VERSION,
+      ...metadata,
+      deliveryEventId,
+      currentHeadSha: record.currentPrHeadSha,
+      currentHeadCycleId: record.currentPrHeadCycleId,
+      currentHeadAuthoritative: record.currentPrHeadAuthoritative,
+      authorityGenerationBefore: record.currentPrHeadAuthorityGeneration,
+      authorityGenerationAfter,
+      decisionAlignment,
+      superseded,
+      previewBootsTornDown,
+      correctionDispatchesInvalidated,
+    };
+    let mergeEvent: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      mergeEvent = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: record.id,
+        eventKey: mergeEventKey,
+        stage: SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE,
+        actor: SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR,
+        at: parsed.mergedAt,
+        payloadRef: payload,
+      }]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("event key is already bound")) {
+        throw new SignedAcceptanceRecordMergeConflictError();
+      }
+      throw error;
+    }
+    if (!mergeEvent.events[0]!.inserted || mergeEvent.events[0]!.event.id !== mergeEventId) {
+      throw new SignedAcceptanceRecordMergeConflictError();
+    }
+    const storedRecord = (await tx.select().from(changeRecords).where(eq(changeRecords.id, record.id)).limit(1))[0]!;
+    const stored = await resolveStoredSignedAcceptanceRecordMergeInTransaction(tx, storedRecord, parsed);
+    if (!stored) throw new Error("Signed Acceptance Record merge custody could not be revalidated");
+    return {
+      kind: "recorded",
+      mergeEventId,
+      deliveryEventId,
+      decisionAlignment,
+      superseded,
+      previewBootsTornDown,
+      correctionDispatchesInvalidated,
     };
   });
 }

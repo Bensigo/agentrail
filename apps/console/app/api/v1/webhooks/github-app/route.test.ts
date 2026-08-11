@@ -3,15 +3,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  SignedAcceptanceRecordMergeConflictError: class SignedAcceptanceRecordMergeConflictError extends Error {},
   advanceConfirmedAcceptanceRecordPullRequestHead: vi.fn(),
   reconcileConfirmedAcceptanceRecordPullRequestHead: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
   getInstallationToken: vi.fn(),
   getRepositoryByName: vi.fn(),
-  appendChangeRecordEvent: vi.fn(),
-  findOrCreateChangeRecord: vi.fn(),
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent: vi.fn(),
   readChangeRecordByPr: vi.fn(),
+  recordSignedAcceptanceRecordMerge: vi.fn(),
   recordReviewEvent: vi.fn(),
 }));
 vi.mock("../../../../../lib/github-current-pr", () => ({
@@ -19,15 +19,15 @@ vi.mock("../../../../../lib/github-current-pr", () => ({
 }));
 import { POST } from "./route";
 import {
+  SignedAcceptanceRecordMergeConflictError,
   advanceConfirmedAcceptanceRecordPullRequestHead,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
   getWorkspaceByGithubInstallationId,
   getInstallationToken,
   getRepositoryByName,
-  appendChangeRecordEvent,
-  findOrCreateChangeRecord,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
   readChangeRecordByPr,
+  recordSignedAcceptanceRecordMerge,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
 import { readCurrentGithubPullRequest } from "../../../../../lib/github-current-pr";
@@ -41,8 +41,11 @@ const ORIGINAL_SECRET = process.env[SECRET_ENV];
 const ORIGINAL_ENROLL = process.env[ENROLL_ENV];
 const DELIVERY_ID = "gh-delivery-1";
 const DEFAULT_HEAD_SHA = "a".repeat(40);
+const DEFAULT_BASE_SHA = "b".repeat(40);
+const DEFAULT_MERGE_SHA = "c".repeat(40);
+const MERGED_AT = "2026-08-11T08:30:00Z";
 
-const WORKSPACE_ID = "ws-1";
+const WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 const WORKSPACE = { workspaceId: WORKSPACE_ID };
 const CONNECTED_REPO = {
   id: "repo-1",
@@ -95,8 +98,13 @@ function prPayload(
     installationId?: number;
     omitInstallation?: boolean;
     merged?: boolean;
-    mergeCommitSha?: string;
+    baseSha?: string | null;
+    mergeCommitSha?: string | null;
+    mergedAt?: string | null;
     htmlUrl?: string | null;
+    senderId?: number | null;
+    senderLogin?: string | null;
+    senderType?: string | null;
     acceptanceRecordMarker?: string | null;
     beforeHeadSha?: string | null;
     afterHeadSha?: string | null;
@@ -111,7 +119,12 @@ function prPayload(
     installationId = 999,
     omitInstallation = false,
     merged = false,
-    mergeCommitSha = "merge-sha-1",
+    baseSha = DEFAULT_BASE_SHA,
+    mergeCommitSha = DEFAULT_MERGE_SHA,
+    mergedAt = MERGED_AT,
+    senderId = 1234,
+    senderLogin = "ada",
+    senderType = "User",
     acceptanceRecordMarker = "11111111-1111-4111-8111-111111111111",
   } = opts;
   const htmlUrl = opts.htmlUrl === undefined
@@ -136,13 +149,20 @@ function prPayload(
       number: prNumber,
       draft,
       head: { sha: headSha },
+      ...(baseSha == null ? {} : { base: { sha: baseSha } }),
       merged,
-      merge_commit_sha: mergeCommitSha,
+      ...(mergeCommitSha == null ? {} : { merge_commit_sha: mergeCommitSha }),
+      ...(mergedAt == null ? {} : { merged_at: mergedAt }),
       ...(htmlUrl == null ? {} : { html_url: htmlUrl }),
       body: acceptanceRecordMarker == null ? null : `<!-- jace-acceptance-record: ${acceptanceRecordMarker} -->`,
     },
     repository: { full_name: repoFullName },
     ...(omitInstallation ? {} : { installation: { id: installationId } }),
+    sender: {
+      ...(senderId == null ? {} : { id: senderId }),
+      ...(senderLogin == null ? {} : { login: senderLogin }),
+      ...(senderType == null ? {} : { type: senderType }),
+    },
   };
 }
 
@@ -168,7 +188,6 @@ beforeEach(() => {
     kind: "not_proven",
     reason: "github_unavailable",
   });
-  vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
   vi.mocked(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).mockResolvedValue({
     kind: "invalidated",
     inserted: true,
@@ -177,9 +196,24 @@ beforeEach(() => {
     previewBootsTornDown: 2,
     currentHeadSha: DEFAULT_HEAD_SHA,
     currentHeadCycleId: "job-1",
+    authorityGeneration: 2,
+    currentAuthoritative: false,
   } as never);
   vi.mocked(readChangeRecordByPr).mockResolvedValue(null as never);
-  vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
+  vi.mocked(recordSignedAcceptanceRecordMerge).mockResolvedValue({
+    kind: "recorded",
+    mergeEventId: "merge-event-1",
+    deliveryEventId: "delivery-event-1",
+    decisionAlignment: {
+      kind: "aligned",
+      decision: "approved",
+      decisionEventId: "decision-event-1",
+      binding: {},
+    },
+    superseded: 1,
+    previewBootsTornDown: 2,
+    correctionDispatchesInvalidated: 1,
+  } as never);
   vi.mocked(recordReviewEvent).mockResolvedValue({ recorded: true, eventId: "review-event-1" } as never);
 });
 
@@ -270,7 +304,10 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
   });
 
-  it("4b. a merged closed PR appends one idempotent merge-stage Change Record event", async () => {
+  it("4b. records one canonical signed merge transaction for an attached Acceptance Record", async () => {
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
     const body = JSON.stringify(prPayload({ action: "closed", merged: true }));
     const res = await POST(makeRequest(body));
 
@@ -278,42 +315,59 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(await res.json()).toEqual({
       ok: true,
       merged: true,
-      invalidated: false,
-      superseded: 0,
-      previewBootsTornDown: 0,
+      recorded: true,
+      acceptanceOutcomeRecorded: true,
+      kind: "recorded",
+      decisionAlignment: "aligned",
+      superseded: 1,
+      previewBootsTornDown: 2,
     });
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
-    expect(recordReviewEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: WORKSPACE_ID,
-        repo: "ada/widgets",
-        prNumber: 42,
-        deliveryId: DELIVERY_ID,
-        eventType: "merged",
-      })
-    );
-    expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
+    expect(recordSignedAcceptanceRecordMerge).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      recordId: "11111111-1111-4111-8111-111111111111",
+      repo: "ada/widgets",
+      prNumber: 42,
+      deliveryId: DELIVERY_ID,
+      headSha: DEFAULT_HEAD_SHA,
+      baseSha: DEFAULT_BASE_SHA,
+      mergeSha: DEFAULT_MERGE_SHA,
+      mergedAt: new Date(MERGED_AT),
+      prUrl: "https://github.com/ada/widgets/pull/42",
+      githubActor: { id: 1234, login: "ada", type: "User" },
+      source: "github_webhook",
+    });
+    expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).not.toHaveBeenCalled();
+    expect(recordReviewEvent).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: WORKSPACE_ID,
       repo: "ada/widgets",
       prNumber: 42,
-      headShas: [DEFAULT_HEAD_SHA],
-      mergedSha: "merge-sha-1",
-      state: "merged",
+      deliveryId: DELIVERY_ID,
+      eventType: "merged",
+      occurredAt: new Date(MERGED_AT),
+      headSha: DEFAULT_HEAD_SHA,
+    }));
+  });
+
+  it("4b1. keeps an unattached signed merge metrics-only without fabricating Record custody", async () => {
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+
+    expect(await response.json()).toEqual({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      reason: "acceptance record missing",
     });
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
-      recordId: "change-1",
-      eventKey: "merge:pr:42:merged",
-      stage: "merge",
-      actor: "github-webhook",
-      payloadRef: {
-        kind: "merge",
-        repo: "ada/widgets",
-        prNumber: 42,
-        url: "https://github.com/ada/widgets/pull/42",
-        mergeCommitSha: "merge-sha-1",
-        outcome: "merged",
-      },
-    });
+    expect(recordReviewEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "merged",
+      occurredAt: new Date(MERGED_AT),
+      headSha: DEFAULT_HEAD_SHA,
+    }));
+    expect(recordSignedAcceptanceRecordMerge).not.toHaveBeenCalled();
     expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).not.toHaveBeenCalled();
   });
 
@@ -347,10 +401,10 @@ describe("POST /api/v1/webhooks/github-app", () => {
       expect.objectContaining({ eventType: "closed", headSha: DEFAULT_HEAD_SHA })
     );
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
-    expect(findOrCreateChangeRecord).not.toHaveBeenCalled();
+    expect(recordSignedAcceptanceRecordMerge).not.toHaveBeenCalled();
   });
 
-  it("4d. an attached merge invalidates without promoting the observed terminal head", async () => {
+  it("4d. invalid signed merge metadata revokes authority without recording canonical merge custody", async () => {
     vi.mocked(readChangeRecordByPr).mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
     } as never);
@@ -359,17 +413,22 @@ describe("POST /api/v1/webhooks/github-app", () => {
       action: "closed",
       merged: true,
       headSha: observedHead,
+      baseSha: null,
     }));
 
     const res = await POST(makeRequest(body));
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(expect.objectContaining({
+    expect(await res.json()).toEqual({
+      ok: true,
+      ignored: true,
       merged: true,
+      recorded: false,
+      reason: "invalid signed merge metadata",
       invalidated: true,
       superseded: 1,
       previewBootsTornDown: 2,
-    }));
+    });
     expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         recordId: "11111111-1111-4111-8111-111111111111",
@@ -377,7 +436,208 @@ describe("POST /api/v1/webhooks/github-app", () => {
         event: "merged",
       })
     );
+    expect(recordSignedAcceptanceRecordMerge).not.toHaveBeenCalled();
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ mergeCommitSha: null }, "missing merge SHA"],
+    [{ mergeCommitSha: "not-a-sha" }, "malformed merge SHA"],
+    [{ mergeCommitSha: "C".repeat(40) }, "noncanonical merge SHA"],
+    [{ baseSha: null }, "missing base SHA"],
+    [{ baseSha: "not-a-sha" }, "malformed base SHA"],
+    [{ baseSha: "B".repeat(40) }, "noncanonical base SHA"],
+    [{ headSha: "A".repeat(40) }, "noncanonical head SHA"],
+    [{ mergedAt: null }, "missing merge timestamp"],
+    [{ mergedAt: "not-a-timestamp" }, "invalid merge timestamp"],
+    [{ htmlUrl: "https://github.com/evil/widgets/pull/42" }, "noncanonical PR URL"],
+    [{ senderId: null }, "missing sender id"],
+    [{ senderLogin: " ada " }, "noncanonical sender login"],
+    [{ senderLogin: "ada_user" }, "unsupported sender login"],
+    [{ senderType: "EnterpriseUser" }, "unsupported sender type"],
+  ] as const)("4e. %s is terminal-only and never canonical merge evidence (%s)", async (options, _description) => {
+    void _description;
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+      ...options,
+    }))));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      reason: "invalid signed merge metadata",
+    }));
+    expect(recordSignedAcceptanceRecordMerge).not.toHaveBeenCalled();
+    expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["replayed", "not_recorded"],
+    ["recorded", "decision_conflicts_merge"],
+    ["recorded", "not_current"],
+    ["recorded", "custody_unavailable"],
+  ] as const)("4f. reports %s merge custody separately from %s decision alignment", async (
+    kind,
+    decisionAlignment,
+  ) => {
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
+    vi.mocked(recordSignedAcceptanceRecordMerge).mockResolvedValueOnce({
+      kind,
+      mergeEventId: "merge-event-1",
+      deliveryEventId: "delivery-event-1",
+      decisionAlignment: { kind: decisionAlignment },
+      superseded: 0,
+      previewBootsTornDown: 0,
+      correctionDispatchesInvalidated: 0,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+
+    expect(await response.json()).toEqual({
+      ok: true,
+      merged: true,
+      recorded: true,
+      acceptanceOutcomeRecorded: false,
+      kind,
+      decisionAlignment,
+      superseded: 0,
+      previewBootsTornDown: 0,
+    });
+  });
+
+  it("4g. holds DB conflicts and unavailable storage without claiming canonical merge custody", async () => {
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
+    vi.mocked(recordSignedAcceptanceRecordMerge).mockRejectedValueOnce(
+      new SignedAcceptanceRecordMergeConflictError(),
+    );
+    const conflict = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+    expect(conflict.status).toBe(200);
+    expect(await conflict.json()).toEqual({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      invalidated: true,
+      reason: "signed merge conflicts with acceptance record custody",
+      superseded: 1,
+      previewBootsTornDown: 2,
+    });
+
+    vi.mocked(recordSignedAcceptanceRecordMerge).mockRejectedValueOnce(
+      new Error("postgres://secret@internal/db"),
+    );
+    const unavailable = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+    expect(unavailable.status).toBe(200);
+    const unavailableBody = await unavailable.text();
+    expect(JSON.parse(unavailableBody)).toEqual({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      invalidated: true,
+      reason: "signed merge custody unavailable",
+      superseded: 1,
+      previewBootsTornDown: 2,
+    });
+    expect(unavailableBody).not.toContain("secret");
+    expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent)
+      .toHaveBeenCalledTimes(2);
+  });
+
+  it("4g0. acknowledges a sanitized fail-closed hold when neither merge custody nor terminal invalidation persists", async () => {
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
+    vi.mocked(recordSignedAcceptanceRecordMerge).mockRejectedValueOnce(
+      new Error("postgres://merge-secret@internal/db"),
+    );
+    vi.mocked(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent)
+      .mockRejectedValueOnce(new Error("postgres://terminal-secret@internal/db"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      ok: true,
+      ignored: true,
+      merged: true,
+      recorded: false,
+      invalidated: false,
+      reason: "signed merge custody unavailable; terminal invalidation unavailable",
+    });
+    expect(body).not.toMatch(/merge-secret|terminal-secret|postgres/);
+    consoleError.mockRestore();
+  });
+
+  it.each(["not_found", "not_attached"] as const)(
+    "4g1. a transaction-time %s result never becomes canonical merge custody",
+    async (kind) => {
+      vi.mocked(readChangeRecordByPr).mockResolvedValue({
+        id: "11111111-1111-4111-8111-111111111111",
+      } as never);
+      vi.mocked(recordSignedAcceptanceRecordMerge).mockResolvedValueOnce({ kind });
+
+      const response = await POST(makeRequest(JSON.stringify(prPayload({
+        action: "closed",
+        merged: true,
+      }))));
+
+      expect(await response.json()).toEqual({
+        ok: true,
+        ignored: true,
+        merged: true,
+        recorded: false,
+        reason: `acceptance record ${kind}`,
+      });
+    },
+  );
+
+  it("4h. best-effort merge metrics failure cannot downgrade canonical signed merge custody", async () => {
+    vi.mocked(readChangeRecordByPr).mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+    } as never);
+    vi.mocked(recordReviewEvent).mockRejectedValueOnce(new Error("metrics unavailable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "closed",
+      merged: true,
+    }))));
+
+    expect(await response.json()).toEqual(expect.objectContaining({
+      ok: true,
+      merged: true,
+      recorded: true,
+      kind: "recorded",
+    }));
+    expect(recordSignedAcceptanceRecordMerge).toHaveBeenCalledOnce();
+    consoleError.mockRestore();
   });
 
   // ---------------------------------------------------------------------
@@ -753,7 +1013,7 @@ describe("POST /api/v1/webhooks/github-app", () => {
   });
 
   it("7d. matches a workspace id among several comma-separated, untrimmed entries", async () => {
-    process.env[ENROLL_ENV] = " some-ws , ws-1 ,another-ws ";
+    process.env[ENROLL_ENV] = ` some-ws , ${WORKSPACE_ID} ,another-ws `;
     const body = JSON.stringify(prPayload());
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { readFile } from "node:fs/promises";
 import { db } from "../db.js";
@@ -74,6 +74,8 @@ import {
   readCurrentAcceptancePrDecision,
   recordAcceptancePrDecision,
   AcceptancePrDecisionConflictError,
+  recordSignedAcceptanceRecordMerge,
+  SignedAcceptanceRecordMergeConflictError,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -399,6 +401,127 @@ async function createReadyAcceptanceDecisionRecord(input: {
     throw new Error("expected an undecided current decision binding");
   }
   return { repo, draft, advanced, posted, binding: current.binding };
+}
+
+function signedMergeInput(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  deliveryId: string;
+  mergeSha: string;
+}) {
+  return {
+    ...input,
+    baseSha: "b".repeat(40),
+    mergedAt: new Date("2026-08-11T10:00:00.000Z"),
+    prUrl: `https://github.com/${input.repo}/pull/${input.prNumber}`,
+    githubActor: { id: 991, login: "jace[bot]", type: "Bot" as const },
+    source: "github_webhook" as const,
+  };
+}
+
+async function insertActiveCorrectionDispatchFixture(input: {
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+}): Promise<string> {
+  const sourceSnapshotId = randomUUID();
+  const compiledPackId = randomUUID();
+  const routeId = randomUUID();
+  const dispatchId = randomUUID();
+  const sha = "1".repeat(64);
+  const packetId = `correction-${"2".repeat(48)}`;
+  await db.insert(acceptanceBuilderRoutes).values({
+    id: routeId,
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    adapter: "durable_jace_fallback",
+    status: "active",
+    configurationVersion: 1,
+    registeredBy: "server:merge-test",
+  });
+  await db.insert(acceptanceContextPackSnapshots).values({
+    id: sourceSnapshotId,
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    reviewJobId: input.reviewJobId,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+    acceptanceContractSha256: sha,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    expectedHeadSha: input.headSha,
+    baseSha: null,
+    mergeBaseSha: null,
+    headTreeSha: null,
+    packetIds: [packetId],
+    packetSetSha256: sha,
+    correctionPacketPayloadSetSha256: sha,
+    compilerVersion: "signed-merge-test",
+    baseIndex: null,
+    overlay: null,
+    provenance: {},
+    status: "not_proven",
+    reason: "signed merge terminalization fixture",
+  });
+  await db.insert(acceptanceCompiledContextPacks).values({
+    id: compiledPackId,
+    workspaceId: input.workspaceId,
+    sourceSnapshotId,
+    compilerVersion: "signed-merge-test",
+    policyVersion: "signed-merge-test-v1",
+    packSha256: sha,
+    sourceCustodyIdentitySha256: sha,
+    jsonSha256: sha,
+    markdownSha256: sha,
+    renderedByteCount: 1,
+    binding: {},
+    manifest: {},
+    sourceCustodyReceipt: {},
+    exactHeadDependencyTreeProofs: [],
+  });
+  await db.insert(acceptanceCorrectionDispatches).values({
+    id: dispatchId,
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    headCycleId: input.headCycleId,
+    authorityGeneration: input.authorityGeneration,
+    sourceSnapshotId,
+    reviewJobId: input.reviewJobId,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+    acceptanceContractSha256: sha,
+    packetIds: [packetId],
+    packetSetSha256: sha,
+    correctionPacketPayloadSetSha256: sha,
+    compiledPackId,
+    compiledPackSha256: sha,
+    compilerVersion: "signed-merge-test",
+    policyVersion: "signed-merge-test-v1",
+    jsonSha256: sha,
+    markdownSha256: sha,
+    sourceCustodyIdentitySha256: sha,
+    routeId,
+    routeAdapter: "durable_jace_fallback",
+    routeConfigurationVersion: 1,
+    routeSnapshot: {},
+    routeSnapshotSha256: sha,
+    dispatchIdentitySha256: sha,
+    carrier: "durable_notice",
+  });
+  return dispatchId;
 }
 
 describe.skipIf(!DB_AVAILABLE)(
@@ -1591,6 +1714,465 @@ describe.skipIf(!DB_AVAILABLE)(
         .toMatchObject({ state: "posted", verdict: "proven" });
       expect((await db.select().from(changeRecords).where(eq(changeRecords.id, ready.draft.record.id)))[0])
         .toMatchObject({ state: "open", mergedSha: null, currentPrHeadSha: "7".repeat(40) });
+    });
+
+    it("records a signed merge fact while keeping approval alignment explicit", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const exception = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-aligned-exception",
+        prNumber: 160,
+        headSha: "5".repeat(40),
+        verdict: "not_proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: exception.draft.record.id,
+        bindingId: exception.binding.bindingId,
+        decision: "approved_with_exception",
+        rationale: "The owner accepts the documented unproven criterion for this exact head.",
+        decidedBy: owner,
+      });
+      await expect(recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: exception.draft.record.id,
+        repo: exception.repo,
+        prNumber: 160,
+        headSha: "5".repeat(40),
+        deliveryId: "signed-merge-aligned-exception:merged",
+        mergeSha: "6".repeat(40),
+      }))).resolves.toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "aligned",
+          decision: "approved_with_exception",
+          binding: { headCycleId: exception.advanced.jobId },
+        },
+      });
+
+      const conflicting = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-conflicting-decision",
+        prNumber: 161,
+        headSha: "7".repeat(40),
+        verdict: "failed",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: conflicting.draft.record.id,
+        bindingId: conflicting.binding.bindingId,
+        decision: "changes_requested",
+        rationale: "Repair AC-1 before merge.",
+        decidedBy: owner,
+      });
+      await expect(recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: conflicting.draft.record.id,
+        repo: conflicting.repo,
+        prNumber: 161,
+        headSha: "7".repeat(40),
+        deliveryId: "signed-merge-conflicting-decision:merged",
+        mergeSha: "8".repeat(40),
+      }))).resolves.toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "decision_conflicts_merge",
+          decision: "changes_requested",
+          binding: { headCycleId: conflicting.advanced.jobId },
+        },
+      });
+
+      const undecided = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-without-decision",
+        prNumber: 162,
+        headSha: "9".repeat(40),
+        verdict: "proven",
+      });
+      await expect(recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: undecided.draft.record.id,
+        repo: undecided.repo,
+        prNumber: 162,
+        headSha: "9".repeat(40),
+        deliveryId: "signed-merge-without-decision:merged",
+        mergeSha: "a".repeat(40),
+      }))).resolves.toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "not_recorded",
+          binding: { headCycleId: undecided.advanced.jobId },
+        },
+      });
+
+      for (const ready of [exception, conflicting, undecided]) {
+        expect((await db.select().from(changeRecords).where(
+          eq(changeRecords.id, ready.draft.record.id)
+        ))[0]).toMatchObject({ state: "merged", currentPrHeadAuthoritative: false });
+        expect((await db.select().from(reviewJobs).where(
+          eq(reviewJobs.id, ready.advanced.jobId)
+        ))[0]).toMatchObject({ state: "posted", verdict: ready.binding.reviewVerdict });
+      }
+    });
+
+    it("atomically terminalizes active work and replays an exact merge under a second signed delivery", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const headSha = "c".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-terminal-convergence",
+        prNumber: 166,
+        headSha,
+        verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved",
+        decidedBy: owner,
+      });
+
+      const queuedJobId = randomUUID();
+      const runningJobId = randomUUID();
+      await db.insert(reviewJobs).values([
+        {
+          id: queuedJobId,
+          workspaceId: wsId,
+          repo: ready.repo,
+          prNumber: 166,
+          headSha,
+          event: "synchronize",
+          state: "queued",
+        },
+        {
+          id: runningJobId,
+          workspaceId: wsId,
+          repo: ready.repo,
+          prNumber: 166,
+          headSha,
+          event: "synchronize",
+          state: "running",
+          claimedBy: "worker:signed-merge-test",
+          claimedAt: new Date(),
+        },
+      ]);
+      const previewId = randomUUID();
+      await db.insert(previewBoots).values({
+        id: previewId,
+        workspaceId: wsId,
+        repo: ready.repo,
+        prNumber: 166,
+        headSha,
+        ref: "refs/pull/166/head",
+        status: "ready",
+        url: "http://signed-merge-preview.test",
+        port: 3100,
+      });
+      const dispatchId = await insertActiveCorrectionDispatchFixture({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        reviewJobId: ready.advanced.jobId,
+        acceptanceContractId: ready.draft.contract.id,
+        acceptanceContractVersion: ready.draft.contract.version,
+        repo: ready.repo,
+        prNumber: 166,
+        headSha,
+        headCycleId: ready.binding.headCycleId,
+        authorityGeneration: ready.binding.authorityGeneration,
+      });
+
+      const input = signedMergeInput({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 166,
+        headSha,
+        deliveryId: "signed-merge-terminal-convergence:merged:1",
+        mergeSha: "d".repeat(40),
+      });
+      const first = await recordSignedAcceptanceRecordMerge(input);
+      expect(first).toMatchObject({
+        kind: "recorded",
+        decisionAlignment: { kind: "aligned", decision: "approved" },
+        superseded: 2,
+        previewBootsTornDown: 1,
+        correctionDispatchesInvalidated: 1,
+      });
+      expect(await db.select({ id: reviewJobs.id, state: reviewJobs.state })
+        .from(reviewJobs).where(sql`${reviewJobs.id} IN (${queuedJobId}, ${runningJobId})`))
+        .toEqual(expect.arrayContaining([
+          { id: queuedJobId, state: "superseded" },
+          { id: runningJobId, state: "superseded" },
+        ]));
+      expect((await db.select().from(previewBoots).where(eq(previewBoots.id, previewId)))[0])
+        .toMatchObject({ status: "torn_down", reason: "acceptance record PR merged" });
+      expect((await db.select().from(acceptanceCorrectionDispatches).where(
+        eq(acceptanceCorrectionDispatches.id, dispatchId)
+      ))[0]).toMatchObject({ invalidationReason: "terminal" });
+
+      const secondDelivery = {
+        ...input,
+        deliveryId: "signed-merge-terminal-convergence:merged:2",
+      };
+      const replay = await recordSignedAcceptanceRecordMerge(secondDelivery);
+      expect(replay).toMatchObject({
+        kind: "replayed",
+        mergeEventId: first.kind === "recorded" ? first.mergeEventId : "missing",
+        superseded: 2,
+        previewBootsTornDown: 1,
+        correctionDispatchesInvalidated: 1,
+      });
+      expect(replay.kind === "replayed" ? replay.deliveryEventId : "missing")
+        .not.toBe(first.kind === "recorded" ? first.deliveryEventId : "missing");
+      await expect(recordSignedAcceptanceRecordMerge({
+        ...secondDelivery,
+        deliveryId: "signed-merge-terminal-convergence:merged:3",
+        githubActor: { ...secondDelivery.githubActor, id: 992 },
+      })).rejects.toBeInstanceOf(SignedAcceptanceRecordMergeConflictError);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, ready.draft.record.id),
+        eq(changeRecordEvents.stage, "merge"),
+      ))).toHaveLength(3);
+    });
+
+    it("keeps signed merge custody occurrence-bound across A-to-B-to-A and immutable on replay", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const headA = "1".repeat(40);
+      const headB = "2".repeat(40);
+      const a1 = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-a-b-a",
+        prNumber: 163,
+        headSha: headA,
+        verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        decision: "approved",
+        decidedBy: owner,
+      });
+      const b = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo: a1.repo,
+        prNumber: 163,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "signed-merge-a-b-a:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      if (b.kind !== "advanced") throw new Error("expected signed merge B cycle");
+      const a2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo: a1.repo,
+        prNumber: 163,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "signed-merge-a-b-a:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (a2.kind !== "advanced") throw new Error("expected signed merge A2 cycle");
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        jobId: a2.jobId,
+        repo: a1.repo,
+        prNumber: 163,
+        headSha: headA,
+        acceptanceContractId: a1.draft.contract.id,
+        verdict: "proven",
+      });
+
+      const input = signedMergeInput({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo: a1.repo,
+        prNumber: 163,
+        headSha: headA,
+        deliveryId: "signed-merge-a-b-a:merged",
+        mergeSha: "3".repeat(40),
+      });
+      const first = await recordSignedAcceptanceRecordMerge(input);
+      expect(first).toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "not_recorded",
+          binding: { headCycleId: a2.jobId, headSha: headA },
+        },
+      });
+      expect(first).not.toMatchObject({
+        decisionAlignment: { binding: { headCycleId: a1.advanced.jobId } },
+      });
+      await expect(recordSignedAcceptanceRecordMerge(input)).resolves.toMatchObject({
+        kind: "replayed",
+        mergeEventId: first.kind === "recorded" ? first.mergeEventId : "missing",
+      });
+      await expect(recordSignedAcceptanceRecordMerge({
+        ...input,
+        baseSha: "4".repeat(40),
+      })).rejects.toBeInstanceOf(SignedAcceptanceRecordMergeConflictError);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, a1.draft.record.id),
+        eq(changeRecordEvents.stage, "merge"),
+      ))).toHaveLength(2);
+    });
+
+    it("rolls back signed merge receipt and state when immutable merge-event custody conflicts", async () => {
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-rollback",
+        prNumber: 164,
+        headSha: "4".repeat(40),
+        verdict: "proven",
+      });
+      const mergeSha = "5".repeat(40);
+      await appendChangeRecordEvent({
+        recordId: ready.draft.record.id,
+        eventKey: `acceptance-pr:signed-merge:${mergeSha}`,
+        stage: "evidence",
+        actor: "server:test",
+        payloadRef: { kind: "preexisting_conflict" },
+      });
+      const deliveryId = "signed-merge-rollback:merged";
+      await expect(recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 164,
+        headSha: "4".repeat(40),
+        deliveryId,
+        mergeSha,
+      }))).rejects.toBeInstanceOf(SignedAcceptanceRecordMergeConflictError);
+
+      expect((await db.select().from(changeRecords).where(
+        eq(changeRecords.id, ready.draft.record.id)
+      ))[0]).toMatchObject({
+        state: "open",
+        mergedSha: null,
+        currentPrHeadAuthoritative: true,
+        currentPrHeadAuthorityGeneration: ready.binding.authorityGeneration,
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, ready.draft.record.id),
+        eq(changeRecordEvents.eventKey, `external-pr:signed-merge:164:${deliveryId}`),
+      ))).toHaveLength(0);
+      expect((await db.select().from(reviewJobs).where(
+        eq(reviewJobs.id, ready.advanced.jobId)
+      ))[0]).toMatchObject({ state: "posted", verdict: "proven" });
+    });
+
+    it("serializes a human decision and signed merge without rebinding either side", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-decision-race",
+        prNumber: 165,
+        headSha: "6".repeat(40),
+        verdict: "proven",
+      });
+      const [decision, merge] = await Promise.all([
+        recordAcceptancePrDecision({
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          bindingId: ready.binding.bindingId,
+          decision: "approved",
+          decidedBy: owner,
+        }),
+        recordSignedAcceptanceRecordMerge(signedMergeInput({
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          repo: ready.repo,
+          prNumber: 165,
+          headSha: "6".repeat(40),
+          deliveryId: "signed-merge-decision-race:merged",
+          mergeSha: "7".repeat(40),
+        })),
+      ]);
+      if (merge.kind !== "recorded") throw new Error("expected racing signed merge receipt");
+      if (decision.kind === "recorded") {
+        expect(merge.decisionAlignment).toMatchObject({
+          kind: "aligned",
+          decision: "approved",
+          decisionEventId: decision.decision.eventId,
+        });
+      } else {
+        expect(decision).toEqual({ kind: "not_current" });
+        expect(merge.decisionAlignment).toMatchObject({ kind: "not_recorded" });
+      }
+      expect((await db.select().from(changeRecords).where(
+        eq(changeRecords.id, ready.draft.record.id)
+      ))[0]).toMatchObject({ state: "merged", currentPrHeadAuthoritative: false });
+    });
+
+    it("serializes a signed head advance with merge convergence and keeps the merge replayable", async () => {
+      const headA = "8".repeat(40);
+      const headB = "9".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "signed-merge-head-race",
+        prNumber: 166,
+        headSha: headA,
+        verdict: "proven",
+      });
+      const mergeInput = signedMergeInput({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 166,
+        headSha: headA,
+        deliveryId: "signed-merge-head-race:merged",
+        mergeSha: "a".repeat(40),
+      });
+      const [advance, merge] = await Promise.all([
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          repo: ready.repo,
+          prNumber: 166,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "signed-merge-head-race:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+        recordSignedAcceptanceRecordMerge(mergeInput),
+      ]);
+      if (merge.kind !== "recorded") throw new Error("expected serialized signed merge");
+      expect(["advanced", "stale_delivery"]).toContain(advance.kind);
+      if (advance.kind === "advanced") {
+        expect(merge.decisionAlignment).toMatchObject({
+          kind: "not_current",
+          currentHeadSha: headB,
+          currentHeadCycleId: advance.jobId,
+        });
+      } else {
+        expect(merge.decisionAlignment).toMatchObject({
+          kind: "not_recorded",
+          binding: { headSha: headA, headCycleId: ready.advanced.jobId },
+        });
+      }
+      expect((await db.select().from(changeRecords).where(
+        eq(changeRecords.id, ready.draft.record.id)
+      ))[0]).toMatchObject({ state: "merged", currentPrHeadAuthoritative: false });
+      expect(await db.select().from(reviewJobs).where(and(
+        eq(reviewJobs.workspaceId, wsId),
+        eq(reviewJobs.repo, ready.repo),
+        eq(reviewJobs.prNumber, 166),
+        inArray(reviewJobs.state, ["queued", "running"]),
+      ))).toHaveLength(0);
+      await expect(recordSignedAcceptanceRecordMerge(mergeInput)).resolves.toMatchObject({
+        kind: "replayed",
+        mergeEventId: merge.mergeEventId,
+      });
     });
 
     it("enforces owner/admin roles, all four choices, rationale rules, and the proven approval gate", async () => {
@@ -4206,87 +4788,94 @@ describe.skipIf(!DB_AVAILABLE)(
       ]);
     });
 
-    it("records post-merge outcomes append-only, carries merge provenance forward, and stays replay-safe after later state changes", async () => {
-      const record = await findOrCreateChangeRecord({
+    it("records signed merge custody before append-only post-merge outcomes and stays replay-safe", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const headSha = "a".repeat(40);
+      const baseSha = "b".repeat(40);
+      const mergeSha = "c".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
         workspaceId: wsId,
-        repo: "acme/widgets",
-        issueNumber: 310,
+        workKey: "signed-merge-post-merge-lineage",
         prNumber: 310,
-        headShas: ["a1b2c3d"],
+        headSha,
+        verdict: "proven",
       });
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      })).resolves.toMatchObject({ kind: "recorded" });
 
-      const mergedOutcome = {
-        kind: "merged",
+      const mergeInput = {
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
         prNumber: 310,
-        baseSha: "c3d4e5f",
-        headSha: "a1b2c3d",
-        mergeSha: "b2c3d4e",
-        mergeReference: "gh/pr/310#merge",
-      } as const;
-      const merged = await recordAcceptancePostMergeOutcome({
-        workspaceId: wsId,
-        recordId: record.id,
-        recordedBy: "user:lead",
-        outcome: mergedOutcome,
-        occurredAt: new Date("2026-08-03T14:00:00.000Z"),
+        deliveryId: "signed-merge-post-merge-lineage:merged",
+        headSha,
+        baseSha,
+        mergeSha,
+        mergedAt: new Date("2026-08-11T08:00:00.000Z"),
+        prUrl: "https://github.com/acme/widgets/pull/310",
+        githubActor: { id: 310, login: "octocat", type: "User" as const },
+        source: "github_webhook" as const,
+      };
+      const merged = await recordSignedAcceptanceRecordMerge(mergeInput);
+      const mergedReplay = await recordSignedAcceptanceRecordMerge(mergeInput);
+      expect(merged).toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "aligned",
+          decision: "approved",
+          binding: { headSha, headCycleId: ready.advanced.jobId },
+        },
       });
-      expect(merged.inserted).toBe(true);
-      expect(merged.event.eventKey).toBe("acceptance-post-merge:merged:b2c3d4e");
-      expect(merged.event.stage).toBe("post_merge_outcome");
-      expect(merged.event.payloadRef).toEqual({
-        kind: "acceptance_post_merge_outcome",
-        repository: "acme/widgets",
-        outcome: mergedOutcome,
+      expect(mergedReplay).toMatchObject({
+        kind: "replayed",
+        mergeEventId: merged.kind === "recorded" ? merged.mergeEventId : "missing",
+        deliveryEventId: merged.kind === "recorded" ? merged.deliveryEventId : "missing",
       });
-
-      const mergedReplayBeforeLaterOutcomes = await recordAcceptancePostMergeOutcome({
-        workspaceId: wsId,
-        recordId: record.id,
-        recordedBy: "user:lead",
-        outcome: mergedOutcome,
-        occurredAt: new Date("2026-08-03T14:05:00.000Z"),
-      });
-      expect(mergedReplayBeforeLaterOutcomes.inserted).toBe(false);
-      expect(mergedReplayBeforeLaterOutcomes.event.id).toBe(merged.event.id);
 
       const deployedOutcome = {
         kind: "deployed",
-        revisionSha: "b2c3d4e",
+        revisionSha: mergeSha,
         environment: "production",
         deploymentReference: "railway:deploy:42",
       } as const;
       const incidentOutcome = {
         kind: "incident",
-        revisionSha: "b2c3d4e",
+        revisionSha: mergeSha,
         incidentReference: "incidents:inc-9",
       } as const;
       const revertedOutcome = {
         kind: "reverted",
-        revertedSha: "b2c3d4e",
-        revertSha: "c3d4e5f",
+        revertedSha: mergeSha,
+        revertSha: "d".repeat(40),
         revertReference: "gh/revert/99",
       } as const;
 
       const deployed = await recordAcceptancePostMergeOutcome({
         workspaceId: wsId,
-        recordId: record.id,
+        recordId: ready.draft.record.id,
         recordedBy: "user:lead",
         outcome: deployedOutcome,
-        occurredAt: new Date("2026-08-03T15:00:00.000Z"),
+        occurredAt: new Date("2026-08-11T08:10:00.000Z"),
       });
       const incident = await recordAcceptancePostMergeOutcome({
         workspaceId: wsId,
-        recordId: record.id,
+        recordId: ready.draft.record.id,
         recordedBy: "user:lead",
         outcome: incidentOutcome,
-        occurredAt: new Date("2026-08-03T16:00:00.000Z"),
+        occurredAt: new Date("2026-08-11T08:20:00.000Z"),
       });
       const reverted = await recordAcceptancePostMergeOutcome({
         workspaceId: wsId,
-        recordId: record.id,
+        recordId: ready.draft.record.id,
         recordedBy: "user:lead",
         outcome: revertedOutcome,
-        occurredAt: new Date("2026-08-03T17:00:00.000Z"),
+        occurredAt: new Date("2026-08-11T08:30:00.000Z"),
       });
 
       expect(deployed.inserted).toBe(true);
@@ -4295,91 +4884,103 @@ describe.skipIf(!DB_AVAILABLE)(
 
       const timeline = await readChangeRecordTimeline({
         workspaceId: wsId,
-        recordId: record.id,
+        recordId: ready.draft.record.id,
       });
-      expect(timeline?.record.mergedSha).toBe("b2c3d4e");
+      expect(timeline?.record.mergedSha).toBe(mergeSha);
       expect(timeline?.record.state).toBe("reverted");
-      expect(timeline?.events.map((event) => event.eventKey)).toEqual([
-        "acceptance-post-merge:merged:b2c3d4e",
+      const outcomeEvents = timeline?.events.filter((event) =>
+        event.stage === "post_merge_outcome"
+      ) ?? [];
+      expect(outcomeEvents.map((event) => event.eventKey)).toEqual([
         "acceptance-post-merge:deployed:railway:deploy:42",
         "acceptance-post-merge:incident:incidents:inc-9",
-        "acceptance-post-merge:reverted:c3d4e5f",
+        `acceptance-post-merge:reverted:${"d".repeat(40)}`,
       ]);
-      expect(timeline?.events[0]?.payloadRef).toEqual({
+      expect(outcomeEvents[0]?.payloadRef).toEqual({
         kind: "acceptance_post_merge_outcome",
         repository: "acme/widgets",
-        outcome: mergedOutcome,
-      });
-      expect(timeline?.events[1]?.payloadRef).toEqual({
-        kind: "acceptance_post_merge_outcome",
-        repository: "acme/widgets",
+        signedMergeEventId: merged.kind === "recorded" ? merged.mergeEventId : "missing",
+        signedMergeDeliveryEventId: merged.kind === "recorded" ? merged.deliveryEventId : "missing",
+        signedMergeSha: mergeSha,
         outcome: deployedOutcome,
       });
-      expect(timeline?.events[2]?.payloadRef).toEqual({
+      expect(outcomeEvents[1]?.payloadRef).toEqual({
         kind: "acceptance_post_merge_outcome",
         repository: "acme/widgets",
+        signedMergeEventId: merged.kind === "recorded" ? merged.mergeEventId : "missing",
+        signedMergeDeliveryEventId: merged.kind === "recorded" ? merged.deliveryEventId : "missing",
+        signedMergeSha: mergeSha,
         outcome: incidentOutcome,
       });
-      expect(timeline?.events[3]?.payloadRef).toEqual({
+      expect(outcomeEvents[2]?.payloadRef).toEqual({
         kind: "acceptance_post_merge_outcome",
         repository: "acme/widgets",
+        signedMergeEventId: merged.kind === "recorded" ? merged.mergeEventId : "missing",
+        signedMergeDeliveryEventId: merged.kind === "recorded" ? merged.deliveryEventId : "missing",
+        signedMergeSha: mergeSha,
         outcome: revertedOutcome,
       });
 
-      // This should stay replay-safe even after later outcomes have changed
-      // the record's summary state; the recorded merge event is the canonical
-      // provenance and must still be returned, not rejected.
-      const mergedReplayAfterLaterOutcomes = await recordAcceptancePostMergeOutcome({
-        workspaceId: wsId,
-        recordId: record.id,
-        recordedBy: "user:lead",
-        outcome: mergedOutcome,
-        occurredAt: new Date("2026-08-03T18:00:00.000Z"),
+      await expect(recordSignedAcceptanceRecordMerge(mergeInput)).resolves.toMatchObject({
+        kind: "replayed",
+        mergeEventId: merged.kind === "recorded" ? merged.mergeEventId : "missing",
       });
-      expect(mergedReplayAfterLaterOutcomes.inserted).toBe(false);
-      expect(mergedReplayAfterLaterOutcomes.event.id).toBe(merged.event.id);
-      expect(mergedReplayAfterLaterOutcomes.event.payloadRef).toEqual(merged.event.payloadRef);
     });
 
-    it("rejects foreign-workspace, stale-head, and unmatched merge references", async () => {
-      const record = await findOrCreateChangeRecord({
+    it("rejects caller-minted merges, foreign workspaces, and unmatched post-merge revisions", async () => {
+      const genericRecord = await findOrCreateChangeRecord({
         workspaceId: wsId,
         repo: "acme/widgets",
         issueNumber: 410,
         prNumber: 410,
-        headShas: ["d4e5f6a"],
+        headShas: ["e".repeat(40)],
       });
-
       await expect(
         recordAcceptancePostMergeOutcome({
           workspaceId: wsId,
-          recordId: record.id,
+          recordId: genericRecord.id,
           recordedBy: "user:lead",
           outcome: {
             kind: "merged",
             prNumber: 410,
-            baseSha: "e5f6a7b",
-            headSha: "deadbee",
-            mergeSha: "0410abc",
+            baseSha: "f".repeat(40),
+            headSha: "e".repeat(40),
+            mergeSha: "a".repeat(40),
             mergeReference: "gh/pr/410#merge",
-          },
+          } as never,
         })
-      ).rejects.toThrow("Merge outcome does not match this Acceptance Record PR and exact head");
+      ).rejects.toThrow("signed GitHub webhook boundary");
 
-      const merged = await recordAcceptancePostMergeOutcome({
+      const actor = await addAcceptanceDecisionActor(wsId, "admin");
+      const ready = await createReadyAcceptanceDecisionRecord({
         workspaceId: wsId,
-        recordId: record.id,
-        recordedBy: "user:lead",
-          outcome: {
-            kind: "merged",
-            prNumber: 410,
-            baseSha: "e5f6a7b",
-            headSha: "d4e5f6a",
-            mergeSha: "0410abc",
-            mergeReference: "gh/pr/410#merge",
-          },
-        });
-      expect(merged.inserted).toBe(true);
+        workKey: "signed-merge-post-merge-boundaries",
+        prNumber: 411,
+        headSha: "1".repeat(40),
+        verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      });
+      const mergeSha = "2".repeat(40);
+      await recordSignedAcceptanceRecordMerge({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 411,
+        deliveryId: "signed-merge-post-merge-boundaries:merged",
+        headSha: "1".repeat(40),
+        baseSha: "3".repeat(40),
+        mergeSha,
+        mergedAt: new Date("2026-08-11T09:00:00.000Z"),
+        prUrl: "https://github.com/acme/widgets/pull/411",
+        githubActor: { id: 411, login: "merge-bot[bot]", type: "Bot" },
+        source: "github_webhook",
+      });
 
       const otherWorkspace = await db
         .insert(workspaces)
@@ -4392,11 +4993,11 @@ describe.skipIf(!DB_AVAILABLE)(
         await expect(
           recordAcceptancePostMergeOutcome({
             workspaceId: otherWorkspace[0]!.id,
-            recordId: record.id,
+            recordId: ready.draft.record.id,
             recordedBy: "user:lead",
             outcome: {
               kind: "deployed",
-              revisionSha: "0410abc",
+              revisionSha: mergeSha,
               environment: "production",
               deploymentReference: "railway:deploy:foreign",
             },
@@ -4411,11 +5012,11 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(
         recordAcceptancePostMergeOutcome({
           workspaceId: wsId,
-          recordId: record.id,
+          recordId: ready.draft.record.id,
           recordedBy: "user:lead",
           outcome: {
             kind: "incident",
-            revisionSha: "ffffeee",
+            revisionSha: "4".repeat(40),
             incidentReference: "incidents:foreign-revision",
           },
         })

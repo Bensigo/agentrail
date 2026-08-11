@@ -2,7 +2,13 @@ import { scanForSecrets } from "./secret-scan";
 
 export const ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES = 64 * 1024;
 export const ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS = 8_000;
-export const ACCEPTANCE_DEPENDENCY_PROFILE = "pnpm_lockfile_only_v1";
+export const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
+export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
+const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, { readonly identity: AcceptanceDependencyProfileIdentity }>([
+  ["node:pnpm:pnpm_lockfile_only_v1", {
+    identity: { ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE },
+  }],
+]);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SHA1 = /^[0-9a-f]{40}$/iu;
@@ -22,15 +28,17 @@ export type AcceptanceDependencyObservationInput = {
   recordId: string;
   compiledPackId: string;
   candidate: {
+    identity: AcceptanceDependencyProfileIdentity;
     package: string;
-    dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+    dependencyKind: string;
     specifier: string;
     currentVersion: string;
     targetVersion: string;
   };
   runtime: {
+    identity: AcceptanceDependencyProfileIdentity;
     disposition: RuntimeDisposition;
-    nodeVersion: string | null;
+    version: string | null;
     evidenceSha256: string;
   };
   packageManager: {
@@ -50,8 +58,9 @@ export type AcceptanceDependencyObservationInput = {
   };
   baseline: { headSha: string };
   security: {
+    identity: AcceptanceDependencyProfileIdentity;
     disposition: SecurityDisposition;
-    provider: "osv";
+    provider: string;
     reference: string;
     reportSha256: string;
   };
@@ -65,6 +74,7 @@ export type AcceptanceDependencyObservationInput = {
  */
 export type AcceptanceDependencyObservationBoundaryAssessment =
   | "candidate_for_server_verification"
+  | "refused_unsupported_profile"
   | "refused_unsafe_runtime"
   | "refused_lockfile"
   | "refused_security"
@@ -101,9 +111,23 @@ function safeRepoPath(value: unknown): value is string {
     && !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
 }
 
+function parseIdentity(value: unknown): AcceptanceDependencyProfileIdentity | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["ecosystem", "manager", "profile"])
+    || !safeText(value.ecosystem, 64) || !safeText(value.manager, 64) || !safeText(value.profile, 64)
+    || !SAFE_NAME.test(value.ecosystem) || !SAFE_NAME.test(value.manager) || !SAFE_NAME.test(value.profile)) return null;
+  return { ecosystem: value.ecosystem, manager: value.manager, profile: value.profile };
+}
+
+function operationalProfile(identity: AcceptanceDependencyProfileIdentity): { readonly identity: AcceptanceDependencyProfileIdentity } | null {
+  const profile = OPERATIONAL_OBSERVATION_PROFILES.get(`${identity.ecosystem}:${identity.manager}:${identity.profile}`);
+  return profile && profile.identity.ecosystem === identity.ecosystem
+    && profile.identity.manager === identity.manager && profile.identity.profile === identity.profile
+    ? profile : null;
+}
+
 function parseCandidate(value: unknown): AcceptanceDependencyObservationInput["candidate"] | null {
   if (!isRecord(value) || !hasExactKeys(value, [
-    "package",
+    "identity", "package",
     "dependencyKind",
     "specifier",
     "currentVersion",
@@ -111,36 +135,38 @@ function parseCandidate(value: unknown): AcceptanceDependencyObservationInput["c
   ])) return null;
   if (
     !safeText(value.package, 214)
-    || !NPM_PACKAGE.test(value.package)
-    || (value.package !== value.package.toLowerCase())
-    || !["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].includes(
-      value.dependencyKind as string
-    )
+    || !safeText(value.dependencyKind, 64)
     || !safeText(value.specifier, 256)
-    || UNSAFE_NPM_SPECIFIER.test(value.specifier)
     || !safeText(value.currentVersion, 128)
-    || !SEMVER.test(value.currentVersion)
     || !safeText(value.targetVersion, 128)
-    || !SEMVER.test(value.targetVersion)
     || value.currentVersion === value.targetVersion
   ) return null;
-  return value as AcceptanceDependencyObservationInput["candidate"];
+  const identity = parseIdentity(value.identity);
+  if (!identity || (operationalProfile(identity) !== null && (
+    !NPM_PACKAGE.test(value.package) || value.package !== value.package.toLowerCase()
+    || !["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].includes(value.dependencyKind as string)
+    || UNSAFE_NPM_SPECIFIER.test(value.specifier) || !SEMVER.test(value.currentVersion) || !SEMVER.test(value.targetVersion)
+  ))) return null;
+  return { ...value, identity } as AcceptanceDependencyObservationInput["candidate"];
 }
 
 function parseRuntime(value: unknown): AcceptanceDependencyObservationInput["runtime"] | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["disposition", "nodeVersion", "evidenceSha256"])) return null;
+  if (!isRecord(value) || !hasExactKeys(value, ["identity", "disposition", "version", "evidenceSha256"])) return null;
   if (
     !["safe", "unsafe", "unavailable", "ambiguous"].includes(value.disposition as string)
-    || (value.nodeVersion !== null && !safeText(value.nodeVersion, 64))
+    || (value.version !== null && !safeText(value.version, 64))
     || (value.disposition === "safe"
-      ? value.nodeVersion === null || !SEMVER.test(value.nodeVersion)
-      : (value.disposition === "unavailable" || value.disposition === "ambiguous") && value.nodeVersion !== null)
+      ? value.version === null
+      : (value.disposition === "unavailable" || value.disposition === "ambiguous") && value.version !== null)
     || typeof value.evidenceSha256 !== "string"
     || !SHA256.test(value.evidenceSha256)
   ) return null;
+  const identity = parseIdentity(value.identity);
+  if (!identity) return null;
   return {
+    identity,
     disposition: value.disposition as RuntimeDisposition,
-    nodeVersion: value.nodeVersion as string | null,
+    version: value.version as string | null,
     evidenceSha256: value.evidenceSha256.toLowerCase(),
   };
 }
@@ -160,7 +186,7 @@ function parsePackageManager(value: unknown): AcceptanceDependencyObservationInp
     || !SAFE_NAME.test(value.name)
     || (value.version !== null && !safeText(value.version, 64))
     || (value.disposition === "safe"
-      ? value.version === null || !SEMVER.test(value.version)
+      ? value.version === null
       : (value.disposition === "unavailable" || value.disposition === "ambiguous") && value.version !== null)
     || !safeText(value.profile, 64)
     || !Array.isArray(value.updateArgv)
@@ -184,7 +210,6 @@ function parseManifest(value: unknown): AcceptanceDependencyObservationInput["ma
   if (!isRecord(value) || !hasExactKeys(value, ["path", "blobSha"])) return null;
   if (
     !safeRepoPath(value.path)
-    || (value.path !== "package.json" && !value.path.endsWith("/package.json"))
     || typeof value.blobSha !== "string"
     || !SHA1.test(value.blobSha)
   ) return null;
@@ -196,7 +221,6 @@ function parseLockfile(value: unknown): AcceptanceDependencyObservationInput["lo
   if (
     !["present", "missing", "uncommitted", "unavailable", "ambiguous"].includes(value.disposition as string)
     || !safeRepoPath(value.path)
-    || (value.path !== "pnpm-lock.yaml" && !value.path.endsWith("/pnpm-lock.yaml"))
     || (value.blobSha !== null && (typeof value.blobSha !== "string" || !SHA1.test(value.blobSha)))
     || (value.disposition === "present" ? value.blobSha === null : value.blobSha !== null)
     || typeof value.evidenceSha256 !== "string"
@@ -216,19 +240,18 @@ function parseBaseline(value: unknown): AcceptanceDependencyObservationInput["ba
   return { headSha: value.headSha.toLowerCase() };
 }
 
-function parseSecurity(
-  value: unknown,
-  candidate: AcceptanceDependencyObservationInput["candidate"]
-): AcceptanceDependencyObservationInput["security"] | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["disposition", "provider", "reference", "reportSha256"])) return null;
+function parseSecurity(value: unknown): AcceptanceDependencyObservationInput["security"] | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["identity", "disposition", "provider", "reference", "reportSha256"])) return null;
   if (
     !["clear", "affected", "unavailable", "ambiguous"].includes(value.disposition as string)
-    || value.provider !== "osv"
-    || value.reference !== `osv:npm:${candidate.package}@${candidate.targetVersion}`
+    || !safeText(value.provider, 64) || !safeText(value.reference, 512)
     || typeof value.reportSha256 !== "string"
     || !SHA256.test(value.reportSha256)
   ) return null;
+  const identity = parseIdentity(value.identity);
+  if (!identity) return null;
   return {
+    identity,
     disposition: value.disposition as SecurityDisposition,
     provider: value.provider,
     reference: value.reference,
@@ -237,6 +260,14 @@ function parseSecurity(
 }
 
 function boundaryAssessment(input: AcceptanceDependencyObservationInput): AcceptanceDependencyObservationBoundaryAssessment {
+  const profile = operationalProfile(input.candidate.identity);
+  if (!profile
+    || input.runtime.identity.ecosystem !== input.candidate.identity.ecosystem
+    || input.runtime.identity.manager !== input.candidate.identity.manager
+    || input.runtime.identity.profile !== input.candidate.identity.profile
+    || input.security.identity.ecosystem !== input.candidate.identity.ecosystem
+    || input.security.identity.manager !== input.candidate.identity.manager
+    || input.security.identity.profile !== input.candidate.identity.profile) return "refused_unsupported_profile";
   const expectedArgv = [
     "pnpm",
     "update",
@@ -251,7 +282,7 @@ function boundaryAssessment(input: AcceptanceDependencyObservationInput): Accept
       || (
       input.packageManager.name === "pnpm"
       && input.packageManager.version !== null
-      && input.packageManager.profile === ACCEPTANCE_DEPENDENCY_PROFILE
+      && input.packageManager.profile === ACCEPTANCE_DEPENDENCY_PNPM_PROFILE
       && input.packageManager.updateArgv.length === expectedArgv.length
       && input.packageManager.updateArgv.every((token, index) => token === expectedArgv[index])
       )
@@ -289,7 +320,7 @@ export function parseAcceptanceDependencyObservation(value: unknown): ParsedAcce
   const manifest = parseManifest(value.manifest);
   const lockfile = parseLockfile(value.lockfile);
   const baseline = parseBaseline(value.baseline);
-  const security = candidate ? parseSecurity(value.security, candidate) : null;
+  const security = candidate ? parseSecurity(value.security) : null;
   if (!candidate || !runtime || !packageManager || !manifest || !lockfile || !baseline || !security) return null;
   const input: AcceptanceDependencyObservationInput = {
     workspaceId: value.workspaceId.toLowerCase(),
@@ -303,6 +334,15 @@ export function parseAcceptanceDependencyObservation(value: unknown): ParsedAcce
     baseline,
     security,
   };
+  const profile = operationalProfile(input.candidate.identity);
+  if (profile && (
+    (input.runtime.disposition === "safe" && !SEMVER.test(input.runtime.version ?? ""))
+    || (input.packageManager.disposition === "safe" && !SEMVER.test(input.packageManager.version ?? ""))
+    || (input.manifest.path !== "package.json" && !input.manifest.path.endsWith("/package.json"))
+    || (input.lockfile.path !== "pnpm-lock.yaml" && !input.lockfile.path.endsWith("/pnpm-lock.yaml"))
+    || input.security.provider !== "osv"
+    || input.security.reference !== `osv:npm:${input.candidate.package}@${input.candidate.targetVersion}`
+  )) return null;
   return { input, boundaryAssessment: boundaryAssessment(input) };
 }
 

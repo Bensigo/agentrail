@@ -297,6 +297,7 @@ export type AcceptancePrReviewMetricsEnvelope =
 
 type AcceptanceDependencyObservationStatus =
   | "observed"
+  | "refused_unsupported_profile"
   | "refused_unsafe_runtime"
   | "refused_lockfile"
   | "refused_baseline"
@@ -307,7 +308,8 @@ type AcceptanceDependencyObservationReason =
   | "baseline_head_mismatch"
   | "manifest_source_not_proven"
   | "lockfile_source_not_proven"
-  | "unsafe_node_runtime"
+  | "unsupported_manager_profile"
+  | "unsafe_runtime"
   | "unsafe_package_manager"
   | "unsafe_package_manager_profile"
   | "unsafe_package_manager_argv"
@@ -323,17 +325,20 @@ type AcceptanceDependencyObservationReason =
   | "security_evidence_unavailable"
   | "security_evidence_ambiguous";
 
+type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 type AcceptanceDependencyCandidate = {
+  identity: AcceptanceDependencyProfileIdentity;
   package: string;
-  dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+  dependencyKind: string;
   specifier: string;
   currentVersion: string;
   targetVersion: string;
 };
 
 type AcceptanceDependencyRuntimeEvidence = {
+  identity: AcceptanceDependencyProfileIdentity;
   disposition: "safe" | "unsafe" | "unavailable" | "ambiguous";
-  nodeVersion: string | null;
+  version: string | null;
   evidenceSha256: string;
 };
 
@@ -355,8 +360,9 @@ type AcceptanceDependencyLockfileEvidence = {
 };
 type AcceptanceDependencyBaselineEvidence = { headSha: string };
 type AcceptanceDependencySecurityEvidence = {
+  identity: AcceptanceDependencyProfileIdentity;
   disposition: "clear" | "affected" | "unavailable" | "ambiguous";
-  provider: "osv";
+  provider: string;
   reference: string;
   reportSha256: string;
 };
@@ -461,6 +467,7 @@ export type AcceptanceDependencyObservationsEnvelope =
         acceptanceContract: { id: string; version: number; sha256: string };
       };
       observations: Array<{
+        payloadVersion: 1 | 2;
         binding: AcceptanceDependencyObservationBinding;
         observation: AcceptanceDependencyObservation;
         approval: AcceptanceDependencyApproval | null;
@@ -1067,6 +1074,7 @@ export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrRe
 const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 
 function isSafeRepoPath(value: unknown): value is string {
@@ -1088,30 +1096,40 @@ function exactJsonEqual(left: unknown, right: unknown): boolean {
       && exactJsonEqual(left[key], right[key]));
 }
 
+function isDependencyIdentity(value: unknown): value is AcceptanceDependencyProfileIdentity {
+  return isObject(value) && hasExactKeys(value, ["ecosystem", "manager", "profile"])
+    && typeof value.ecosystem === "string" && SAFE_NAME.test(value.ecosystem)
+    && typeof value.manager === "string" && SAFE_NAME.test(value.manager)
+    && typeof value.profile === "string" && SAFE_NAME.test(value.profile);
+}
+
+function isOperationalPnpmIdentity(value: AcceptanceDependencyProfileIdentity): boolean {
+  return value.ecosystem === "node" && value.manager === "pnpm" && value.profile === "pnpm_lockfile_only_v1";
+}
+
 function isDependencyCandidate(value: unknown): value is AcceptanceDependencyCandidate {
   return isObject(value) && hasExactKeys(value, [
-    "package", "dependencyKind", "specifier", "currentVersion", "targetVersion",
+    "identity", "package", "dependencyKind", "specifier", "currentVersion", "targetVersion",
   ]) && typeof value.package === "string" && value.package.length <= 214
-    && NPM_PACKAGE.test(value.package)
-    && (value.dependencyKind === "dependencies" || value.dependencyKind === "devDependencies"
-      || value.dependencyKind === "optionalDependencies" || value.dependencyKind === "peerDependencies")
+    && isDependencyIdentity(value.identity)
+    && isSafeText(value.package, 214) && isSafeText(value.dependencyKind, 64)
     && isSafeText(value.specifier, 256)
-    && isSafeText(value.currentVersion, 128) && EXACT_SEMVER.test(value.currentVersion)
-    && isSafeText(value.targetVersion, 128) && EXACT_SEMVER.test(value.targetVersion)
+    && isSafeText(value.currentVersion, 128)
+    && isSafeText(value.targetVersion, 128)
     && value.currentVersion !== value.targetVersion;
 }
 
 function isDependencyRuntime(value: unknown): value is AcceptanceDependencyRuntimeEvidence {
-  if (!isObject(value) || !hasExactKeys(value, ["disposition", "nodeVersion", "evidenceSha256"])
+  if (!isObject(value) || !hasExactKeys(value, ["identity", "disposition", "version", "evidenceSha256"])
     || (value.disposition !== "safe" && value.disposition !== "unsafe"
       && value.disposition !== "unavailable" && value.disposition !== "ambiguous")
-    || (value.nodeVersion !== null && !isSafeText(value.nodeVersion, 64))
+    || !isDependencyIdentity(value.identity) || (value.version !== null && !isSafeText(value.version, 64))
     || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
   return value.disposition === "safe"
-    ? typeof value.nodeVersion === "string" && EXACT_SEMVER.test(value.nodeVersion)
+    ? typeof value.version === "string"
     : value.disposition === "unsafe"
       ? true
-      : value.nodeVersion === null;
+      : value.version === null;
 }
 
 function isDependencyPackageManager(
@@ -1128,7 +1146,7 @@ function isDependencyPackageManager(
     || !value.updateArgv.every((token) => isSafeText(token, 256))
     || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
   return value.disposition === "safe"
-    ? typeof value.version === "string" && EXACT_SEMVER.test(value.version)
+    ? typeof value.version === "string"
     : value.disposition === "unsafe"
       ? true
       : value.version === null;
@@ -1137,7 +1155,6 @@ function isDependencyPackageManager(
 function isDependencyManifest(value: unknown): value is AcceptanceDependencyManifestEvidence {
   return isObject(value) && hasExactKeys(value, ["path", "blobSha"])
     && isSafeRepoPath(value.path)
-    && (value.path === "package.json" || value.path.endsWith("/package.json"))
     && typeof value.blobSha === "string" && SHA1.test(value.blobSha);
 }
 
@@ -1147,7 +1164,6 @@ function isDependencyLockfile(value: unknown): value is AcceptanceDependencyLock
       && value.disposition !== "uncommitted" && value.disposition !== "unavailable"
       && value.disposition !== "ambiguous")
     || !isSafeRepoPath(value.path)
-    || (value.path !== "pnpm-lock.yaml" && !value.path.endsWith("/pnpm-lock.yaml"))
     || typeof value.evidenceSha256 !== "string" || !SHA256.test(value.evidenceSha256)) return false;
   return value.disposition === "present"
     ? typeof value.blobSha === "string" && SHA1.test(value.blobSha)
@@ -1161,13 +1177,11 @@ function isDependencyBaseline(value: unknown): value is AcceptanceDependencyBase
 
 function isDependencySecurity(
   value: unknown,
-  candidate: AcceptanceDependencyCandidate,
 ): value is AcceptanceDependencySecurityEvidence {
-  return isObject(value) && hasExactKeys(value, ["disposition", "provider", "reference", "reportSha256"])
+  return isObject(value) && hasExactKeys(value, ["identity", "disposition", "provider", "reference", "reportSha256"])
     && (value.disposition === "clear" || value.disposition === "affected"
       || value.disposition === "unavailable" || value.disposition === "ambiguous")
-    && value.provider === "osv"
-    && value.reference === `osv:npm:${candidate.package}@${candidate.targetVersion}`
+    && isDependencyIdentity(value.identity) && isSafeText(value.provider, 64) && isSafeText(value.reference, 512)
     && typeof value.reportSha256 === "string" && SHA256.test(value.reportSha256);
 }
 
@@ -1205,7 +1219,7 @@ function isDependencyObservationBinding(value: unknown): value is AcceptanceDepe
 
 function isDependencyObservationReason(value: unknown): value is AcceptanceDependencyObservationReason {
   return value === "baseline_head_mismatch" || value === "manifest_source_not_proven"
-    || value === "lockfile_source_not_proven" || value === "unsafe_node_runtime"
+    || value === "lockfile_source_not_proven" || value === "unsupported_manager_profile" || value === "unsafe_runtime"
     || value === "unsafe_package_manager" || value === "unsafe_package_manager_profile"
     || value === "unsafe_package_manager_argv" || value === "runtime_evidence_unavailable"
     || value === "runtime_evidence_ambiguous" || value === "package_manager_evidence_unavailable"
@@ -1218,16 +1232,19 @@ function isDependencyObservationReason(value: unknown): value is AcceptanceDepen
 function isDependencyObservation(
   value: unknown,
   binding: AcceptanceDependencyObservationBinding,
+  payloadVersion: 1 | 2,
 ): value is AcceptanceDependencyObservation {
   if (!isObject(value) || !hasExactKeys(value, [
     "eventId", "eventKey", "status", "reasons", "candidateFingerprint", "candidate", "runtime",
     "packageManager", "manifest", "lockfile", "baseline", "security", "observedAt",
   ]) || typeof value.eventId !== "string" || !UUID.test(value.eventId)
-    || (value.status !== "observed" && value.status !== "refused_unsafe_runtime"
+    || (value.status !== "observed" && value.status !== "refused_unsupported_profile" && value.status !== "refused_unsafe_runtime"
       && value.status !== "refused_lockfile" && value.status !== "refused_baseline"
       && value.status !== "refused_security" && value.status !== "not_proven")
     || typeof value.candidateFingerprint !== "string" || !DEPENDENCY_FINGERPRINT.test(value.candidateFingerprint)
-    || value.eventKey !== `acceptance-dependency-observation:${binding.headCycleId}:${value.candidateFingerprint.slice("sha256:".length)}`
+    || value.eventKey !== (payloadVersion === 1
+      ? `acceptance-dependency-observation:${binding.headCycleId}:${value.candidateFingerprint.slice("sha256:".length)}`
+      : `acceptance-dependency-observation:v2:${binding.headCycleId}:${value.candidateFingerprint.slice("sha256:".length)}`)
     || !Array.isArray(value.reasons) || value.reasons.length > 20
     || !value.reasons.every(isDependencyObservationReason)
     || new Set(value.reasons).size !== value.reasons.length
@@ -1238,20 +1255,40 @@ function isDependencyObservation(
     || !isDependencyManifest(value.manifest)
     || !isDependencyLockfile(value.lockfile)
     || !isDependencyBaseline(value.baseline)
-    || !isDependencySecurity(value.security, value.candidate)
+    || !isDependencySecurity(value.security)
     || !isIsoTimestamp(value.observedAt)) return false;
+  if (payloadVersion === 1 && (
+    !isOperationalPnpmIdentity(value.candidate.identity)
+    || !exactJsonEqual(value.runtime.identity, value.candidate.identity)
+    || !exactJsonEqual(value.security.identity, value.candidate.identity)
+    || value.status === "refused_unsupported_profile"
+    || value.reasons.includes("unsupported_manager_profile")
+  )) return false;
   if (value.status !== "observed") return true;
   const expectedArgv = [
     "pnpm", "update", `${value.candidate.package}@${value.candidate.targetVersion}`,
     "--lockfile-only", "--ignore-scripts",
   ];
-  return value.runtime.disposition === "safe"
+  return isOperationalPnpmIdentity(value.candidate.identity)
+    && exactJsonEqual(value.runtime.identity, value.candidate.identity)
+    && exactJsonEqual(value.security.identity, value.candidate.identity)
+    && NPM_PACKAGE.test(value.candidate.package)
+    && ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
+      .includes(value.candidate.dependencyKind)
+    && !UNSAFE_NPM_SPECIFIER.test(value.candidate.specifier)
+    && EXACT_SEMVER.test(value.candidate.currentVersion)
+    && EXACT_SEMVER.test(value.candidate.targetVersion)
+    && value.runtime.disposition === "safe" && EXACT_SEMVER.test(value.runtime.version ?? "")
     && value.packageManager.disposition === "safe"
     && value.packageManager.name === "pnpm"
+    && EXACT_SEMVER.test(value.packageManager.version ?? "")
     && value.packageManager.profile === "pnpm_lockfile_only_v1"
     && exactJsonEqual(value.packageManager.updateArgv, expectedArgv)
+    && (value.manifest.path === "package.json" || value.manifest.path.endsWith("/package.json"))
+    && (value.lockfile.path === "pnpm-lock.yaml" || value.lockfile.path.endsWith("/pnpm-lock.yaml"))
     && value.lockfile.disposition === "present"
-    && value.security.disposition === "clear"
+    && value.security.disposition === "clear" && value.security.provider === "osv"
+    && value.security.reference === `osv:npm:${value.candidate.package}@${value.candidate.targetVersion}`
     && value.baseline.headSha === binding.headSha;
 }
 
@@ -1367,8 +1404,9 @@ export function isDependencyObservationsEnvelope(
   let priorEventKey: string | null = null;
   return value.observations.every((item) => {
     if (!isObject(item) || !hasExactKeys(item, [
-      "binding", "observation", "approval", "externalBuilderPack",
-    ]) || !isDependencyObservationBinding(item.binding)
+      "payloadVersion", "binding", "observation", "approval", "externalBuilderPack",
+    ]) || (item.payloadVersion !== 1 && item.payloadVersion !== 2)
+      || !isDependencyObservationBinding(item.binding)
       || item.binding.workspaceId !== binding.workspaceId
       || item.binding.recordId !== binding.recordId
       || item.binding.repo !== binding.repo
@@ -1377,7 +1415,7 @@ export function isDependencyObservationsEnvelope(
       || item.binding.headCycleId !== binding.headCycleId
       || item.binding.authorityGeneration !== binding.authorityGeneration
       || !exactJsonEqual(item.binding.acceptanceContract, binding.acceptanceContract)
-      || !isDependencyObservation(item.observation, item.binding)
+      || !isDependencyObservation(item.observation, item.binding, item.payloadVersion)
       || eventIds.has(item.observation.eventId)
       || fingerprints.has(item.observation.candidateFingerprint)
       || (priorEventKey !== null && priorEventKey >= item.observation.eventKey)) return false;
@@ -2107,6 +2145,7 @@ export function ReviewMetricsPanel({
 function dependencyObservationStatusLabel(status: AcceptanceDependencyObservationStatus): string {
   switch (status) {
     case "observed": return "Observed";
+    case "refused_unsupported_profile": return "Refused: unsupported profile";
     case "refused_unsafe_runtime": return "Refused: unsafe runtime";
     case "refused_lockfile": return "Refused: lockfile";
     case "refused_baseline": return "Refused: baseline";
@@ -2198,14 +2237,15 @@ export function DependencyObservationsPanel({
                       {observation.lockfile.disposition} · {observation.lockfile.path}
                     </CorrectionDatum>
                     <CorrectionDatum label="Runtime">
-                      {observation.runtime.disposition} · {observation.runtime.nodeVersion ?? "version unavailable"}
+                      {observation.runtime.disposition} · {observation.runtime.identity.ecosystem}/
+                      {observation.runtime.identity.manager} · {observation.runtime.version ?? "version unavailable"}
                     </CorrectionDatum>
                     <CorrectionDatum label="Package manager">
                       {observation.packageManager.disposition} · {observation.packageManager.name}
                       {observation.packageManager.version ? ` ${observation.packageManager.version}` : ""}
                     </CorrectionDatum>
                     <CorrectionDatum label="Security evidence">
-                      {observation.security.provider} · {observation.security.disposition}
+                      {observation.security.identity.ecosystem}/{observation.security.identity.manager} · {observation.security.provider} · {observation.security.disposition}
                     </CorrectionDatum>
                     <CorrectionDatum label="Observed at">{formatChangeRecordDate(observation.observedAt)}</CorrectionDatum>
                     <CorrectionDatum label="Compiled Context Pack" mono>{itemBinding.compiledPack.id}</CorrectionDatum>

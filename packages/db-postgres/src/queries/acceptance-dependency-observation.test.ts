@@ -150,6 +150,46 @@ const validCargo = {
     reference: "osv:crates.io:serde@1.0.204",
   },
 };
+
+const composerIdentity = {
+  ecosystem: "php",
+  manager: "composer",
+  profile: "composer_lock_public_packagist_v1",
+};
+const validComposer = {
+  ...valid,
+  candidate: {
+    identity: composerIdentity,
+    package: "ralouphie/getallheaders",
+    dependencyKind: "dependencies" as const,
+    specifier: "^3.0.0",
+    currentVersion: "3.0.3",
+    targetVersion: "3.0.4",
+  },
+  runtime: {
+    ...valid.runtime,
+    identity: composerIdentity,
+    version: "8.5.9",
+  },
+  packageManager: {
+    ...valid.packageManager,
+    name: "composer",
+    version: "2.10.2",
+    profile: "composer_lock_public_packagist_v1",
+    updateArgv: [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", "ralouphie/getallheaders:3.0.4", "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+    ],
+  },
+  manifest: { ...valid.manifest, path: "composer.json" },
+  lockfile: { ...valid.lockfile, path: "composer.lock" },
+  security: {
+    ...valid.security,
+    identity: composerIdentity,
+    reference: "osv:Packagist:ralouphie/getallheaders@3.0.4",
+  },
+};
 describe("Acceptance dependency observation input boundary", () => {
   it("rejects caller-supplied authority, status, fingerprint, and execution side effects", async () => {
     for (const extra of [
@@ -271,6 +311,28 @@ describe("Acceptance dependency observation input boundary", () => {
       },
       { ...validCargo, manifest: { ...validCargo.manifest, path: "../Cargo.toml" } },
       { ...validCargo, security: { ...validCargo.security, reportSha256: "not-a-digest" } },
+    ]) {
+      await expect(recordAcceptanceDependencyObservation(malformed as never))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+    }
+  });
+
+  it("rejects structurally unsafe Composer evidence before historical replay lookup", async () => {
+    for (const malformed of [
+      { ...validComposer, composerJson: { require: {} } },
+      { ...validComposer, composerLock: { packages: [] } },
+      { ...validComposer, packagistResponse: { trusted: true } },
+      { ...validComposer, candidate: { ...validComposer.candidate, package: `vendor/package\u202e` } },
+      { ...validComposer, candidate: { ...validComposer.candidate, package: "x".repeat(215) } },
+      {
+        ...validComposer,
+        candidate: {
+          ...validComposer.candidate,
+          identity: { ...validComposer.candidate.identity, ecosystem: "PHP" },
+        },
+      },
+      { ...validComposer, manifest: { ...validComposer.manifest, path: "../composer.json" } },
+      { ...validComposer, security: { ...validComposer.security, reportSha256: "not-a-digest" } },
     ]) {
       await expect(recordAcceptanceDependencyObservation(malformed as never))
         .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);

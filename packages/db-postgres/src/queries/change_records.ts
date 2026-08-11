@@ -8281,6 +8281,7 @@ const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
+const ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE = "composer_lock_public_packagist_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
@@ -8293,8 +8294,14 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "php", manager: "composer", profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const NORMALIZED_PYPI_PACKAGE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const COMPOSER_PACKAGE_NAME = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
+const COMPOSER_STABLE_RELEASE = /^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})$/u;
+const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
@@ -8377,6 +8384,36 @@ function uvCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
     && compareStableReleaseTuples(target, current) > 0;
 }
 
+function composerCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !COMPOSER_PACKAGE_NAME.test(candidate.package)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.currentVersion)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.targetVersion)) return false;
+  const lowerMatch = COMPOSER_CONSTRAINT.exec(candidate.specifier);
+  const current = stableSemverTuple(candidate.currentVersion);
+  const target = stableSemverTuple(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(2).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)
+    || compareStableReleaseTuples(current, lower) < 0
+    || compareStableReleaseTuples(target, lower) < 0
+    || compareStableReleaseTuples(target, current) <= 0) return false;
+  const operator = lowerMatch[1] ?? "exact";
+  if (operator === "exact") {
+    return compareStableReleaseTuples(current, lower) === 0
+      && compareStableReleaseTuples(target, lower) === 0;
+  }
+  const upper: [number, number, number] = operator === "~"
+    ? [lower[0], lower[1] + 1, 0]
+    : lower[0] > 0
+      ? [lower[0] + 1, 0, 0]
+      : lower[1] > 0
+        ? [0, lower[1] + 1, 0]
+        : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableReleaseTuples(current, upper) < 0
+    && compareStableReleaseTuples(target, upper) < 0;
+}
 function yarnCandidateSpecifierIsValid(value: string): boolean {
   const exact = value.startsWith("^") || value.startsWith("~") ? value.slice(1) : value;
   return EXACT_SEMVER.test(exact);
@@ -8500,6 +8537,21 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       `${candidate.package}==${candidate.targetVersion}`,
     ],
   }],
+  ["php:composer:composer_lock_public_packagist_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY,
+    candidateIsValid: composerCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "8.5.9",
+    packageManagerVersionIsValid: (version) => version === "2.10.2",
+    manifestPathIsValid: (path) => path === "composer.json",
+    lockfilePathIsValid: (path) => path === "composer.lock",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`,
+    expectedArgv: (candidate) => [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", `${candidate.package}:${candidate.targetVersion}`, "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+    ],
+  }],
 ]);
 
 function isStrictCurrentAcceptanceDependencyProfile(
@@ -8507,7 +8559,8 @@ function isStrictCurrentAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY);
 }
 
 function isFrozenReplayEligibleAcceptanceDependencyProfile(
@@ -8515,7 +8568,8 @@ function isFrozenReplayEligibleAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY);
 }
 
 function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {

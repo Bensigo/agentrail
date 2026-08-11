@@ -688,6 +688,70 @@ function cargoDependencyEnvelope(
   }
   return envelope;
 }
+
+function composerDependencyEnvelope(
+  withPack = false,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "php",
+    manager: "composer",
+    profile: "composer_lock_public_packagist_v1",
+  };
+  item.binding.compiledPack = {
+    ...item.binding.compiledPack,
+    compilerVersion: "exact-head-correction-pack-v6",
+    policyVersion: "bounded-exact-ranges-v4",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    package: "ralouphie/getallheaders",
+    dependencyKind: "dependencies",
+    specifier: "^3.0.0",
+    currentVersion: "3.0.3",
+    targetVersion: "3.0.4",
+  };
+  item.observation.runtime = {
+    ...item.observation.runtime,
+    identity,
+    version: "8.5.9",
+  };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "composer",
+    version: "2.10.2",
+    profile: "composer_lock_public_packagist_v1",
+    updateArgv: [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", "ralouphie/getallheaders:3.0.4", "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+    ],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "composer.json" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "composer.lock" };
+  item.observation.security = {
+    ...item.observation.security,
+    identity,
+    reference: "osv:Packagist:ralouphie/getallheaders@3.0.4",
+  };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.binding = structuredClone(item.binding);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -2224,6 +2288,92 @@ describe("Change Record detail view", () => {
       observation.reasons = [];
       expect(isDependencyObservationsEnvelope(historical)).toBe(false);
     }
+  });
+
+  it("strictly validates and renders the Composer observation and no-authority Pack", () => {
+    expect(isDependencyObservationsEnvelope(composerDependencyEnvelope())).toBe(true);
+    expect(isDependencyObservationsEnvelope(composerDependencyEnvelope(true))).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: composerDependencyEnvelope(true),
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("ralouphie/getallheaders 3.0.3 → 3.0.4");
+    expect(content).toContain("safe · php / composer · 8.5.9");
+    expect(content).toContain("safe · composer 2.10.2 · composer_lock_public_packagist_v1");
+    expect(content).toContain(
+      "composer --no-interaction --no-plugins --no-scripts --no-cache update "
+      + "ralouphie/getallheaders:3.0.4 --with-dependencies --minimal-changes "
+      + "--no-dev --no-install --no-audit --no-progress",
+    );
+    expect(content).toContain("composer.json");
+    expect(content).toContain("composer.lock");
+    expect(content).toContain("exact-head-correction-pack-v6 · bounded-exact-ranges-v4");
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain("External authority not_granted");
+    expect(content).not.toMatch(/execute|delivery granted|managed-build|live caller/iu);
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    for (const mutate of [
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.package = "Ralouphie/getallheaders";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.dependencyKind = "devDependencies";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.specifier = "^3.0";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.targetVersion = "4.0.0";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        const observation = value.observations[0]!.observation;
+        Object.assign(observation.candidate, {
+          specifier: "^1000000000.0.0",
+          currentVersion: "1000000000.0.0",
+          targetVersion: "1000000000.0.1",
+        });
+        observation.packageManager.updateArgv[6] =
+          "ralouphie/getallheaders:1000000000.0.1";
+        observation.security.reference =
+          "osv:Packagist:ralouphie/getallheaders@1000000000.0.1";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.runtime.version = "8.5.8";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.version = "2.10.1";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.updateArgv =
+          value.observations[0]!.observation.packageManager.updateArgv
+            .filter((token) => token !== "--no-plugins");
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.manifest.path = "packages/app/composer.json";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.lockfile.path = "packages/app/composer.lock";
+      },
+      (value: ReturnType<typeof composerDependencyEnvelope>) => {
+        value.observations[0]!.observation.security.reference =
+          "osv:packagist:ralouphie/getallheaders@3.0.4";
+      },
+    ]) {
+      const invalid = composerDependencyEnvelope();
+      mutate(invalid);
+      expect(isDependencyObservationsEnvelope(invalid)).toBe(false);
+    }
+
+    const mismatchedPack = composerDependencyEnvelope(true);
+    mismatchedPack.observations[0]!.externalBuilderPack!.packageManager.updateArgv
+      .push("--prefer-source");
+    expect(isDependencyObservationsEnvelope(mismatchedPack)).toBe(false);
   });
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {
     const historical = npmDependencyEnvelope();

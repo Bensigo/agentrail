@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `13a528ce`, after merged PR
-#1702. The bounded dependency source/test foundations are recorded below;
+Last reconciled: 2026-08-12 at main commit `f9dd6b86`, after merged PR
+#1719. The bounded dependency source/test foundations are recorded below;
 canonical R10 completion and release proof remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
@@ -242,6 +242,15 @@ correction therefore removes Cargo from the Console and database operational,
 strict-current, frozen-replay, receipt, approval, and external-builder Pack
 registries.
 
+PR #1716 added a strict source-only Composer 2 root parser in the legacy Python
+dependency layer. It accepts a bounded root `composer.json` and
+`composer.lock` syntax subset, preserves exact supplied-file SHA-256 custody,
+and keeps Composer content-hash recomputation, Packagist authenticity,
+distribution integrity, transitive graph reachability, runtime, security, and
+Acceptance Record authority explicitly unresolved. It does not register
+Composer as a canonical evidence profile and grants no approval, Pack,
+execution, delivery, pull-request, or merge authority.
+
 The strict Python Cargo parser and source-only observation candidate remain.
 They can reject unsafe manifest and lockfile shapes, but Cargo.lock checksum
 strings are provided source material, not authenticated crates.io receipts.
@@ -257,16 +266,52 @@ metadata. They neither register a Cargo evidence profile nor authenticate
 registry, checksum, security, or runner evidence, and they grant no Cargo
 approval, Pack, delivery, or execution authority.
 
+PR #1720 adds the closed `php` / `composer` /
+`composer_lock_public_packagist_v1` evidence profile. It admits only one
+canonical lowercase `vendor/name` production requirement from the strict
+root parser, a stable caret or tilde constraint, an exact stable locked
+release, and a higher stable target within that same constraint. Runtime and
+manager evidence are pinned to PHP 8.5.9 and Composer 2.10.2. The current
+compiled Pack must bind exact root `composer.json` and `composer.lock`
+source/blob/tree custody. The current compiler and the component proof use
+compiler v6 and policy v4; Composer does not treat the version labels alone as
+source evidence.
+
+The parser-to-observer reachability proof uses a Composer-generated public
+Packagist lock row. A required bounded HTTPS zip `dist` claim may coexist with
+an optional bounded HTTPS git `source` claim only when both references identify
+the same release. Those fields remain unauthenticated source syntax; they do
+not prove repository authenticity or distribution integrity.
+
+The immutable future-builder instruction is `composer --no-interaction
+--no-plugins --no-scripts --no-cache update <package>:<target>
+--with-dependencies --minimal-changes --no-dev --no-install --no-audit
+--no-progress`. It is not executed by the canonical path in this slice.
+Security evidence must carry the exact
+`osv:Packagist:<package>@<target>` identity. The authenticated evidence
+boundary remains responsible for the PHP, Composer, Packagist, sandbox, and
+security facts; the database validates the bounded report and independently
+rebinds the Record, current head cycle, confirmed Contract, compiled Pack,
+root-file custody, and OSV identity. It does not reparse caller-supplied raw
+manifest or lock bodies.
+
+A pre-support Composer v2 refusal can replay only as the same immutable
+refusal. Changed evidence conflicts, and a new broad or malformed body creates
+no event. Composer remains outside the legacy draft and managed-execution
+profiles. The resulting R10.2 Pack is metadata-only,
+`deliveryAuthority:not_granted`, and requires exact-head R7 re-entry; no
+install, issue, delivery, pull-request, or merge authority is added.
+
 PR #1695 reconciled the source/test conclusion then supported by these bounded
 profiles. It closed only the pnpm, npm, Yarn 4, and uv foundation; it did not
 close canonical R10.1.
 
 Canonical R10.1 source/test remains open. The active v1 matrix requires safe,
 adapter-driven profiles across the named package-manager families. pnpm, npm,
-Yarn 4, and uv are currently accepted profiles. Cargo, pip/requirements,
-Poetry, Maven, Gradle, NuGet/dotnet, Composer, and Go Modules remain required
-R10 work; detected-only or source-only observer support is not operational
-support.
+Yarn 4, uv, and Composer are currently accepted profiles. Cargo,
+pip/requirements, Poetry, Maven, Gradle, NuGet/dotnet, and Go Modules remain
+required R10 work; detected-only or source-only observer support is not
+operational support.
 
 Every manager without a bounded safe profile must return the explicit
 fail-closed `refused_unsupported_profile` capability/evidence result. Such a
@@ -343,6 +388,22 @@ the explicit no-Cargo-managed-execution regression remain in place. No Cargo
 or rustc command was run, no crates.io checksum or OSV response was
 authenticated, no canonical runner called the ingestion route, no external
 builder received a Pack, and no deployed, live, or customer path was observed.
+
+The Composer compatibility gate covers 993 focused Python dependency and
+guardrail tests, 194 focused Console parser, ingestion-route, and Record-detail
+tests, eight DB boundary tests, and three focused fresh-migrated PostgreSQL
+cases covering exact profile admission, refusal truth, immutable historical
+replay, root-source custody, and R10.2 Pack propagation. The complete 96-case
+Change Record file and full 143-file / 1,914-test database suite pass on fresh
+migrated PostgreSQL. Package typechecks/builds, scoped lint, generated
+guardrail-doc parity, diff checks, and independent adversarial review are
+green. The slice also carries a
+[browser-rendered component screenshot](screenshots/r101-composer-receipt.png)
+of the synthetic exact Composer receipt and no-authority Pack; it is component
+proof, not an authenticated Record-detail flow. No canonical 3.0.4 target
+upgrade or OSV evidence acquisition ran, no authenticated canonical caller
+submitted the receipt, no external builder received a Pack, and no deployed,
+live, or customer path was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,

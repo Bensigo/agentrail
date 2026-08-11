@@ -268,3 +268,25 @@ def test_cargo_plan_uses_one_fully_qualified_lockfile_update() -> None:
         "--precise",
         "{version}",
     )
+
+
+def test_composer_plan_is_one_noninteractive_lock_only_update() -> None:
+    result = _detect("composer.json", "composer.lock")
+
+    assert isinstance(result, SupportedDetection)
+    assert result.manager_id is ManagerId.COMPOSER
+    assert result.command_plan.upgrade == (
+        "composer",
+        "--no-interaction",
+        "--no-plugins",
+        "--no-scripts",
+        "--no-cache",
+        "update",
+        "{dependency}:{version}",
+        "--with-dependencies",
+        "--minimal-changes",
+        "--no-dev",
+        "--no-install",
+        "--no-audit",
+        "--no-progress",
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 import pytest
@@ -23,6 +24,7 @@ from agentrail.dependencies.pnpm import (
 
 
 BASELINE = "b" * 40
+COMPOSER_FIXTURES = Path(__file__).parent / "fixtures" / "composer_public_packagist"
 
 
 class Registry:
@@ -46,6 +48,98 @@ class Newest(TargetVersionAdapter):
             if version.removeprefix("v") != current_version.removeprefix("v"):
                 return version
         return current_version
+
+
+def _composer_files() -> Dict[str, str]:
+    return {
+        "composer.json": (COMPOSER_FIXTURES / "composer.json").read_text(encoding="utf-8"),
+        "composer.lock": (COMPOSER_FIXTURES / "composer.lock").read_text(encoding="utf-8"),
+    }
+
+
+def test_composer_public_packagist_profile_detects_one_bound_candidate() -> None:
+    result = observe_dependencies(
+        _snapshot(**_composer_files()),
+        registry=Registry({"ralouphie/getallheaders": ("3.0.3", "3.0.4", "4.0.0-beta1")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, CandidatesResult)
+    candidate = result.candidates[0]
+    assert (candidate.package_manager, candidate.ecosystem) == ("composer", "php")
+    assert candidate.adapter_profile == "composer_lock_public_packagist_v1"
+    assert candidate.adapter_identity_fingerprint is not None
+    assert candidate.dependency_kind == "dependencies"
+    assert candidate.specifier == "^3.0.0"
+    assert candidate.current_version == "3.0.3"
+    assert candidate.target_version == "3.0.4"
+    assert candidate.manifest_path == "composer.json"
+    assert candidate.lockfile_path == "composer.lock"
+    assert candidate.manager_commands["update"] == (
+        "composer --no-interaction --no-plugins --no-scripts --no-cache "
+        "update ralouphie/getallheaders:3.0.4 --with-dependencies "
+        "--minimal-changes --no-dev --no-install --no-audit --no-progress"
+    )
+
+
+def test_composer_operational_profile_refuses_require_dev_before_packagist() -> None:
+    files = _composer_files()
+    manifest = json.loads(files["composer.json"])
+    lock = json.loads(files["composer.lock"])
+    manifest["require-dev"] = manifest.pop("require")
+    lock["packages-dev"] = lock.pop("packages")
+    lock["packages"] = []
+    files["composer.json"] = json.dumps(manifest)
+    files["composer.lock"] = json.dumps(lock)
+    registry = Registry({"ralouphie/getallheaders": ("3.0.3", "3.0.4")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest()
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "production require" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_composer_profile_requires_exact_current_and_non_yanked_compatible_target() -> None:
+    missing_current = observe_dependencies(
+        _snapshot(**_composer_files()),
+        registry=Registry({"ralouphie/getallheaders": ("3.0.4",)}),
+        target_versions=Newest(),
+    )
+    assert isinstance(missing_current, InsufficientEvidenceResult)
+    assert "exact locked Composer version" in missing_current.reasons[0]
+
+    yanked_target = observe_dependencies(
+        _snapshot(**_composer_files()),
+        registry=Registry(
+            {"ralouphie/getallheaders": ("3.0.3", "3.0.4")},
+            yanked={"ralouphie/getallheaders": ("3.0.4",)},
+        ),
+        target_versions=Newest(),
+    )
+    assert isinstance(yanked_target, UnchangedResult)
+
+
+def test_composer_profile_refuses_out_of_constraint_target_and_selection_drift() -> None:
+    outside = observe_dependencies(
+        _snapshot(**_composer_files()),
+        registry=Registry({"ralouphie/getallheaders": ("3.0.3", "4.0.0")}),
+        target_versions=Newest(),
+    )
+    assert isinstance(outside, UnchangedResult)
+
+    registry = Registry({"ralouphie/getallheaders": ("3.0.3", "3.0.4")})
+    selected = observe_dependencies(
+        _snapshot(**_composer_files()),
+        selected_dependencies=("other/package",),
+        registry=registry,
+        target_versions=Newest(),
+    )
+    assert isinstance(selected, InsufficientEvidenceResult)
+    assert "not the admitted composer.json requirement" in selected.reasons[0]
+    assert registry.calls == []
 
 
 def _snapshot(**files: str) -> DependencySnapshot:

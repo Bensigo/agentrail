@@ -6,6 +6,7 @@ export const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 export const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
+export const ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE = "composer_lock_public_packagist_v1";
 export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -13,6 +14,9 @@ const SHA1 = /^[0-9a-f]{40}$/iu;
 const SHA256 = /^[0-9a-f]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const COMPOSER_PACKAGE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
+const COMPOSER_STABLE_RELEASE = /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/u;
+const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/u;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
@@ -108,6 +112,9 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "php", manager: "composer", profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+};
 
 function nodeCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
   return NPM_PACKAGE.test(candidate.package) && candidate.package === candidate.package.toLowerCase()
@@ -182,6 +189,38 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
+function composerCandidateIsValid(
+  candidate: AcceptanceDependencyObservationInput["candidate"]
+): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !COMPOSER_PACKAGE.test(candidate.package)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.currentVersion)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.targetVersion)) return false;
+  const lowerMatch = COMPOSER_CONSTRAINT.exec(candidate.specifier);
+  const current = stableSemverParts(candidate.currentVersion);
+  const target = stableSemverParts(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(2).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)
+    || compareStableSemver(current, lower) < 0
+    || compareStableSemver(target, lower) < 0
+    || compareStableSemver(target, current) <= 0) return false;
+  const operator = lowerMatch[1] ?? "exact";
+  if (operator === "exact") {
+    return compareStableSemver(current, lower) === 0
+      && compareStableSemver(target, lower) === 0;
+  }
+  const upper: [number, number, number] = operator === "~"
+    ? [lower[0], lower[1] + 1, 0]
+    : lower[0] > 0
+      ? [lower[0] + 1, 0, 0]
+      : lower[1] > 0
+        ? [0, lower[1] + 1, 0]
+        : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableSemver(current, upper) < 0
+    && compareStableSemver(target, upper) < 0;
+}
 function osvNpmSecurityIsValid(
   security: AcceptanceDependencyObservationInput["security"],
   candidate: AcceptanceDependencyObservationInput["candidate"],
@@ -198,6 +237,13 @@ function osvPyPiSecurityIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function osvComposerSecurityIsValid(
+  security: AcceptanceDependencyObservationInput["security"],
+  candidate: AcceptanceDependencyObservationInput["candidate"],
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`;
+}
 const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
@@ -259,6 +305,21 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
+  ["php:composer:composer_lock_public_packagist_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: true,
+    candidateIsValid: composerCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "8.5.9",
+    packageManagerVersionIsValid: (version) => version === "2.10.2",
+    manifestPathIsValid: (path) => path === "composer.json",
+    lockfilePathIsValid: (path) => path === "composer.lock",
+    securityIsValid: osvComposerSecurityIsValid,
+    expectedArgv: (candidate) => [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", `${candidate.package}:${candidate.targetVersion}`, "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
   }],
 ]);

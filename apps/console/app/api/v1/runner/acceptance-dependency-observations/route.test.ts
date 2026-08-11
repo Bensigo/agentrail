@@ -225,6 +225,44 @@ function cargoRequestBody() {
   };
   return value;
 }
+
+function composerRequestBody() {
+  const value = structuredClone(VALID);
+  const identity = {
+    ecosystem: "php",
+    manager: "composer",
+    profile: "composer_lock_public_packagist_v1",
+  };
+  value.candidate = {
+    ...value.candidate,
+    identity,
+    package: "ralouphie/getallheaders",
+    dependencyKind: "dependencies",
+    specifier: "^3.0.0",
+    currentVersion: "3.0.3",
+    targetVersion: "3.0.4",
+  };
+  value.runtime = { ...value.runtime, identity, version: "8.5.9" };
+  value.packageManager = {
+    ...value.packageManager,
+    name: "composer",
+    version: "2.10.2",
+    profile: "composer_lock_public_packagist_v1",
+    updateArgv: [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", "ralouphie/getallheaders:3.0.4", "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+    ],
+  };
+  value.manifest = { ...value.manifest, path: "composer.json" };
+  value.lockfile = { ...value.lockfile, path: "composer.lock" };
+  value.security = {
+    ...value.security,
+    identity,
+    reference: "osv:Packagist:ralouphie/getallheaders@3.0.4",
+  };
+  return value;
+}
 function historicalNpmReplayBody() {
   const value = npmRequestBody();
   Object.assign(value.candidate, {
@@ -331,6 +369,75 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(JSON.stringify(body))
       .not.toMatch(/cargo update|crates\.io-index|security|approv|pack|execute|deliver/iu);
   });
+
+  it("passes one exact Composer observation without echoing command or authority", async () => {
+    const composer = composerRequestBody();
+    const response = await POST(request(composer));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    expect(JSON.stringify(await response.json()))
+      .not.toMatch(/composer update|Packagist|security|approv|execute|deliver/iu);
+  });
+
+  it("passes bounded Composer command drift once for DB-owned refusal truth", async () => {
+    const composer = composerRequestBody();
+    composer.packageManager.updateArgv = composer.packageManager.updateArgv
+      .filter((token) => token !== "--no-plugins");
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("recorded", "refused_unsafe_runtime", ["unsafe_package_manager_argv"]) as never
+    );
+
+    const response = await POST(request(composer));
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
+    });
+  });
+
+  it("lets bounded pre-profile Composer evidence reach only the DB replay seam", async () => {
+    const historical = composerRequestBody();
+    historical.runtime.version = "php-current";
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+
+    const response = await POST(request(historical));
+
+    expect(response.status).toBe(200);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "replayed",
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    });
+  });
+
+  it("maps an over-cap Composer release to sanitized DB-owned invalid evidence", async () => {
+    const composer = composerRequestBody();
+    Object.assign(composer.candidate, {
+      specifier: "^1000000000.0.0",
+      currentVersion: "1000000000.0.0",
+      targetVersion: "1000000000.0.1",
+    });
+    composer.packageManager.updateArgv[6] =
+      "ralouphie/getallheaders:1000000000.0.1";
+    composer.security.reference =
+      "osv:Packagist:ralouphie/getallheaders@1000000000.0.1";
+    vi.mocked(recordAcceptanceDependencyObservation).mockRejectedValue(
+      new AcceptanceDependencyObservationInvalidEvidenceError()
+    );
+
+    const response = await POST(request(composer));
+
+    expect(response.status).toBe(400);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid dependency observation" });
+  });
+
   it("lets bounded formerly-supported uv evidence reach only the exact DB replay seam", async () => {
     const historical = uvRequestBody();
     historical.packageManager.version = "uv-current";

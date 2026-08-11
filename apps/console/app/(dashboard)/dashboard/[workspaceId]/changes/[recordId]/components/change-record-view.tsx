@@ -2609,6 +2609,9 @@ export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrRe
 const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const COMPOSER_PACKAGE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
+const COMPOSER_STABLE_RELEASE = /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/u;
+const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/u;
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
@@ -2748,6 +2751,36 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
+function composerDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !COMPOSER_PACKAGE.test(candidate.package)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.currentVersion)
+    || !COMPOSER_STABLE_RELEASE.test(candidate.targetVersion)) return false;
+  const lowerMatch = COMPOSER_CONSTRAINT.exec(candidate.specifier);
+  const current = stableSemverParts(candidate.currentVersion);
+  const target = stableSemverParts(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(2).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)
+    || compareStableSemver(current, lower) < 0
+    || compareStableSemver(target, lower) < 0
+    || compareStableSemver(target, current) <= 0) return false;
+  const operator = lowerMatch[1] ?? "exact";
+  if (operator === "exact") {
+    return compareStableSemver(current, lower) === 0
+      && compareStableSemver(target, lower) === 0;
+  }
+  const upper: [number, number, number] = operator === "~"
+    ? [lower[0], lower[1] + 1, 0]
+    : lower[0] > 0
+      ? [lower[0] + 1, 0, 0]
+      : lower[1] > 0
+        ? [0, lower[1] + 1, 0]
+        : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableSemver(current, upper) < 0
+    && compareStableSemver(target, upper) < 0;
+}
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2764,6 +2797,13 @@ function osvPyPiReceiptIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function osvComposerReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`;
+}
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
@@ -2829,6 +2869,24 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
+  ["php:composer:composer_lock_public_packagist_v1", {
+    identity: {
+      ecosystem: "php",
+      manager: "composer",
+      profile: "composer_lock_public_packagist_v1",
+    },
+    candidateIsValid: composerDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "8.5.9",
+    packageManagerVersionIsValid: (version) => version === "2.10.2",
+    manifestPathIsValid: (path) => path === "composer.json",
+    lockfilePathIsValid: (path) => path === "composer.lock",
+    securityIsValid: osvComposerReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", `${candidate.package}:${candidate.targetVersion}`, "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
   }],
 ]);
@@ -4595,12 +4653,26 @@ export function DependencyObservationsPanel({
                       {observation.packageManager.version ? ` ${observation.packageManager.version}` : ""}
                       {` · ${observation.packageManager.profile}`}
                     </CorrectionDatum>
+                    {observation.candidate.identity.ecosystem === "php"
+                      && observation.candidate.identity.manager === "composer"
+                      && observation.candidate.identity.profile === "composer_lock_public_packagist_v1" ? (
+                        <CorrectionDatum label="Bounded update argv" mono>
+                          {observation.packageManager.updateArgv.join(" ")}
+                        </CorrectionDatum>
+                      ) : null}
                     <CorrectionDatum label="Security evidence">
                       {observation.security.identity.ecosystem}/{observation.security.identity.manager} · {observation.security.provider} · {observation.security.disposition}
                     </CorrectionDatum>
                     <CorrectionDatum label="Observed at">{formatChangeRecordDate(observation.observedAt)}</CorrectionDatum>
                     <CorrectionDatum label="Compiled Context Pack" mono>{itemBinding.compiledPack.id}</CorrectionDatum>
                     <CorrectionDatum label="Compiled Pack SHA-256" mono>{itemBinding.compiledPack.sha256}</CorrectionDatum>
+                    {observation.candidate.identity.ecosystem === "php"
+                      && observation.candidate.identity.manager === "composer"
+                      && observation.candidate.identity.profile === "composer_lock_public_packagist_v1" ? (
+                        <CorrectionDatum label="Compiler / policy" mono>
+                          {itemBinding.compiledPack.compilerVersion} · {itemBinding.compiledPack.policyVersion}
+                        </CorrectionDatum>
+                      ) : null}
                   </dl>
                   {observation.reasons.length > 0 ? (
                     <p className="mt-3 text-[var(--gray-09)]">

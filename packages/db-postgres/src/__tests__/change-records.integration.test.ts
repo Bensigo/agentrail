@@ -1304,6 +1304,74 @@ function cargoAcceptanceDependencyObservationInput(input: {
   };
 }
 
+function composerAcceptanceDependencyObservationInput(input: {
+  workspaceId: string;
+  recordId: string;
+  compiledPackId: string;
+  headSha: string;
+  manifestBlobSha: string;
+  lockfileBlobSha: string;
+  package?: string;
+  currentVersion?: string;
+  targetVersion?: string;
+  specifier?: string;
+}) {
+  const packageName = input.package ?? "ralouphie/getallheaders";
+  const currentVersion = input.currentVersion ?? "3.0.3";
+  const targetVersion = input.targetVersion ?? "3.0.4";
+  const identity = {
+    ecosystem: "php",
+    manager: "composer",
+    profile: "composer_lock_public_packagist_v1",
+  };
+  return {
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    compiledPackId: input.compiledPackId,
+    candidate: {
+      identity,
+      package: packageName,
+      dependencyKind: "dependencies" as const,
+      specifier: input.specifier ?? "^3.0.0",
+      currentVersion,
+      targetVersion,
+    },
+    runtime: {
+      identity,
+      disposition: "safe" as const,
+      version: "8.5.9",
+      evidenceSha256: "1".repeat(64),
+    },
+    packageManager: {
+      disposition: "safe" as const,
+      name: "composer",
+      version: "2.10.2",
+      profile: "composer_lock_public_packagist_v1",
+      updateArgv: [
+        "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+        "update", `${packageName}:${targetVersion}`, "--with-dependencies", "--minimal-changes",
+        "--no-dev", "--no-install", "--no-audit", "--no-progress",
+      ],
+      evidenceSha256: "2".repeat(64),
+    },
+    manifest: { path: "composer.json", blobSha: input.manifestBlobSha },
+    lockfile: {
+      disposition: "present" as const,
+      path: "composer.lock",
+      blobSha: input.lockfileBlobSha,
+      evidenceSha256: "3".repeat(64),
+    },
+    baseline: { headSha: input.headSha },
+    security: {
+      identity,
+      disposition: "clear" as const,
+      provider: "osv",
+      reference: `osv:Packagist:${packageName}@${targetVersion}`,
+      reportSha256: "4".repeat(64),
+    },
+  };
+}
+
 async function appendHistoricalDependencyObservationV2(
   evidence: RecordAcceptanceDependencyObservationInput,
   observation: {
@@ -7310,6 +7378,434 @@ describe.skipIf(!DB_AVAILABLE)(
         reasons: [],
       });
     });
+
+    it("records the exact root Composer profile and preserves its evidence through R10.2", async () => {
+      const headSha = "a".repeat(40);
+      const manifestContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.json",
+        import.meta.url,
+      ), "utf8");
+      const lockfileContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.lock",
+        import.meta.url,
+      ), "utf8");
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-composer-profile",
+        prNumber: 570,
+        headSha,
+        manifestPath: "composer.json",
+        manifestContent,
+        lockfilePath: "composer.lock",
+        lockfileContent,
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected composer.lock custody");
+      const evidence = composerAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+
+      const recorded = await recordAcceptanceDependencyObservation(evidence);
+      expect(recorded).toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "observed",
+          reasons: [],
+          candidate: {
+            identity: evidence.candidate.identity,
+            package: "ralouphie/getallheaders",
+            dependencyKind: "dependencies",
+            specifier: "^3.0.0",
+            currentVersion: "3.0.3",
+            targetVersion: "3.0.4",
+          },
+          runtime: { identity: evidence.runtime.identity, version: "8.5.9" },
+          packageManager: {
+            name: "composer",
+            version: "2.10.2",
+            profile: "composer_lock_public_packagist_v1",
+            updateArgv: [
+              "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+              "update", "ralouphie/getallheaders:3.0.4", "--with-dependencies",
+              "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+            ],
+          },
+          manifest: { path: "composer.json" },
+          lockfile: { path: "composer.lock", disposition: "present" },
+          security: {
+            provider: "osv",
+            reference: "osv:Packagist:ralouphie/getallheaders@3.0.4",
+          },
+        },
+      });
+      if (recorded.kind !== "recorded") throw new Error("expected Composer observation");
+      await expect(recordAcceptanceDependencyObservation(evidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: { eventId: recorded.observation.eventId, status: "observed" },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...evidence,
+        security: { ...evidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        observations: [{
+          observation: { eventId: recorded.observation.eventId, status: "observed" },
+        }],
+      });
+
+      const selected = await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_codex",
+        configurationVersion: 8,
+      });
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: recorded.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      });
+      expect(approved).toMatchObject({
+        kind: "approved",
+        observation: { eventId: recorded.observation.eventId, candidate: evidence.candidate },
+        externalBuilderPack: {
+          candidate: evidence.candidate,
+          runtime: evidence.runtime,
+          packageManager: evidence.packageManager,
+          manifest: evidence.manifest,
+          lockfile: evidence.lockfile,
+          security: evidence.security,
+          route: { id: selected.route.id, adapter: "github_codex", configurationVersion: 8 },
+          deliveryAuthority: "not_granted",
+          reviewRequirement: "exact_head_r7_reentry",
+        },
+      });
+    }, 20_000);
+
+    it("refuses unsafe Composer evidence and fails closed for invalid or unbound profile facts", async () => {
+      const headSha = "b".repeat(40);
+      const manifestContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.json",
+        import.meta.url,
+      ), "utf8");
+      const lockfileContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.lock",
+        import.meta.url,
+      ), "utf8");
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-composer-refusals",
+        prNumber: 571,
+        headSha,
+        manifestPath: "composer.json",
+        manifestContent,
+        lockfilePath: "composer.lock",
+        lockfileContent,
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected Composer refusal lock custody");
+      const base = (targetVersion: string) => composerAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha!,
+        targetVersion,
+      });
+
+      const argvDrift = base("3.0.5");
+      await expect(recordAcceptanceDependencyObservation({
+        ...argvDrift,
+        packageManager: {
+          ...argvDrift.packageManager,
+          updateArgv: ["composer", "update", "ralouphie/getallheaders:3.0.5"],
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"] },
+      });
+      const runtimeDrift = base("3.0.6");
+      await expect(recordAcceptanceDependencyObservation({
+        ...runtimeDrift,
+        runtime: { ...runtimeDrift.runtime, disposition: "unsafe" as const, version: "8.5.8" },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
+      });
+      const managerDrift = base("3.0.7");
+      await expect(recordAcceptanceDependencyObservation({
+        ...managerDrift,
+        packageManager: {
+          ...managerDrift.packageManager,
+          disposition: "unsafe" as const,
+          version: "2.10.1",
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager"] },
+      });
+      const affected = base("3.0.8");
+      await expect(recordAcceptanceDependencyObservation({
+        ...affected,
+        security: { ...affected.security, disposition: "affected" as const },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_security", reasons: ["security_affected"] },
+      });
+      const sourceDrift = base("3.0.9");
+      const sourceNotProven = await recordAcceptanceDependencyObservation({
+        ...sourceDrift,
+        manifest: { ...sourceDrift.manifest, blobSha: "f".repeat(40) },
+      });
+      expect(sourceNotProven).toMatchObject({
+        kind: "recorded",
+        observation: { status: "not_proven", reasons: ["manifest_source_not_proven"] },
+      });
+      if (sourceNotProven.kind !== "recorded") throw new Error("expected unbound Composer observation");
+
+      const strictCases = [
+        (() => { const value = base("3.0.10"); return { ...value, candidate: { ...value.candidate, package: "Ralouphie/getallheaders" } }; })(),
+        (() => { const value = base("3.0.11"); return { ...value, candidate: { ...value.candidate, dependencyKind: "devDependencies" } }; })(),
+        (() => { const value = base("3.0.12"); return { ...value, candidate: { ...value.candidate, specifier: "3.0.3" } }; })(),
+        base("4.0.0"),
+        composerAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          headSha,
+          manifestBlobSha: fixture.manifestBlobSha,
+          lockfileBlobSha: fixture.lockfileBlobSha,
+          specifier: "^1000000000.0.0",
+          currentVersion: "1000000000.0.0",
+          targetVersion: "1000000000.0.1",
+        }),
+        (() => { const value = base("3.0.13"); return { ...value, manifest: { ...value.manifest, path: "nested/composer.json" } }; })(),
+        (() => { const value = base("3.0.14"); return { ...value, security: { ...value.security, reference: "osv:packagist:ralouphie/getallheaders@3.0.14" } }; })(),
+        (() => { const value = base("3.0.15"); return { ...value, runtime: { ...value.runtime, version: "8.5.8" } }; })(),
+        (() => { const value = base("3.0.16"); return { ...value, packageManager: { ...value.packageManager, version: "2.10.1" } }; })(),
+      ];
+      for (const malformed of strictCases) {
+        await expect(recordAcceptanceDependencyObservation(malformed))
+          .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+      }
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ))).toHaveLength(5);
+
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_codex",
+      });
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: sourceNotProven.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({ kind: "observation_not_eligible", reason: "observation_not_observed" });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+
+      const missingHeadSha = "c".repeat(40);
+      const missing = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-composer-lockfile-missing",
+        prNumber: 572,
+        headSha: missingHeadSha,
+        manifestPath: "composer.json",
+        manifestContent,
+        lockfilePath: "composer.lock",
+        lockfileReadReason: "path_not_found",
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...composerAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: missing.draft.record.id,
+          compiledPackId: missing.pack.id,
+          headSha: missingHeadSha,
+          manifestBlobSha: missing.manifestBlobSha,
+          lockfileBlobSha: "0".repeat(40),
+        }),
+        lockfile: {
+          disposition: "missing" as const,
+          path: "composer.lock",
+          blobSha: null,
+          evidenceSha256: "3".repeat(64),
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_lockfile", reasons: ["lockfile_missing"] },
+      });
+    }, 30_000);
+
+    it("replays frozen pre-support Composer v2 refusals without admitting a new broad body", async () => {
+      const manifestContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.json",
+        import.meta.url,
+      ), "utf8");
+      const lockfileContent = await readFile(new URL(
+        "../../../../agentrail/tests/dependencies/fixtures/composer_public_packagist/composer.lock",
+        import.meta.url,
+      ), "utf8");
+      const validHeadSha = "d".repeat(40);
+      const validFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-composer-valid",
+        prNumber: 573,
+        headSha: validHeadSha,
+        manifestPath: "composer.json",
+        manifestContent,
+        lockfilePath: "composer.lock",
+        lockfileContent,
+        compiledPackCompilerVersion: "exact-head-correction-pack-v6",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v4",
+      });
+      if (validFixture.lockfileBlobSha === null) throw new Error("expected historical composer.lock");
+      const validEvidence = composerAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        compiledPackId: validFixture.pack.id,
+        headSha: validHeadSha,
+        manifestBlobSha: validFixture.manifestBlobSha,
+        lockfileBlobSha: validFixture.lockfileBlobSha,
+      });
+      const validHistorical = await appendHistoricalUnsupportedDependencyObservationV2(validEvidence);
+      await expect(recordAcceptanceDependencyObservation(validEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: validHistorical.event.id,
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+        },
+      });
+
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        repo: validFixture.repo,
+        adapter: "github_codex",
+      });
+      const ownerId = randomUUID();
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      await expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        observationEventId: validHistorical.event.id,
+        approvedBy: `user:${ownerId}`,
+      })).resolves.toEqual({ kind: "observation_not_eligible", reason: "observation_not_observed" });
+
+      const broadHeadSha = "e".repeat(40);
+      const broadFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-composer-broad",
+        prNumber: 574,
+        headSha: broadHeadSha,
+        manifestPath: "services/api/composer.json",
+        manifestContent: "{\"require-dev\":{\"LOCAL/Package\":\"dev-main\"}}\n",
+        lockfilePath: "services/api/composer.lock",
+        lockfileContent: "legacy opaque lock body\n",
+      });
+      if (broadFixture.lockfileBlobSha === null) throw new Error("expected broad historical composer.lock");
+      const identity = {
+        ecosystem: "php",
+        manager: "composer",
+        profile: "composer_lock_public_packagist_v1",
+      };
+      const broadEvidence: RecordAcceptanceDependencyObservationInput = {
+        workspaceId: wsId,
+        recordId: broadFixture.draft.record.id,
+        compiledPackId: broadFixture.pack.id,
+        candidate: {
+          identity,
+          package: "LOCAL/Package",
+          dependencyKind: "require-dev",
+          specifier: "dev-main",
+          currentVersion: "release-1",
+          targetVersion: "release-2",
+        },
+        runtime: {
+          identity,
+          disposition: "safe",
+          version: "php-preview",
+          evidenceSha256: "1".repeat(64),
+        },
+        packageManager: {
+          disposition: "safe",
+          name: "composer",
+          version: "composer-preview",
+          profile: "composer_lock_public_packagist_v1",
+          updateArgv: ["composer", "update", "LOCAL/Package:release-2"],
+          evidenceSha256: "2".repeat(64),
+        },
+        manifest: { path: "services/api/composer.json", blobSha: broadFixture.manifestBlobSha },
+        lockfile: {
+          disposition: "present",
+          path: "services/api/composer.lock",
+          blobSha: broadFixture.lockfileBlobSha,
+          evidenceSha256: "3".repeat(64),
+        },
+        baseline: { headSha: broadHeadSha },
+        security: {
+          identity,
+          disposition: "clear",
+          provider: "opaque",
+          reference: "opaque:pre-support-composer",
+          reportSha256: "4".repeat(64),
+        },
+      };
+      const broadHistorical = await appendHistoricalUnsupportedDependencyObservationV2(broadEvidence);
+      await expect(recordAcceptanceDependencyObservation(broadEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: broadHistorical.event.id,
+          status: "refused_unsupported_profile",
+          candidate: broadEvidence.candidate,
+        },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        security: { ...broadEvidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        candidate: { ...broadEvidence.candidate, targetVersion: "release-3" },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+      const events = await db.select().from(changeRecordEvents).where(and(
+        inArray(changeRecordEvents.recordId, [
+          validFixture.draft.record.id,
+          broadFixture.draft.record.id,
+        ]),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ));
+      expect(events).toHaveLength(2);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, validFixture.draft.record.id),
+        inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
+      ))).toHaveLength(0);
+    }, 20_000);
 
     it("fails closed for npm command drift and rejects noncanonical new npm bodies without an event", async () => {
       const headSha = "b".repeat(40);

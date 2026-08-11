@@ -250,9 +250,12 @@ export default async function LandingPage() {
         <Reveal delay={100}>
           <div className="mx-auto mt-12 max-w-[860px] border-t-2 border-[var(--gray-13)] pt-8 sm:pt-10">
             <p className="text-mono-data text-[var(--gray-11)]">ONE USE CASE</p>
-            <h3 className="mt-3 text-heading-2">Review dependency upgrades with the evidence attached</h3>
+            <h3 className="mt-3 text-heading-2">Keep dependency upgrades moving safely</h3>
             <p className="mt-3 max-w-[58ch] text-[var(--gray-11)]">
-              Jace records what it observed and the compatibility evidence. If it cannot prove the upgrade is safe, it does not present the proposal as safe.
+              Jace watches the dependencies your team selects, evaluates available updates and compatibility evidence, and prepares a proposal for human approval.
+            </p>
+            <p className="mt-3 max-w-[58ch] text-[var(--gray-11)]">
+              After approval, Jace gives the selected external coding agent a bounded dependency-upgrade Pack. The coding agent makes the code change; Jace verifies the evidence or refuses success.
             </p>
           </div>
         </Reveal>

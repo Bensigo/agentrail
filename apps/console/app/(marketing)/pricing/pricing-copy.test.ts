@@ -97,11 +97,34 @@ describe("R12.1 landing truth boundary", () => {
     }
   });
 
-  it("does not describe dependency work as Jace preparing or executing an upgrade", () => {
-    expect(landingSource).toContain("Review dependency upgrades with the evidence attached");
-    expect(landingSource).toContain("does not present the proposal as safe");
+  it("describes Jace as the dependency-upgrade control layer, not the code executor", () => {
+    const dependencyStart = landingSource.indexOf("Keep dependency upgrades moving safely");
+    const dependencyEnd = landingSource.indexOf("</section>", dependencyStart);
+    expect(dependencyStart).toBeGreaterThan(-1);
+    expect(dependencyEnd).toBeGreaterThan(dependencyStart);
+    const dependencyUseCase = landingSource.slice(dependencyStart, dependencyEnd);
+    const dependencyFlow = [
+      "dependencies your team selects",
+      "available updates",
+      "compatibility evidence",
+      "prepares a proposal",
+      "human approval",
+      "selected external coding agent",
+      "bounded dependency-upgrade Pack",
+      "The coding agent makes the code change",
+      "verifies the evidence or refuses success",
+    ];
+
+    let previousIndex = -1;
+    for (const marker of dependencyFlow) {
+      const markerIndex = dependencyUseCase.indexOf(marker);
+      expect(markerIndex, `missing dependency-flow marker: ${marker}`).toBeGreaterThan(previousIndex);
+      previousIndex = markerIndex;
+    }
+
     expect(useCasesSource).not.toContain("dependency");
-    expect(useCasesSource).not.toContain("prepares upgrade work");
+    expect(dependencyUseCase).not.toContain("Jace makes the code change");
+    expect(dependencyUseCase).not.toContain("Jace executes the upgrade");
   });
 });
 

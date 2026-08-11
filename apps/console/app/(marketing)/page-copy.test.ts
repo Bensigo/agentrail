@@ -27,7 +27,7 @@ describe("landing story", () => {
     expect(useCasesSource).not.toContain("dependency");
     expect(landingSource).toContain("ONE USE CASE");
     expect(landingSource).toContain(
-      "Review dependency upgrades with the evidence attached",
+      "Keep dependency upgrades moving safely",
     );
   });
 

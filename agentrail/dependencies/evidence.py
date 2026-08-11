@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, Sequence, Tuple
 from urllib.parse import urlsplit
 
-from agentrail.dependencies.manager import ADAPTER_PROFILE_IDS, NPM_DEPENDENCY_KINDS
+from agentrail.dependencies.cargo import cargo_constraint_matches, parse_cargo_lockfile
+from agentrail.dependencies.manager import ADAPTER_PROFILE_IDS, CARGO_ADAPTER_PROFILE, NPM_DEPENDENCY_KINDS
 from agentrail.dependencies.npm_semver import npm_constraint_matches
 from agentrail.dependencies.pnpm import (
     DependencyCandidate,
@@ -1174,6 +1175,79 @@ def resolve_pnpm_lock_transition(
     )
 
 
+def resolve_cargo_lock_transition(
+    candidate: DependencyCandidate | CandidateIdentity,
+    *,
+    baseline_lockfile: str,
+    target_lockfile: str,
+    observed_at: Optional[str] = None,
+) -> LockResolution:
+    """Prove a Cargo v1 transition without running Cargo.
+
+    The pure parser checks one bounded reachable graph in each supplied
+    lockfile. This function compares their fields; it does not authenticate
+    Cargo checksums or make the result eligible for the evidence gate.
+    """
+    identity = candidate if isinstance(candidate, CandidateIdentity) else CandidateIdentity.from_candidate(candidate)
+    timestamp = observed_at or _now_iso()
+    if identity.ecosystem != "rust" or identity.package_manager != "cargo" or identity.adapter_profile != CARGO_ADAPTER_PROFILE:
+        return _failure_lock("candidate is not bound to the Cargo v1 adapter profile", timestamp)
+    if not isinstance(candidate, DependencyCandidate):
+        return _failure_lock("Cargo lock transition requires the original dependency candidate", timestamp)
+    if candidate.dependency_kind != "dependencies":
+        return _failure_lock("Cargo v1 supports root dependencies only", timestamp)
+    for version in (identity.current_version, identity.target_version):
+        matches, error = cargo_constraint_matches(candidate.specifier, version)
+        if error is not None or not matches:
+            return _failure_lock("Cargo candidate version does not satisfy its stable caret constraint", timestamp)
+    try:
+        baseline = parse_cargo_lockfile(baseline_lockfile)
+        target = parse_cargo_lockfile(target_lockfile)
+    except (TypeError, ValueError) as exc:
+        return _failure_lock(str(exc), timestamp)
+    if baseline.root.name != target.root.name or baseline.root.version != target.root.version:
+        return _failure_lock("Cargo.lock root package changed outside the candidate", timestamp)
+    if tuple(sorted(baseline.root.dependencies)) != tuple(sorted(target.root.dependencies)):
+        return _failure_lock("Cargo.lock root dependency graph changed outside the candidate", timestamp)
+    if identity.package not in baseline.root.dependencies:
+        return _failure_lock(f"Cargo.lock root does not depend on {identity.package}", timestamp)
+    before = baseline.packages.get(identity.package)
+    after = target.packages.get(identity.package)
+    if before is None or after is None:
+        return _failure_lock(f"Cargo.lock has no direct resolution for {identity.package}", timestamp)
+    if before.version != identity.current_version or after.version != identity.target_version:
+        return _failure_lock(f"Cargo.lock direct transition does not exactly match {identity.package}", timestamp)
+    for package in baseline.root.dependencies:
+        if package == identity.package:
+            continue
+        left, right = baseline.packages[package], target.packages[package]
+        if left != right:
+            return _failure_lock(f"Cargo.lock root direct dependency changed outside the candidate: {package}", timestamp)
+    shared = set(baseline.packages) & set(target.packages)
+    for package in sorted(shared):
+        if package == identity.package:
+            continue
+        left, right = baseline.packages[package], target.packages[package]
+        if left.version == right.version and left != right:
+            return _failure_lock(f"Cargo.lock metadata or provenance changed for unchanged {package}@{left.version}", timestamp)
+    transitive: list[DependencyChange] = []
+    for package in sorted(set(baseline.packages) | set(target.packages)):
+        if package == identity.package:
+            continue
+        left = baseline.packages.get(package)
+        right = target.packages.get(package)
+        before_versions = (left.version,) if left else ()
+        after_versions = (right.version,) if right else ()
+        if before_versions != after_versions:
+            transitive.append(DependencyChange(package, before_versions, after_versions, "transitive"))
+    return LockResolution(
+        resolution=EvidenceResolution.RESOLVED,
+        direct_changes=(DependencyChange(identity.package, (before.version,), (after.version,), "direct"),),
+        transitive_changes=tuple(transitive),
+        observed_at=timestamp,
+    )
+
+
 def _npm_package_provenance_is_canonical(
     *, package: str, version: str, resolved: object, integrity: object
 ) -> bool:
@@ -1766,6 +1840,7 @@ __all__ = [
     "load_dependency_evidence_for_gate",
     "resolve_pnpm_lock_transition",
     "resolve_npm_lock_transition",
+    "resolve_cargo_lock_transition",
     "scan_usage_evidence",
     "security_evidence_from_advisory_payload",
     "write_dependency_evidence",

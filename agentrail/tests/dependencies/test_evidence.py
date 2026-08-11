@@ -5,6 +5,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 import agentrail.dependencies.evidence as evidence_module
 
 from agentrail.dependencies.evidence import (
@@ -27,6 +29,7 @@ from agentrail.dependencies.evidence import (
     dependency_gate_input,
     evaluate_dependency_evidence,
     resolve_npm_lock_transition,
+    resolve_cargo_lock_transition,
     load_dependency_evidence_for_gate,
     resolve_pnpm_lock_transition,
     scan_usage_evidence,
@@ -34,7 +37,7 @@ from agentrail.dependencies.evidence import (
     write_dependency_evidence,
 )
 from agentrail.dependencies.pnpm import DependencySnapshot
-from agentrail.dependencies.manager import NPM_ADAPTER_PROFILE, PNPM_ADAPTER_PROFILE
+from agentrail.dependencies.manager import CARGO_ADAPTER_PROFILE, NPM_ADAPTER_PROFILE, PNPM_ADAPTER_PROFILE
 from agentrail.dependencies.pnpm import adapter_identity_fingerprint
 
 
@@ -93,6 +96,155 @@ def _resolved_lock() -> LockResolution:
 
 def _resolved_security() -> SecurityEvidence:
     return SecurityEvidence(EvidenceResolution.RESOLVED, sources=(_source("osv-query"),), observed_at=NOW)
+
+
+def _cargo_candidate() -> DependencyCandidate:
+    fingerprint = "sha256:cargo-candidate"
+    return DependencyCandidate(
+        package="serde", dependency_kind="dependencies", specifier="^1.0.203",
+        current_version="1.0.203", target_version="1.0.204",
+        manifest_path="Cargo.toml", lockfile_path="Cargo.lock", baseline_sha="a" * 40,
+        fingerprint=fingerprint, ecosystem="rust", package_manager="cargo",
+        adapter_profile=CARGO_ADAPTER_PROFILE,
+        adapter_identity_fingerprint=adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint, ecosystem="rust", package_manager="cargo",
+            adapter_profile=CARGO_ADAPTER_PROFILE,
+        ),
+    )
+
+
+def _cargo_lock(serde_version: str, *, helper_version: str = "1.0.0", helper_source: str = "registry+https://github.com/rust-lang/crates.io-index") -> str:
+    return f'''version = 3
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+dependencies = ["serde"]
+
+[[package]]
+name = "serde"
+version = "{serde_version}"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "{'a' * 64}"
+dependencies = ["helper"]
+
+[[package]]
+name = "helper"
+version = "{helper_version}"
+source = "{helper_source}"
+checksum = "{'b' * 64}"
+'''
+
+
+def test_cargo_lock_transition_proves_a_reachable_crates_io_graph() -> None:
+    resolution = resolve_cargo_lock_transition(
+        _cargo_candidate(),
+        baseline_lockfile=_cargo_lock("1.0.203"),
+        target_lockfile=_cargo_lock("1.0.204", helper_version="1.1.0"),
+        observed_at=NOW,
+    )
+
+    assert resolution.resolution is EvidenceResolution.RESOLVED
+    assert resolution.direct_changes == (
+        DependencyChange("serde", ("1.0.203",), ("1.0.204",), "direct"),
+    )
+    assert resolution.transitive_changes == (
+        DependencyChange("helper", ("1.0.0",), ("1.1.0",), "transitive"),
+    )
+
+
+def test_cargo_lock_transition_refuses_noncanonical_provenance() -> None:
+    resolution = resolve_cargo_lock_transition(
+        _cargo_candidate(),
+        baseline_lockfile=_cargo_lock("1.0.203"),
+        target_lockfile=_cargo_lock("1.0.204", helper_source="git+https://example.invalid/helper"),
+        observed_at=NOW,
+    )
+
+    assert resolution.resolution is EvidenceResolution.NOT_VERIFIABLE
+    assert "name crates.io" in resolution.reason
+
+
+@pytest.mark.parametrize(
+    ("target", "reason"),
+    [
+        (_cargo_lock("2.0.0"), "direct transition"),
+        (_cargo_lock("1.0.204").replace('dependencies = ["serde"]', 'dependencies = ["serde", "helper"]', 1), "root dependency graph"),
+        (_cargo_lock("1.0.204").replace('checksum = "' + "b" * 64 + '"', 'checksum = "' + "c" * 64 + '"'), "metadata or provenance"),
+    ],
+)
+def test_cargo_lock_transition_refuses_constraint_root_and_checksum_drift(target, reason) -> None:
+    resolution = resolve_cargo_lock_transition(
+        _cargo_candidate(), baseline_lockfile=_cargo_lock("1.0.203"),
+        target_lockfile=target, observed_at=NOW,
+    )
+
+    assert resolution.resolution is EvidenceResolution.NOT_VERIFIABLE
+    assert reason in resolution.reason
+
+
+def test_cargo_lock_transition_refuses_a_candidate_target_outside_its_constraint() -> None:
+    candidate = replace(_cargo_candidate(), target_version="2.0.0")
+    resolution = resolve_cargo_lock_transition(
+        candidate, baseline_lockfile=_cargo_lock("1.0.203"),
+        target_lockfile=_cargo_lock("2.0.0"), observed_at=NOW,
+    )
+
+    assert resolution.resolution is EvidenceResolution.NOT_VERIFIABLE
+    assert "stable caret constraint" in resolution.reason
+
+
+def _cargo_release() -> ReleaseEvidence:
+    return ReleaseEvidence(
+        EvidenceResolution.RESOLVED, "1.0.204",
+        (EvidenceSource("crates.io:serde@1.0.204", "https://crates.io/api/v1/crates/serde/1.0.204", NOW, "release"),),
+        NOW, canonical=True,
+    )
+
+
+def _cargo_security() -> SecurityEvidence:
+    return SecurityEvidence(
+        EvidenceResolution.RESOLVED,
+        sources=(EvidenceSource("osv:crates.io:serde@1.0.204", "https://api.osv.dev/v1/query", NOW, "security"),),
+        observed_at=NOW,
+    )
+
+
+def test_cargo_resolver_and_forged_payload_remain_blocked_at_both_evidence_gates() -> None:
+    lock = resolve_cargo_lock_transition(
+        _cargo_candidate(), baseline_lockfile=_cargo_lock("1.0.203"),
+        target_lockfile=_cargo_lock("1.0.204"), observed_at=NOW,
+    )
+    evidence = collect_dependency_evidence(
+        _cargo_candidate(), release=_Provider(_cargo_release()), usage=_Provider(_usage()),
+        lock=_Provider(lock), security=_Provider(_cargo_security()), observed_at=NOW,
+    )
+    assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
+    assert "candidate adapter capability is unavailable" in evidence.decision.blocking_reasons
+    assert dependency_gate_input(evidence.to_dict()) == (
+        False, "dependency evidence adapter capability is unavailable",
+    )
+
+    synthetic_lock = LockResolution(
+        EvidenceResolution.RESOLVED,
+        direct_changes=(DependencyChange("serde", ("1.0.203",), ("1.0.204",), "direct"),),
+        observed_at=NOW,
+    )
+    blocked_lock = collect_dependency_evidence(
+        _cargo_candidate(), release=_Provider(_cargo_release()), usage=_Provider(_usage()),
+        lock=_Provider(synthetic_lock), security=_Provider(_cargo_security()), observed_at=NOW,
+    )
+    assert blocked_lock.decision.status is DependencyDecisionStatus.BLOCKED
+    assert "candidate adapter capability is unavailable" in blocked_lock.decision.blocking_reasons
+
+    forged = json.loads(json.dumps(evidence.to_dict()))
+    forged["decision"] = {
+        "status": "ready", "proofComplete": True, "blockingReasons": [],
+        "waivedReasons": [], "waiver": None,
+    }
+    assert dependency_gate_input(forged) == (
+        False, "dependency evidence adapter capability is unavailable",
+    )
 
 
 class _Provider:

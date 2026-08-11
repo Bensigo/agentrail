@@ -287,6 +287,114 @@ def test_explicit_npm_watch_inventories_alternate_lock_and_never_proposes(
     assert "conflicting lockfile pnpm-lock.yaml" in persisted["error_message"]
 
 
+def test_explicit_cargo_snapshot_forces_root_inventory_before_file_reads():
+    root_files = {"Cargo.toml": "[package]\nname='demo'\nversion='0.1.0'\n", "Cargo.lock": "version = 3\n"}
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "sha-cargo"}
+        if "/contents/?ref=" in url:
+            return [{"path": path, "type": "file"} for path in root_files]
+        for path, content in root_files.items():
+            if f"/contents/{path}?ref=" in url:
+                return {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
+        raise AssertionError(f"unexpected GitHub URL: {url}")
+
+    snapshot = dependency_runtime.GithubSnapshotProvider("token", github_get).snapshot(
+        "ada/widgets", "main", "Cargo.toml", "Cargo.lock",
+    )
+
+    assert snapshot.files == root_files
+    assert any("/contents/?ref=sha-cargo" in url for url in calls)
+    assert calls.index(next(url for url in calls if "/contents/?ref=" in url)) < calls.index(
+        next(url for url in calls if "/contents/Cargo.toml?ref=" in url)
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ({"path": ".cargo", "type": "dir"}, {"path": ".cargo/config.toml", "type": "file"}),
+)
+def test_explicit_cargo_snapshot_refuses_repository_cargo_configuration(entry):
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "sha-cargo-config"}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "Cargo.toml", "type": "file"},
+                {"path": "Cargo.lock", "type": "file"},
+                entry,
+            ]
+        raise AssertionError(f"Cargo config refusal reached content fetch: {url}")
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+    with pytest.raises(ValueError, match="Cargo watch refuses repository .cargo configuration"):
+        provider.snapshot("ada/widgets", "main", "Cargo.toml", "Cargo.lock")
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("manifest", "lockfile"),
+    (
+        ("././Cargo.toml", "././Cargo.lock"),
+        (".\\.\\Cargo.toml", ".\\.\\Cargo.lock"),
+    ),
+)
+def test_redundant_cargo_locator_prefixes_cannot_skip_dot_cargo_inventory(
+    manifest: str, lockfile: str,
+) -> None:
+    calls = []
+
+    def github_get(url, token):
+        calls.append(url)
+        if "/commits/" in url:
+            return {"sha": "sha-cargo-redundant-prefix"}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "Cargo.toml", "type": "file"},
+                {"path": "Cargo.lock", "type": "file"},
+                {"path": ".cargo", "type": "dir"},
+            ]
+        raise AssertionError(f"Cargo config refusal reached content fetch: {url}")
+
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+
+    with pytest.raises(ValueError, match="Cargo watch refuses repository .cargo configuration"):
+        provider.snapshot("ada/widgets", "main", manifest, lockfile)
+
+    assert len(calls) == 2
+    assert "/contents/?ref=sha-cargo-redundant-prefix" in calls[1]
+
+
+@pytest.mark.parametrize(
+    ("manifest", "lockfile"),
+    (
+        ("/Cargo.toml", "Cargo.lock"),
+        ("C:\\Cargo.toml", "Cargo.lock"),
+        ("../Cargo.toml", "Cargo.lock"),
+        ("Cargo.toml", "./Cargo.toml"),
+    ),
+)
+def test_snapshot_provider_rejects_unsafe_or_colliding_locator_paths_before_network(
+    manifest: str, lockfile: str,
+) -> None:
+    calls = []
+    provider = dependency_runtime.GithubSnapshotProvider(
+        "token", lambda url, token: calls.append(url),
+    )
+
+    with pytest.raises(ValueError, match="repository (?:path|paths)"):
+        provider.snapshot("ada/widgets", "main", manifest, lockfile)
+
+    assert calls == []
+
+
 def test_root_inventory_at_github_contents_limit_refuses_as_incomplete():
     calls = []
 
@@ -326,6 +434,108 @@ def test_registry_client_never_falls_back_to_npm_without_a_supported_manager():
 
     assert client.package_metadata("lodash") is None
     assert calls == []
+
+
+def test_cargo_registry_client_preserves_yanked_versions_for_the_profile() -> None:
+    client = RegistryClient(
+        lambda url: {
+            "crate": {"id": "serde"},
+            "versions": [
+                {"num": "1.0.203", "yanked": False},
+                {"num": "1.0.204", "yanked": True},
+            ],
+        },
+        manager_id="cargo",
+    )
+
+    metadata = client.package_metadata("serde")
+
+    assert metadata is not None
+    assert metadata.available_versions == ("1.0.203", "1.0.204")
+    assert metadata.yanked_versions == ("1.0.204",)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        {},
+        {"crate": {"id": "other"}, "versions": [{"num": "1.0.0", "yanked": False}]},
+        {"crate": {"id": 123}, "versions": [{"num": "1.0.0", "yanked": False}]},
+        {"crate": {"id": "serde"}, "versions": []},
+        {"crate": {"id": "serde"}, "versions": {}},
+        {"crate": {"id": "serde"}, "versions": [None]},
+        {"crate": {"id": "serde"}, "versions": [{"num": 100, "yanked": False}]},
+        {"crate": {"id": "serde"}, "versions": [{"num": "", "yanked": False}]},
+        {"crate": {"id": "serde"}, "versions": [{"num": "1.0.0"}]},
+        {"crate": {"id": "serde"}, "versions": [{"num": "1.0.0", "yanked": 0}]},
+        {
+            "crate": {"id": "serde"},
+            "versions": [
+                {"num": "1.0.0", "yanked": False},
+                {"num": "1.0.0", "yanked": False},
+            ],
+        },
+        {
+            "crate": {"id": "serde"},
+            "versions": [
+                {"num": "1.0.0", "yanked": False},
+                {"num": "1.0.0", "yanked": True},
+            ],
+        },
+    ),
+)
+def test_cargo_registry_client_rejects_unbound_or_malformed_release_rows(body) -> None:
+    client = RegistryClient(lambda url: body, manager_id="cargo")
+
+    assert client.package_metadata("serde") is None
+
+
+@pytest.mark.parametrize(
+    ("oversized_path", "cap_name"),
+    (
+        ("Cargo.toml", "CARGO_MANIFEST_MAX_BYTES"),
+        ("Cargo.lock", "CARGO_LOCK_MAX_BYTES"),
+    ),
+)
+def test_cargo_snapshot_rejects_oversized_encoded_content_before_base64_decode(
+    monkeypatch, oversized_path: str, cap_name: str,
+) -> None:
+    real_decode = base64.b64decode
+    small_content = base64.b64encode(b"x").decode("ascii")
+    oversized_content = "A" * 128
+    decoded_payloads = []
+
+    monkeypatch.setattr(dependency_runtime, cap_name, 1)
+
+    def github_get(url, token):
+        if "/commits/" in url:
+            return {"sha": "sha-cargo-encoded-limit"}
+        if "/contents/?ref=" in url:
+            return [
+                {"path": "Cargo.toml", "type": "file"},
+                {"path": "Cargo.lock", "type": "file"},
+            ]
+        for path in ("Cargo.toml", "Cargo.lock"):
+            if f"/contents/{path}?ref=" in url:
+                return {
+                    "encoding": "base64",
+                    "content": oversized_content if path == oversized_path else small_content,
+                }
+        raise AssertionError(f"unexpected GitHub URL: {url}")
+
+    def track_decode(value, *args, **kwargs):
+        decoded_payloads.append(value)
+        if value == oversized_content:
+            raise AssertionError("oversized Cargo content reached base64 decoding")
+        return real_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr(dependency_runtime.base64, "b64decode", track_decode)
+    provider = dependency_runtime.GithubSnapshotProvider("token", github_get)
+
+    with pytest.raises(ValueError, match=f"{oversized_path} base64 content exceeds the encoded-size limit"):
+        provider.snapshot("ada/widgets", "main", "Cargo.toml", "Cargo.lock")
+
+    assert oversized_content not in decoded_payloads
 
 
 class RegistryResponse:

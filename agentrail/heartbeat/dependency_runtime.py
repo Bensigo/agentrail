@@ -15,6 +15,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from agentrail.afk import queue_store
+from agentrail.dependencies.cargo import (
+    CARGO_LOCK_MAX_BYTES,
+    CARGO_MANIFEST_MAX_BYTES,
+)
 from agentrail.dependencies.pnpm import (
     DependencySnapshot,
     RegistryPackage,
@@ -37,6 +41,39 @@ RECORD_WATCH_OBSERVATION_OP = "record_dependency_watch_observation"
 _REGISTRY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _REGISTRY_READ_CHUNK_BYTES = 64 * 1024
 _NPM_ABBREVIATED_ACCEPT = "application/vnd.npm.install-v1+json"
+
+
+def _cargo_base64_content_limits(decoded_byte_limit: int) -> tuple[int, int]:
+    """Return compact and conservatively line-wrapped base64 character caps."""
+
+    compact = 4 * ((decoded_byte_limit + 2) // 3)
+    wrapped = compact + ((compact + 59) // 60) + 1
+    return compact, wrapped
+
+
+def _canonical_repository_path(raw_path: str) -> str:
+    """Canonicalize one repository-relative locator without hiding traversal."""
+
+    if not isinstance(raw_path, str):
+        raise ValueError("repository path must be text")
+    path = raw_path.replace("\\", "/")
+    if (
+        not path
+        or "\x00" in path
+        or path.startswith("/")
+        or (len(path) >= 2 and path[0].isalpha() and path[1] == ":")
+    ):
+        raise ValueError(f"unsafe repository path: {raw_path}")
+    parts = []
+    for part in path.split("/"):
+        if part == ".":
+            continue
+        if not part or part == "..":
+            raise ValueError(f"unsafe repository path: {raw_path}")
+        parts.append(part)
+    if not parts:
+        raise ValueError(f"unsafe repository path: {raw_path}")
+    return "/".join(parts)
 
 queue_store._SQL.update(
     {
@@ -161,9 +198,39 @@ class RegistryClient:
                 return RegistryPackage(tuple(str(version) for version in releases)) if isinstance(releases, dict) else None
             if self.manager_id == "cargo":
                 body = self._get_json("https://crates.io/api/v1/crates/" + encoded)
-                versions = body.get("versions", []) if isinstance(body, dict) else []
-                values = [item.get("num") for item in versions if isinstance(item, dict) and isinstance(item.get("num"), str)]
-                return RegistryPackage(tuple(values))
+                if not isinstance(body, dict):
+                    return None
+                crate = body.get("crate")
+                versions = body.get("versions")
+                if (
+                    not isinstance(crate, dict)
+                    or type(crate.get("id")) is not str
+                    or crate["id"] != package
+                    or not isinstance(versions, list)
+                    or not versions
+                ):
+                    return None
+                values: List[str] = []
+                yanked: List[str] = []
+                seen = set()
+                for item in versions:
+                    if not isinstance(item, dict):
+                        return None
+                    version = item.get("num")
+                    is_yanked = item.get("yanked")
+                    if (
+                        type(version) is not str
+                        or not version
+                        or version != version.strip()
+                        or type(is_yanked) is not bool
+                        or version in seen
+                    ):
+                        return None
+                    seen.add(version)
+                    values.append(version)
+                    if is_yanked:
+                        yanked.append(version)
+                return RegistryPackage(tuple(values), tuple(yanked))
             if self.manager_id == "go-modules":
                 raw = self._get_json("https://proxy.golang.org/" + encoded + "/@v/list")
                 if not isinstance(raw, str):
@@ -218,6 +285,10 @@ class GithubSnapshotProvider:
         self._get = http_get
 
     def snapshot(self, repository: str, branch: str, manifest: str, lockfile: str) -> DependencySnapshot:
+        normal_manifest = _canonical_repository_path(manifest)
+        normal_lockfile = _canonical_repository_path(lockfile)
+        if normal_manifest == normal_lockfile and normal_manifest != "auto":
+            raise ValueError("repository paths collide after canonicalization")
         commit = self._get(
             f"https://api.github.com/repos/{repository}/commits/{urllib.parse.quote(branch, safe='')}",
             self.token,
@@ -225,9 +296,11 @@ class GithubSnapshotProvider:
         sha = commit.get("sha") if isinstance(commit, dict) else None
         if not isinstance(sha, str) or not sha: raise ValueError("GitHub did not return a commit SHA")
         files: Dict[str, str] = {}
-        paths = [manifest, lockfile]
-        root_package_watch = manifest.replace("\\", "/").removeprefix("./") == "package.json"
-        if "auto" in paths or root_package_watch:
+        paths = [normal_manifest, normal_lockfile]
+        root_package_watch = normal_manifest == "package.json"
+        root_cargo_watch = normal_manifest == "Cargo.toml" and normal_lockfile == "Cargo.lock"
+        cargo_inventory = root_cargo_watch
+        if "auto" in paths or root_package_watch or root_cargo_watch:
             listing = self._get(
                 f"https://api.github.com/repos/{repository}/contents/?ref={urllib.parse.quote(sha, safe='')}",
                 self.token,
@@ -244,8 +317,19 @@ class GithubSnapshotProvider:
                 for item in listing
                 if isinstance(item, dict) and item.get("type") == "file"
             }
+            cargo_inventory = root_cargo_watch or (
+                "auto" in paths and {"Cargo.toml", "Cargo.lock"}.issubset(available)
+            )
+            if cargo_inventory and any(
+                isinstance(item, dict)
+                and (item.get("path") == ".cargo" or str(item.get("path", "")).startswith(".cargo/"))
+                for item in listing
+            ):
+                raise ValueError("Cargo watch refuses repository .cargo configuration until it is modeled")
             if "auto" in paths:
                 paths = [path for path in self._AUTO_ROOT_FILES if path in available]
+            elif root_cargo_watch:
+                paths.extend(path for path in self._AUTO_ROOT_FILES if path in available)
             else:
                 # Explicit/legacy root package.json watches must see the same-SHA
                 # competing manager markers. Fetching only the selected pair
@@ -261,7 +345,20 @@ class GithubSnapshotProvider:
             content = body.get("content") if isinstance(body, dict) else None
             encoding = body.get("encoding") if isinstance(body, dict) else None
             if not isinstance(content, str) or encoding != "base64": raise ValueError(f"GitHub did not return {path}")
-            files[path] = base64.b64decode(content.replace("\n", "")).decode("utf-8")
+            normal_path = _canonical_repository_path(path)
+            cargo_byte_limit = (
+                CARGO_MANIFEST_MAX_BYTES
+                if cargo_inventory and normal_path == "Cargo.toml"
+                else CARGO_LOCK_MAX_BYTES
+                if cargo_inventory and normal_path == "Cargo.lock"
+                else None
+            )
+            if cargo_byte_limit is not None:
+                compact_limit, wrapped_limit = _cargo_base64_content_limits(cargo_byte_limit)
+                compact_length = len(content) - content.count("\n")
+                if len(content) > wrapped_limit or compact_length > compact_limit:
+                    raise ValueError(f"{normal_path} base64 content exceeds the encoded-size limit")
+            files[normal_path] = base64.b64decode(content.replace("\n", "")).decode("utf-8")
         return DependencySnapshot(files=files, baseline_sha=sha)
 
 
@@ -434,8 +531,8 @@ class DependencyWatchRuntime:
             watch = DependencyWatchState(
                 workspace_id=self.workspace_id,
                 repository_id=str(row["repository_id"]),
-                selected_manifest=str(row["manifest_path"]),
-                selected_lockfile=str(row["lockfile_path"]),
+                selected_manifest=_canonical_repository_path(str(row["manifest_path"])),
+                selected_lockfile=_canonical_repository_path(str(row["lockfile_path"])),
                 selected_dependencies=tuple(json.loads(row.get("selected_dependencies", "[]")) if isinstance(row.get("selected_dependencies"), str) else row.get("selected_dependencies", [])),
                 cadence_seconds=row.get("cadence_seconds"),
                 last_checked_sha=row.get("last_checked_sha"),

@@ -12,7 +12,7 @@ from agentrail.dependencies.execution import (
     execute_approved_dependency_upgrade,
     execute_approved_pnpm_upgrade,
 )
-from agentrail.dependencies.manager import NPM_ADAPTER_PROFILE
+from agentrail.dependencies.manager import CARGO_ADAPTER_PROFILE, NPM_ADAPTER_PROFILE
 from agentrail.dependencies.pnpm import adapter_identity_fingerprint
 
 
@@ -90,6 +90,32 @@ def test_npm_default_host_runner_refuses_before_workspace(tmp_path: Path) -> Non
 
     assert result.status is ExecutionStatus.REFUSED
     assert result.reason_code is ExecutionReason.CAPABILITY_UNAVAILABLE
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cargo_profile_has_no_managed_execution_before_checkout_or_runner(tmp_path: Path) -> None:
+    fingerprint = "sha256:cargo-candidate"
+    contract = replace(
+        _contract(), package="serde", specifier="^1.0.203", current_version="1.0.203",
+        target_version="1.0.204", candidate_fingerprint=fingerprint,
+        ecosystem="rust", package_manager="cargo", adapter_profile=CARGO_ADAPTER_PROFILE,
+        adapter_identity_fingerprint=adapter_identity_fingerprint(
+            candidate_fingerprint=fingerprint, ecosystem="rust", package_manager="cargo",
+            adapter_profile=CARGO_ADAPTER_PROFILE,
+        ), manifest_path="Cargo.toml", lockfile_path="Cargo.lock",
+        verification_commands=(("cargo", "test"),),
+    )
+    runner = NoCallRunner()
+
+    result = execute_approved_dependency_upgrade(
+        "/repository-must-not-be-touched", contract, runner=runner, workspace_parent=tmp_path,
+    )
+
+    assert result.status is ExecutionStatus.REFUSED
+    assert result.reason_code is ExecutionReason.CAPABILITY_UNAVAILABLE
+    assert result.reason == "managed dependency execution adapter is unavailable: cargo"
+    assert result.adapter_profile == CARGO_ADAPTER_PROFILE
+    assert runner.calls == []
     assert list(tmp_path.iterdir()) == []
 
 

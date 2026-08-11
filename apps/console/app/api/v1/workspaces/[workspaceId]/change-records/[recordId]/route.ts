@@ -7,6 +7,7 @@ import {
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
+  readAcceptanceRecordDetail,
   readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
@@ -241,6 +242,45 @@ function dependencyObservationsMatchTimeline(
     && timeline.record.currentPrHeadAuthorityGeneration === result.binding.authorityGeneration;
 }
 
+function acceptanceDetailMatchesTimeline(
+  timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
+  result: Extract<Awaited<ReturnType<typeof readAcceptanceRecordDetail>>, { kind: "record" }>,
+): boolean {
+  const { record } = timeline;
+  const { detail } = result;
+  if (detail.summary.workspaceId !== record.workspaceId
+    || detail.summary.recordId !== record.id
+    || detail.summary.repo !== record.repo
+    || detail.summary.issueNumber !== record.issueNumber) return false;
+
+  if (record.prNumber === null) {
+    return detail.summary.pullRequest.kind === "not_attached"
+      && detail.pullRequest.kind === "not_attached";
+  }
+  if (detail.summary.pullRequest.kind !== "attached"
+    || detail.summary.pullRequest.prNumber !== record.prNumber
+    || detail.pullRequest.kind !== "attached"
+    || detail.pullRequest.prNumber !== record.prNumber) return false;
+
+  const current = detail.pullRequest.current;
+  if (record.currentPrHeadAuthoritative) {
+    if (!current
+      || current.repo !== record.repo
+      || current.prNumber !== record.prNumber
+      || current.headSha !== record.currentPrHeadSha
+      || current.headCycleId !== record.currentPrHeadCycleId
+      || current.authorityGeneration !== record.currentPrHeadAuthorityGeneration) return false;
+  } else if (current !== null) {
+    return false;
+  }
+
+  const merged = detail.pullRequest.merged;
+  return record.mergedSha === null
+    ? merged === null
+    : merged !== null && merged.repo === record.repo
+      && merged.prNumber === record.prNumber && merged.mergeSha === record.mergedSha;
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -267,11 +307,13 @@ export async function GET(
       resolvedFinalDecision,
       resolvedReviewMetrics,
       resolvedDependencyObservations,
+      resolvedAcceptanceDetail,
     ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
       readAcceptancePrReviewMetrics({ workspaceId, recordId }),
       readCurrentAcceptanceDependencyObservations({ workspaceId, recordId }),
+      readAcceptanceRecordDetail({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -298,6 +340,10 @@ export async function GET(
       && !dependencyObservationsMatchTimeline(timeline, resolvedDependencyObservations)
       ? { kind: "not_current" as const }
       : serializeDates(resolvedDependencyObservations);
+    const acceptanceDetail = resolvedAcceptanceDetail.kind === "record"
+      && !acceptanceDetailMatchesTimeline(timeline, resolvedAcceptanceDetail)
+      ? { kind: "unavailable" as const, reason: "invalid_record_custody" as const }
+      : serializeDates(resolvedAcceptanceDetail);
     const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
 
     return json({
@@ -330,6 +376,7 @@ export async function GET(
       finalDecision,
       reviewMetrics,
       dependencyObservations,
+      acceptanceDetail,
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,

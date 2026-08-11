@@ -2171,6 +2171,420 @@ export type ReadAcceptanceRecordSummariesResult = {
   records: AcceptanceRecordSummary[];
 };
 
+export type ReadAcceptanceRecordDetailInput = {
+  workspaceId: string;
+  recordId: string;
+};
+
+export type AcceptanceRecordDetailContract = {
+  identity: AcceptanceRecordSummaryContractIdentity;
+  confirmedBy: string;
+  confirmedAt: Date;
+  contract: AcceptanceConfirmedContractProjection;
+};
+
+export type AcceptanceRecordDetailReviewJobState =
+  | "queued"
+  | "running"
+  | "posted"
+  | "failed"
+  | "superseded"
+  | "skipped";
+
+export type AcceptanceRecordDetailReviewJob =
+  | { kind: "not_recorded" }
+  | {
+      kind: "recorded";
+      id: string;
+      state: AcceptanceRecordDetailReviewJobState;
+      createdAt: Date;
+      updatedAt: Date;
+    };
+
+export type AcceptanceRecordDetailOccurrenceIdentity = {
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+};
+
+export type AcceptanceRecordDetailCurrentOccurrence =
+  AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "current";
+    authorityGeneration: number;
+    reviewJob: AcceptanceRecordDetailReviewJob;
+  };
+
+export type AcceptanceRecordDetailMergedOccurrence =
+  AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "merged";
+    authorityGeneration: number;
+    mergeEventId: string;
+    mergeSha: string;
+    mergedAt: Date;
+    reviewJob: AcceptanceRecordDetailReviewJob;
+  };
+
+/** Historical occurrences deliberately omit authorityGeneration: old jobs and
+ * posted attestations did not persist that value. The cycle UUID is the
+ * durable A-B-A discriminator. */
+export type AcceptanceRecordDetailHistoricalOccurrence =
+  AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "historical";
+    reviewJob: AcceptanceRecordDetailReviewJob;
+  };
+
+export type AcceptanceRecordDetailOccurrence =
+  | AcceptanceRecordDetailCurrentOccurrence
+  | AcceptanceRecordDetailMergedOccurrence
+  | AcceptanceRecordDetailHistoricalOccurrence;
+
+export type AcceptanceRecordDetailPullRequest =
+  | { kind: "not_attached"; occurrences: [] }
+  | {
+      kind: "attached";
+      prNumber: number;
+      current: AcceptanceRecordDetailCurrentOccurrence | null;
+      merged: AcceptanceRecordDetailMergedOccurrence | null;
+      occurrences: AcceptanceRecordDetailOccurrence[];
+    };
+
+export type AcceptanceRecordDetailSourceSnapshot = {
+  id: string;
+  occurrence: AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "current" | "merged" | "historical";
+  };
+  binding: {
+    workspaceId: string;
+    recordId: string;
+    reviewJobId: string;
+    acceptanceContract: AcceptanceRecordSummaryContractIdentity;
+    repo: string;
+    prNumber: number;
+    expectedHeadSha: string;
+  };
+  baseSha: string | null;
+  mergeBaseSha: string | null;
+  headTreeSha: string | null;
+  packetIds: string[];
+  packetSetSha256: string;
+  correctionPacketPayloadSetSha256: string;
+  compilerVersion: string;
+  baseIndex: AcceptanceContextPackCustodyBaseIndexIdentity | null;
+  overlay: AcceptanceContextPackCustodyOverlayManifestIdentity | null;
+  provenance: AcceptanceContextInclusionExclusionProvenance;
+  status: AcceptanceContextPackSnapshotStatus;
+  reason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type AcceptanceRecordDetailCompiledPackBinding = {
+  sourceSnapshotId: string;
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  acceptanceContractSha256: string;
+  repo: string;
+  prNumber: number;
+  baseSha: string;
+  mergeBaseSha: string;
+  headSha: string;
+  headTreeSha: string;
+  packetSetSha256: string;
+  correctionPacketPayloadSetSha256: string;
+  sourceSnapshotCompilerVersion: string;
+  baseIndexRevisionSha256: string;
+  overlayManifestSha256: string;
+};
+
+export type AcceptanceRecordDetailCompiledPackSource =
+  | {
+      kind: "exact_head_overlay";
+      path: string;
+      blobSha: string;
+      fullContentSha256: string;
+      startLine: number;
+      endLine: number;
+      rangeSha256: string;
+      byteCount: number;
+      reason: "exact_patch_head_range";
+      citation: string;
+    }
+  | {
+      kind: "exact_head_dependency";
+      path: string;
+      blobSha: string;
+      fullContentSha256: string;
+      startLine: number;
+      endLine: number;
+      rangeSha256: string;
+      byteCount: number;
+      reason: "static_relative_import" | "static_python_import" | "static_shell_source";
+      citation: string;
+    }
+  | {
+      kind: "base_index_background";
+      pageId: string;
+      slug: string;
+      commitSha: string;
+      inputsHashSha256: string;
+      pageBodySha256: string;
+      stale: false;
+      startLine: number;
+      endLine: number;
+      rangeSha256: string;
+      byteCount: number;
+      reason: "background_only";
+      citation: string;
+    };
+
+export type AcceptanceRecordDetailCompiledPackExclusionReason =
+  | "removed_at_exact_head"
+  | "missing_patch_ranges"
+  | "range_byte_limit"
+  | "range_byte_or_secret_limit"
+  | "unsupported_dependency_expression"
+  | "dependency_limit"
+  | "dependency_not_found"
+  | "base_index_gap"
+  | "base_index_stale"
+  | "base_index_content_limit"
+  | "base_index_secret_policy"
+  | "base_index_page_limit"
+  | "pack_budget"
+  | `dependency_${AcceptanceRecordDetailDirectReadNotProvenReason}`;
+
+export type AcceptanceRecordDetailCompiledPackExclusion = {
+  source: "exact_head_overlay" | "exact_head_dependency" | "base_index_background";
+  path: string | null;
+  reason: AcceptanceRecordDetailCompiledPackExclusionReason;
+  identitySha256?: string;
+};
+
+export type AcceptanceRecordDetailSourceCustodyFile = {
+  path: string;
+  blobSha: string;
+  previousPath: null;
+  contentSha256: string;
+  byteCount: number;
+  lineCount: number;
+  source: "exact_head_overlay" | "exact_head_tree_fallback";
+  reason: "exact_base_to_head_compare" | "exact_head_tree_path";
+};
+
+export type AcceptanceRecordDetailSourceCustodyExclusion = {
+  path: string;
+  source: "exact_head_overlay" | "exact_head_tree_fallback";
+  blobSha: string | null;
+  byteCount: number | null;
+  reason: "removed_at_exact_head" | "secret_path_policy" | "secret_content_policy";
+  secretKinds: string[];
+  findingCount: number;
+};
+
+export type AcceptanceRecordDetailDirectReadNotProvenReason =
+  | "invalid_input"
+  | "github_unavailable"
+  | "github_rejected"
+  | "invalid_tree"
+  | "tree_limit"
+  | "call_limit"
+  | "invalid_blob"
+  | "path_not_found"
+  | "content_limit"
+  | "unsafe_content"
+  | "unsafe_path";
+
+export type AcceptanceRecordDetailDirectReadReceipt =
+  | {
+      requestedPath: string;
+      headSha: string;
+      headTreeSha: string;
+      outcome: "record";
+      record: AcceptanceRecordDetailSourceCustodyFile;
+    }
+  | {
+      requestedPath: string;
+      headSha: string;
+      headTreeSha: string;
+      outcome: "not_proven";
+      reason: AcceptanceRecordDetailDirectReadNotProvenReason;
+      exclusion?: AcceptanceRecordDetailSourceCustodyExclusion;
+    };
+
+export type AcceptanceRecordDetailSelectedExactRange = {
+  kind: "exact_head_overlay" | "exact_head_dependency";
+  path: string;
+  blobSha: string;
+  fullContentSha256: string;
+  startLine: number;
+  endLine: number;
+  rangeSha256: string;
+  byteCount: number;
+};
+
+export type AcceptanceRecordDetailCompiledPack = {
+  id: string;
+  sourceSnapshotId: string;
+  compilerVersion: string;
+  policyVersion: string;
+  packSha256: string;
+  sourceCustodyIdentitySha256: string;
+  representations: {
+    jsonSha256: string;
+    markdownSha256: string;
+    renderedByteCount: number;
+  };
+  binding: AcceptanceRecordDetailCompiledPackBinding;
+  manifest: {
+    acceptanceCriterionIds: string[];
+    unresolvedQuestionIds: string[];
+    packetIds: string[];
+    sources: AcceptanceRecordDetailCompiledPackSource[];
+    exclusions: AcceptanceRecordDetailCompiledPackExclusion[];
+    sourceCount: number;
+    exclusionCount: number;
+    architectureBoundaries: string[];
+    tests: string[];
+    decisions: string[];
+    custody: {
+      fullSourceUploadAllowed: false;
+      rawSourcePersisted: false;
+      snippetsPersisted: false;
+    };
+  };
+  sourceCustody: {
+    kind: "exact_head_source_custody";
+    schemaVersion: 2;
+    repo: string;
+    prNumber: number;
+    baseSha: string;
+    mergeBaseSha: string;
+    headSha: string;
+    headTreeSha: string;
+    manifestSha256: string;
+    identitySha256: string;
+    changedManifest: Array<{
+      path: string;
+      status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed";
+      blobSha: string | null;
+      previousPath: string | null;
+      headRanges: Array<{ startLine: number; endLine: number }>;
+      patchSha256: string | null;
+      patchByteCount: number | null;
+    }>;
+    records: AcceptanceRecordDetailSourceCustodyFile[];
+    exclusions: AcceptanceRecordDetailSourceCustodyExclusion[];
+    directReadReceipts: AcceptanceRecordDetailDirectReadReceipt[];
+    selectedExactRanges: AcceptanceRecordDetailSelectedExactRange[];
+    changedFileCount: number;
+    recordCount: number;
+    exclusionCount: number;
+    directReadReceiptCount: number;
+    selectedExactRangeCount: number;
+  };
+  exactHeadDependencyTreeProofs: AcceptanceCompiledContextPackDependencyTreeProof[];
+  createdAt: Date;
+};
+
+export type AcceptanceRecordDetailContextPack = {
+  occurrence: AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "current" | "merged" | "historical";
+  };
+  sourceSnapshot: AcceptanceRecordDetailSourceSnapshot;
+  /** Every entry is a separately valid compiler/policy variant. No variant is
+   * projected as selected when the summary view reports ambiguity. */
+  compiledPacks: AcceptanceRecordDetailCompiledPack[];
+};
+
+export type AcceptanceRecordDetailReview =
+  | { kind: "not_recorded" }
+  | {
+      kind: "not_posted";
+      reviewJobId: string;
+      state: Exclude<AcceptanceRecordDetailReviewJobState, "posted">;
+    }
+  | {
+      kind: "posted";
+      reviewJobId: string;
+      verdict: "proven" | "failed" | "not_proven" | "not_testable";
+      postedReviewUrl: string;
+      postedAttestationEventId: string;
+      reviewedAt: Date;
+    };
+
+export type AcceptanceRecordDetailCriterionUnknownReason =
+  | "review_not_recorded"
+  | "review_not_posted"
+  | "criterion_result_not_durably_rederivable";
+
+export type AcceptanceRecordDetailCorrectionPacket =
+  Omit<GitHubCorrectionPacketPayload, "affectedContext" | "evidence"> & {
+    affectedContext: Omit<GitHubCorrectionPacketPayload["affectedContext"], "flow" | "reproduction"> & {
+      flow: string;
+      reproduction: NonNullable<GitHubCorrectionPacketPayload["affectedContext"]["reproduction"]>;
+    };
+    evidence: GitHubCorrectionPacketPayload["evidence"] & { previewBootId: string };
+  };
+
+export type AcceptanceRecordDetailCriterionProof =
+  | {
+      kind: "correction_packet";
+      state: "failed" | "not_proven";
+      packet: AcceptanceRecordDetailCorrectionPacket;
+    }
+  | {
+      kind: "unknown";
+      reason: AcceptanceRecordDetailCriterionUnknownReason;
+    };
+
+export type AcceptanceRecordDetailProofCycle = {
+  occurrence: AcceptanceRecordDetailOccurrenceIdentity & {
+    kind: "current" | "merged" | "historical";
+  };
+  review: AcceptanceRecordDetailReview;
+  criteria: Array<{
+    criterion: AcceptanceConfirmedContractProjection["acceptanceCriteria"][number];
+    proof: AcceptanceRecordDetailCriterionProof;
+  }>;
+};
+
+export type AcceptanceRecordDetail = {
+  summary: AcceptanceRecordSummary;
+  contract: AcceptanceRecordDetailContract;
+  pullRequest: AcceptanceRecordDetailPullRequest;
+  contextPacks: AcceptanceRecordDetailContextPack[];
+  proofMatrix: AcceptanceRecordDetailProofCycle[];
+  artifactCustody: {
+    kind: "unknown";
+    reason: "artifact_custody_not_available";
+  };
+  gatedIssue: {
+    kind: "unknown";
+    reason: "gated_issue_custody_not_available";
+  };
+};
+
+export type AcceptanceRecordDetailUnavailableReason =
+  | "invalid_record_custody"
+  | "confirmed_contract_unavailable"
+  | "event_custody_limit"
+  | "snapshot_custody_limit"
+  | "compiled_pack_custody_limit"
+  | "detail_output_limit"
+  | "invalid_occurrence_custody"
+  | "invalid_review_custody"
+  | "invalid_context_custody"
+  | "invalid_compiled_pack_custody";
+
+export type ReadAcceptanceRecordDetailResult =
+  | { kind: "record"; detail: AcceptanceRecordDetail }
+  | { kind: "not_found" }
+  | { kind: "unavailable"; reason: AcceptanceRecordDetailUnavailableReason };
+
 /** List record headers for the workspace index without loading timelines. */
 export async function listChangeRecords(
   input: ListChangeRecordsInput
@@ -3769,7 +4183,9 @@ function correctionPacketIdForSnapshotEvent(
   if (confirmedCriteria.get(criterionId) !== payload["criterion"]["snapshot"]) return null;
   const packetId = payload["packetId"] as string;
   const eventKey = `review:correction:${input.reviewJobId}:${criterionId}`;
-  return event.eventKey === eventKey && event.stage === "review" && event.actor === "reviewer-of-record"
+  return event.id === changeRecordEventId({ recordId: input.recordId, eventKey })
+    && event.recordId === input.recordId
+    && event.eventKey === eventKey && event.stage === "review" && event.actor === "reviewer-of-record"
     ? packetId
     : null;
 }
@@ -15574,7 +15990,7 @@ function acceptanceRecordSummaryPostMerge(input: {
 function acceptanceRecordSummaryContextCustody(input: {
   snapshot: AcceptanceContextPackSnapshotRow;
   record: ChangeRecordRow;
-  focus: AcceptanceRecordSummaryFocus;
+  focus: Pick<AcceptanceRecordSummaryFocus, "headSha" | "headCycleId">;
   contract: AcceptanceRecordSummaryConfirmedContract;
   job: ReviewJobRow | undefined;
   events: readonly ChangeRecordEventRow[];
@@ -15794,13 +16210,17 @@ const ACCEPTANCE_RECORD_SUMMARY_NON_PROVEN_DECISIONS: AcceptancePrDecision[] = [
  * set-based reads. A 257th relevant event is detected explicitly; no Record
  * can silently project a partial view of its first 256 custody events.
  */
-export async function readAcceptanceRecordSummaries(
-  input: ReadAcceptanceRecordSummariesInput,
+type ParsedReadAcceptanceRecordSummariesInput = ReturnType<
+  typeof parseReadAcceptanceRecordSummariesInput
+> & { recordId?: string };
+
+async function readAcceptanceRecordSummariesInTransaction(
+  tx: DbTransaction,
+  parsed: ParsedReadAcceptanceRecordSummariesInput,
 ): Promise<ReadAcceptanceRecordSummariesResult> {
-  const parsed = parseReadAcceptanceRecordSummariesInput(input);
-  return db.transaction(async (tx) => {
     const candidatePredicates = [eq(changeRecords.workspaceId, parsed.workspaceId)];
     if (parsed.repo != null) candidatePredicates.push(eq(changeRecords.repo, parsed.repo));
+    if (parsed.recordId != null) candidatePredicates.push(eq(changeRecords.id, parsed.recordId));
     const candidates = await tx.select().from(changeRecords).where(and(...candidatePredicates))
       .orderBy(desc(changeRecords.updatedAt), desc(changeRecords.createdAt), desc(changeRecords.id))
       .limit(parsed.limit);
@@ -16256,5 +16676,970 @@ export async function readAcceptanceRecordSummaries(
       };
     });
     return { kind: "records", records: summaries };
+}
+
+export async function readAcceptanceRecordSummaries(
+  input: ReadAcceptanceRecordSummariesInput,
+): Promise<ReadAcceptanceRecordSummariesResult> {
+  const parsed = parseReadAcceptanceRecordSummariesInput(input);
+  return db.transaction((tx) => readAcceptanceRecordSummariesInTransaction(tx, parsed));
+}
+
+const ACCEPTANCE_RECORD_DETAIL_EVENT_LIMIT = 256;
+const ACCEPTANCE_RECORD_DETAIL_SNAPSHOT_LIMIT = 128;
+const ACCEPTANCE_RECORD_DETAIL_COMPILED_PACKS_PER_SNAPSHOT_LIMIT = 8;
+const ACCEPTANCE_RECORD_DETAIL_COMPILED_PACK_LIMIT = 64;
+const ACCEPTANCE_RECORD_DETAIL_OCCURRENCE_LIMIT = 128;
+const ACCEPTANCE_RECORD_DETAIL_MAX_SERIALIZED_BYTES = 2 * 1024 * 1024;
+
+function parseReadAcceptanceRecordDetailInput(
+  input: unknown,
+): ReadAcceptanceRecordDetailInput {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId"])
+    || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])) {
+    throw new Error("Acceptance Record detail requires only workspace and Record");
+  }
+  return { workspaceId: input["workspaceId"], recordId: input["recordId"] };
+}
+
+function acceptanceRecordDetailSerializedBytes(detail: AcceptanceRecordDetail): number {
+  const transportValue = (value: unknown): unknown => {
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map(transportValue);
+    if (isRecord(value)) return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, transportValue(nested)]),
+    );
+    return value;
+  };
+  return Buffer.byteLength(
+    acceptanceContextPackCanonicalJson(transportValue(detail)),
+    "utf8",
+  );
+}
+
+function acceptanceRecordDetailRecordCustodyValid(record: ChangeRecordRow): boolean {
+  if (!isUuid(record.id) || !isUuid(record.workspaceId) || !safeRepo(record.repo)
+    || (record.issueNumber !== null
+      && (!Number.isSafeInteger(record.issueNumber) || record.issueNumber <= 0))
+    || (record.prNumber !== null
+      && (!Number.isSafeInteger(record.prNumber) || record.prNumber <= 0))
+    || (record.state !== "open" && record.state !== "merged" && record.state !== "reverted")
+    || !Number.isSafeInteger(record.currentPrHeadAuthorityGeneration)
+    || record.currentPrHeadAuthorityGeneration < 0
+    || !Array.isArray(record.headShas) || record.headShas.length > 512
+    || !record.headShas.every((headSha) => typeof headSha === "string" && EXACT_SHA1.test(headSha))
+    || new Set(record.headShas).size !== record.headShas.length
+    || ((record.currentPrHeadSha === null) !== (record.currentPrHeadCycleId === null))
+    || (record.currentPrHeadSha !== null && !EXACT_SHA1.test(record.currentPrHeadSha))
+    || (record.currentPrHeadCycleId !== null && !isUuid(record.currentPrHeadCycleId))
+    || (record.mergedSha !== null && !EXACT_SHA1.test(record.mergedSha))
+    || !(record.createdAt instanceof Date) || Number.isNaN(record.createdAt.valueOf())
+    || !(record.updatedAt instanceof Date) || Number.isNaN(record.updatedAt.valueOf())) return false;
+  if (record.prNumber === null) {
+    return record.currentPrHeadSha === null && record.currentPrHeadCycleId === null
+      && !record.currentPrHeadAuthoritative && record.mergedSha === null
+      && record.state === "open";
+  }
+  if (record.currentPrHeadAuthoritative) {
+    return record.state === "open" && record.mergedSha === null
+      && record.currentPrHeadSha !== null && record.currentPrHeadCycleId !== null
+      && record.headShas.includes(record.currentPrHeadSha);
+  }
+  if (record.state === "merged" || record.state === "reverted") {
+    return record.mergedSha !== null;
+  }
+  return record.state === "open" && record.mergedSha === null;
+}
+
+function isAcceptanceRecordDetailReviewJobState(
+  value: unknown,
+): value is AcceptanceRecordDetailReviewJobState {
+  return value === "queued" || value === "running" || value === "posted"
+    || value === "failed" || value === "superseded" || value === "skipped";
+}
+
+function acceptanceRecordDetailReviewJob(
+  job: ReviewJobRow | undefined,
+): AcceptanceRecordDetailReviewJob | null {
+  if (!job) return { kind: "not_recorded" };
+  if (!isUuid(job.id) || !isUuid(job.workspaceId) || !safeRepo(job.repo)
+    || !Number.isSafeInteger(job.prNumber) || job.prNumber <= 0
+    || !EXACT_SHA1.test(job.headSha) || !isAcceptanceRecordDetailReviewJobState(job.state)
+    || !(job.createdAt instanceof Date) || Number.isNaN(job.createdAt.valueOf())
+    || !(job.updatedAt instanceof Date) || Number.isNaN(job.updatedAt.valueOf())) return null;
+  return {
+    kind: "recorded",
+    id: job.id,
+    state: job.state,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function acceptanceRecordDetailOccurrenceIdentity(
+  occurrence: AcceptanceRecordDetailOccurrence,
+): AcceptanceRecordDetailOccurrenceIdentity & {
+  kind: "current" | "merged" | "historical";
+} {
+  return {
+    kind: occurrence.kind,
+    repo: occurrence.repo,
+    prNumber: occurrence.prNumber,
+    headSha: occurrence.headSha,
+    headCycleId: occurrence.headCycleId,
+  };
+}
+
+function acceptanceRecordDetailSnapshot(
+  snapshot: AcceptanceContextPackSnapshotRow,
+  occurrence: AcceptanceRecordDetailOccurrence,
+  contract: AcceptanceRecordDetailContract,
+): AcceptanceRecordDetailSourceSnapshot {
+  return {
+    id: snapshot.id,
+    occurrence: acceptanceRecordDetailOccurrenceIdentity(occurrence),
+    binding: {
+      workspaceId: snapshot.workspaceId,
+      recordId: snapshot.recordId,
+      reviewJobId: snapshot.reviewJobId,
+      acceptanceContract: { ...contract.identity },
+      repo: snapshot.repo,
+      prNumber: snapshot.prNumber,
+      expectedHeadSha: snapshot.expectedHeadSha,
+    },
+    baseSha: snapshot.baseSha,
+    mergeBaseSha: snapshot.mergeBaseSha,
+    headTreeSha: snapshot.headTreeSha,
+    packetIds: [...snapshot.packetIds],
+    packetSetSha256: snapshot.packetSetSha256,
+    correctionPacketPayloadSetSha256: snapshot.correctionPacketPayloadSetSha256!,
+    compilerVersion: snapshot.compilerVersion,
+    baseIndex: structuredClone(
+      snapshot.baseIndex as AcceptanceContextPackCustodyBaseIndexIdentity | null,
+    ),
+    overlay: structuredClone(
+      snapshot.overlay as AcceptanceContextPackCustodyOverlayManifestIdentity | null,
+    ),
+    provenance: structuredClone(
+      snapshot.provenance as AcceptanceContextInclusionExclusionProvenance,
+    ),
+    status: snapshot.status as AcceptanceContextPackSnapshotStatus,
+    reason: snapshot.reason,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
+function acceptanceRecordDetailCompiledPack(input: {
+  row: AcceptanceCompiledContextPackRow;
+  custody: AcceptanceContextPackCustodyResolution;
+}): AcceptanceRecordDetailCompiledPack | null {
+  if (!acceptanceRecordSummaryCompiledPack(input)) return null;
+  const parsed = parseCompiledAcceptanceContextPack({
+    kind: "compiled_acceptance_context_pack",
+    version: 1,
+    binding: input.row.binding,
+    compiler: {
+      version: input.row.compilerVersion,
+      policyVersion: input.row.policyVersion,
+      byteCounter: "utf8_byte_upper_bound_v1",
+      byteBudget: COMPILED_PACK_BYTE_BUDGET,
+    },
+    manifest: input.row.manifest,
+    sourceCustodyReceipt: input.row.sourceCustodyReceipt,
+    exactHeadDependencyTreeProofs: input.row.exactHeadDependencyTreeProofs,
+    representations: {
+      jsonSha256: input.row.jsonSha256,
+      markdownSha256: input.row.markdownSha256,
+    },
+    renderedByteCount: input.row.renderedByteCount,
+    packSha256: input.row.packSha256,
+  });
+  if (!parsed) return null;
+  const manifest = parsed.manifest;
+  const receipt = parsed.sourceCustodyReceipt;
+  const sources = structuredClone(
+    manifest["sources"],
+  ) as AcceptanceRecordDetailCompiledPackSource[];
+  const manifestExclusions = structuredClone(
+    manifest["exclusions"],
+  ) as AcceptanceRecordDetailCompiledPackExclusion[];
+  const changedManifest = structuredClone(
+    receipt["changedManifest"],
+  ) as AcceptanceRecordDetailCompiledPack["sourceCustody"]["changedManifest"];
+  const records = structuredClone(
+    receipt["records"],
+  ) as AcceptanceRecordDetailSourceCustodyFile[];
+  const exclusions = structuredClone(
+    receipt["exclusions"],
+  ) as AcceptanceRecordDetailSourceCustodyExclusion[];
+  const directReadReceipts = structuredClone(
+    receipt["directReadReceipts"],
+  ) as AcceptanceRecordDetailDirectReadReceipt[];
+  const selectedExactRanges = structuredClone(
+    receipt["selectedExactRanges"],
+  ) as AcceptanceRecordDetailSelectedExactRange[];
+  return {
+    id: input.row.id,
+    sourceSnapshotId: input.row.sourceSnapshotId,
+    compilerVersion: input.row.compilerVersion,
+    policyVersion: input.row.policyVersion,
+    packSha256: input.row.packSha256,
+    sourceCustodyIdentitySha256: input.row.sourceCustodyIdentitySha256,
+    representations: {
+      jsonSha256: input.row.jsonSha256,
+      markdownSha256: input.row.markdownSha256,
+      renderedByteCount: input.row.renderedByteCount,
+    },
+    binding: structuredClone(parsed.binding) as AcceptanceRecordDetailCompiledPackBinding,
+    manifest: {
+      acceptanceCriterionIds: [...manifest["acceptanceCriterionIds"] as string[]],
+      unresolvedQuestionIds: [...manifest["unresolvedQuestionIds"] as string[]],
+      packetIds: [...manifest["packetIds"] as string[]],
+      sources,
+      exclusions: manifestExclusions,
+      sourceCount: sources.length,
+      exclusionCount: manifestExclusions.length,
+      architectureBoundaries: [...manifest["architectureBoundaries"] as string[]],
+      tests: [...manifest["tests"] as string[]],
+      decisions: [...manifest["decisions"] as string[]],
+      custody: {
+        fullSourceUploadAllowed: false,
+        rawSourcePersisted: false,
+        snippetsPersisted: false,
+      },
+    },
+    sourceCustody: {
+      kind: "exact_head_source_custody",
+      schemaVersion: 2,
+      repo: receipt["repo"] as string,
+      prNumber: receipt["prNumber"] as number,
+      baseSha: receipt["baseSha"] as string,
+      mergeBaseSha: receipt["mergeBaseSha"] as string,
+      headSha: receipt["headSha"] as string,
+      headTreeSha: receipt["headTreeSha"] as string,
+      manifestSha256: receipt["manifestSha256"] as string,
+      identitySha256: receipt["identitySha256"] as string,
+      changedManifest,
+      records,
+      exclusions,
+      directReadReceipts,
+      selectedExactRanges,
+      changedFileCount: changedManifest.length,
+      recordCount: records.length,
+      exclusionCount: exclusions.length,
+      directReadReceiptCount: directReadReceipts.length,
+      selectedExactRangeCount: selectedExactRanges.length,
+    },
+    exactHeadDependencyTreeProofs: structuredClone(input.row.exactHeadDependencyTreeProofs),
+    createdAt: input.row.createdAt,
+  };
+}
+
+type AcceptanceRecordDetailOccurrenceSeed = {
+  headShas: Set<string>;
+  requiresReviewJob: boolean;
+};
+
+function acceptanceRecordDetailAuthorityOccurrence(input: {
+  event: ChangeRecordEventRow;
+  record: ChangeRecordRow;
+  acceptanceContractVersion: number;
+}): { headCycleId: string; headSha: string; requiresReviewJob: boolean }
+  | null | "audit_only" | "invalid" {
+  const { event, record } = input;
+  const payload = event.payloadRef;
+  const kind = payload["kind"];
+  if (kind === "external_pr_attachment" && hasExactKeys(payload, [
+    "kind", "repo", "prNumber", "headSha", "prUrl", "acceptanceContractVersion",
+  ])) {
+    const eventKey = `external-pr:attached:${record.prNumber}:${payload["headSha"]}`;
+    return payload["repo"] === record.repo && payload["prNumber"] === record.prNumber
+      && typeof payload["headSha"] === "string" && GIT_SHA.test(payload["headSha"])
+      && (payload["prUrl"] === null || safeSnapshotText(payload["prUrl"], 2_048))
+      && payload["acceptanceContractVersion"] === input.acceptanceContractVersion
+      && event.eventKey === eventKey
+      && event.id === changeRecordEventId({ recordId: record.id, eventKey })
+      && event.stage === "external_pr"
+      && (event.actor === "github_webhook" || event.actor === "manual" || event.actor === "mcp")
+      ? "audit_only"
+      : "invalid";
+  }
+  if (kind === "external_pr_attachment" || kind === "external_pr_head_advanced") {
+    if (!hasExactKeys(payload, [
+      "kind", "repo", "prNumber", "previousHeadSha", "headSha", "headCycleId",
+      "event", "deliveryId", "headTransition", "prUrl", "acceptanceContractVersion",
+    ]) || payload["repo"] !== record.repo || payload["prNumber"] !== record.prNumber
+      || !EXACT_SHA1.test(payload["headSha"] as string) || !isUuid(payload["headCycleId"])
+      || !safeSnapshotText(payload["event"], 128) || !safeSnapshotText(payload["deliveryId"], 512)
+      || (payload["prUrl"] !== null && !safeSnapshotText(payload["prUrl"], 2_048))
+      || payload["acceptanceContractVersion"] !== input.acceptanceContractVersion
+      || (event.actor !== "github_webhook" && event.actor !== "manual" && event.actor !== "mcp")
+      || event.stage !== "external_pr") return "invalid";
+    const previousHeadSha = payload["previousHeadSha"];
+    const transition = payload["headTransition"];
+    if (kind === "external_pr_attachment") {
+      if (previousHeadSha !== null) return "invalid";
+    } else if (typeof previousHeadSha !== "string" || !EXACT_SHA1.test(previousHeadSha)
+      || !isRecord(transition) || !hasExactKeys(transition, ["beforeHeadSha", "afterHeadSha"])
+      || transition["beforeHeadSha"] !== previousHeadSha
+      || transition["afterHeadSha"] !== payload["headSha"]) return "invalid";
+    if (transition !== null && (!isRecord(transition)
+      || !hasExactKeys(transition, ["beforeHeadSha", "afterHeadSha"])
+      || !EXACT_SHA1.test(transition["beforeHeadSha"] as string)
+      || !EXACT_SHA1.test(transition["afterHeadSha"] as string))) return "invalid";
+    const headTransition = transition === null ? null : {
+      beforeHeadSha: transition["beforeHeadSha"] as string,
+      afterHeadSha: transition["afterHeadSha"] as string,
+    };
+    const headCycleId = acceptanceRecordPullRequestHeadCycleId({
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: record.prNumber!,
+      headSha: payload["headSha"] as string,
+      event: payload["event"] as string,
+      deliveryId: payload["deliveryId"] as string,
+      headTransition,
+    });
+    const eventKey = kind === "external_pr_attachment"
+      ? `external-pr:attached:${record.prNumber}:${headCycleId}`
+      : `external-pr:head-advanced:${record.prNumber}:${headCycleId}`;
+    if (payload["headCycleId"] !== headCycleId || event.eventKey !== eventKey
+      || event.id !== changeRecordEventId({ recordId: record.id, eventKey })) return "invalid";
+    return { headCycleId, headSha: payload["headSha"] as string, requiresReviewJob: false };
+  }
+  if (kind === "external_pr_head_reconciled") {
+    if (!hasExactKeys(payload, [
+      "kind", "repo", "prNumber", "expectedBlockedHeadSha", "expectedBlockedCycleId",
+      "expectedBlockedAuthorityGeneration", "observedHeadSha", "observedBaseSha",
+      "observedState", "observedDraft", "observedMerged", "headCycleId",
+      "acceptanceContractVersion",
+    ]) || payload["repo"] !== record.repo || payload["prNumber"] !== record.prNumber
+      || !EXACT_SHA1.test(payload["expectedBlockedHeadSha"] as string)
+      || !isUuid(payload["expectedBlockedCycleId"])
+      || !Number.isSafeInteger(payload["expectedBlockedAuthorityGeneration"])
+      || (payload["expectedBlockedAuthorityGeneration"] as number) < 0
+      || !EXACT_SHA1.test(payload["observedHeadSha"] as string)
+      || !EXACT_SHA1.test(payload["observedBaseSha"] as string)
+      || payload["observedState"] !== "open" || typeof payload["observedDraft"] !== "boolean"
+      || payload["observedMerged"] !== false || !isUuid(payload["headCycleId"])
+      || payload["acceptanceContractVersion"] !== input.acceptanceContractVersion
+      || event.stage !== "external_pr" || event.actor !== "github_app_api") return "invalid";
+    const headCycleId = acceptanceRecordPullRequestReconciliationCycleId({
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: record.prNumber!,
+      expectedBlockedHeadSha: payload["expectedBlockedHeadSha"] as string,
+      expectedBlockedCycleId: payload["expectedBlockedCycleId"] as string,
+      expectedBlockedAuthorityGeneration: payload["expectedBlockedAuthorityGeneration"] as number,
+      observedHeadSha: payload["observedHeadSha"] as string,
+      observedBaseSha: payload["observedBaseSha"] as string,
+    });
+    const eventKey = `external-pr:head-reconciled:${record.prNumber}:${headCycleId}`;
+    if (payload["headCycleId"] !== headCycleId || event.eventKey !== eventKey
+      || event.id !== changeRecordEventId({ recordId: record.id, eventKey })) return "invalid";
+    return {
+      headCycleId,
+      headSha: payload["observedHeadSha"] as string,
+      requiresReviewJob: payload["observedDraft"] === false,
+    };
+  }
+  return null;
+}
+
+function acceptanceRecordDetailOccurrenceRank(
+  kind: AcceptanceRecordDetailOccurrence["kind"],
+): number {
+  return kind === "current" ? 0 : kind === "merged" ? 1 : 2;
+}
+
+/**
+ * Read one strict Acceptance Record detail from canonical Record-owned
+ * custody. Review jobs only enrich cycles already owned by the Record header,
+ * signed merge, deterministic events, or fully bound Context snapshots.
+ */
+export async function readAcceptanceRecordDetail(
+  input: ReadAcceptanceRecordDetailInput,
+): Promise<ReadAcceptanceRecordDetailResult> {
+  const parsed = parseReadAcceptanceRecordDetailInput(input);
+  const candidate = (await db.select({
+    repo: changeRecords.repo,
+    prNumber: changeRecords.prNumber,
+  }).from(changeRecords).where(and(
+    eq(changeRecords.id, parsed.recordId),
+    eq(changeRecords.workspaceId, parsed.workspaceId),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+
+  return db.transaction(async (tx): Promise<ReadAcceptanceRecordDetailResult> => {
+    if (candidate.prNumber !== null && safeRepo(candidate.repo)
+      && Number.isSafeInteger(candidate.prNumber) && candidate.prNumber > 0) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+        workspaceId: parsed.workspaceId,
+        recordId: parsed.recordId,
+        repo: candidate.repo,
+        prNumber: candidate.prNumber,
+      })}))`);
+    } else {
+      // An unattached Record has no PR advisory-key coordinate yet. A row
+      // share lock keeps an attach transaction from changing that coordinate
+      // midway through this detail read.
+      await tx.execute(sql`
+        SELECT id FROM change_records
+        WHERE id = ${parsed.recordId}::uuid
+          AND workspace_id = ${parsed.workspaceId}::uuid
+        FOR SHARE
+      `);
+    }
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, parsed.recordId),
+      eq(changeRecords.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" };
+    if (record.repo !== candidate.repo || record.prNumber !== candidate.prNumber
+      || !acceptanceRecordDetailRecordCustodyValid(record)) {
+      return { kind: "unavailable", reason: "invalid_record_custody" };
+    }
+
+    const summaryResult = await readAcceptanceRecordSummariesInTransaction(tx, {
+      workspaceId: parsed.workspaceId,
+      repo: null,
+      limit: 1,
+      recordId: parsed.recordId,
+    });
+    const summary = summaryResult.records[0];
+    if (summaryResult.records.length !== 1 || !summary
+      || summary.recordId !== record.id || summary.workspaceId !== record.workspaceId
+      || summary.repo !== record.repo) {
+      return { kind: "unavailable", reason: "invalid_record_custody" };
+    }
+
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, record.id),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    const confirmed = acceptanceRecordSummaryConfirmedContract(confirmedRows);
+    if (!confirmed || confirmed === "invalid"
+      || !safeSnapshotText(confirmed.row.confirmedBy, 512)
+      || !(confirmed.row.confirmedAt instanceof Date)
+      || Number.isNaN(confirmed.row.confirmedAt.valueOf())) {
+      return { kind: "unavailable", reason: "confirmed_contract_unavailable" };
+    }
+    const contract: AcceptanceRecordDetailContract = {
+      identity: { ...confirmed.identity },
+      confirmedBy: confirmed.row.confirmedBy,
+      confirmedAt: confirmed.row.confirmedAt,
+      contract: structuredClone(confirmed.projection),
+    };
+
+    const rawEvents = Array.from(await tx.execute(sql`
+      SELECT *
+      FROM change_record_events AS events
+      WHERE events.record_id = ${record.id}::uuid
+        AND (
+          events.event_key LIKE 'review:github-posted:%'
+          OR events.event_key LIKE 'review:correction:%'
+          OR events.event_key LIKE 'external-pr:attached:%'
+          OR events.event_key LIKE 'external-pr:head-advanced:%'
+          OR events.event_key LIKE 'external-pr:head-reconciled:%'
+          OR events.event_key LIKE 'acceptance-pr-decision:%'
+          OR events.event_key LIKE 'acceptance-pr:signed-merge:%'
+          OR events.event_key LIKE 'external-pr:signed-merge:%'
+          OR events.event_key LIKE 'acceptance-post-merge:%'
+          OR events.stage = ${REVIEW_JOB_POSTED_ATTESTATION_STAGE}
+          OR events.stage = ${ACCEPTANCE_PR_DECISION_STAGE}
+          OR events.stage = ${SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE}
+          OR events.stage = 'post_merge_outcome'
+          OR events.payload_ref->>'kind' = ${REVIEW_JOB_POSTED_ATTESTATION_KIND}
+          OR events.payload_ref->>'kind' = 'review_job_correction_packet'
+          OR events.payload_ref->>'kind' = 'external_pr_attachment'
+          OR events.payload_ref->>'kind' = 'external_pr_head_advanced'
+          OR events.payload_ref->>'kind' = 'external_pr_head_reconciled'
+          OR events.payload_ref->>'kind' = ${ACCEPTANCE_PR_DECISION_KIND}
+          OR events.payload_ref->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_KIND}
+          OR events.payload_ref->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND}
+          OR events.payload_ref->>'kind' = 'acceptance_post_merge_outcome'
+        )
+      ORDER BY events.at ASC, events.id ASC
+      LIMIT ${ACCEPTANCE_RECORD_DETAIL_EVENT_LIMIT + 1}
+    `)) as Array<Record<string, unknown>>;
+    if (rawEvents.length > ACCEPTANCE_RECORD_DETAIL_EVENT_LIMIT) {
+      return { kind: "unavailable", reason: "event_custody_limit" };
+    }
+    const events = rawEvents.map(mapChangeRecordEventRow);
+
+    const rawSnapshots = Array.from(await tx.execute(sql`
+      SELECT *
+      FROM acceptance_context_pack_snapshots AS snapshots
+      WHERE snapshots.workspace_id = ${record.workspaceId}::uuid
+        AND snapshots.record_id = ${record.id}::uuid
+      ORDER BY snapshots.created_at ASC, snapshots.id ASC
+      LIMIT ${ACCEPTANCE_RECORD_DETAIL_SNAPSHOT_LIMIT + 1}
+    `)) as Array<Record<string, unknown>>;
+    if (rawSnapshots.length > ACCEPTANCE_RECORD_DETAIL_SNAPSHOT_LIMIT) {
+      return { kind: "unavailable", reason: "snapshot_custody_limit" };
+    }
+    const snapshots = rawSnapshots.map(mapAcceptanceRecordSummarySnapshotRow);
+    for (const snapshot of snapshots) {
+      const snapshotInput = acceptanceRecordSummarySnapshotInput(snapshot);
+      if (!validateAcceptanceContextPackSnapshotInput(snapshotInput)
+        || snapshot.id !== acceptanceContextPackSnapshotId(snapshotInput)
+        || snapshot.workspaceId !== record.workspaceId
+        || snapshot.recordId !== record.id
+        || snapshot.acceptanceContractId !== confirmed.identity.id
+        || snapshot.acceptanceContractVersion !== confirmed.identity.version
+        || snapshot.acceptanceContractSha256 !== confirmed.identity.sha256
+        || snapshot.repo !== record.repo || snapshot.prNumber !== record.prNumber
+        || !(snapshot.createdAt instanceof Date) || Number.isNaN(snapshot.createdAt.valueOf())
+        || !(snapshot.updatedAt instanceof Date) || Number.isNaN(snapshot.updatedAt.valueOf())) {
+        return { kind: "unavailable", reason: "invalid_context_custody" };
+      }
+    }
+
+    const occurrenceSeeds = new Map<string, AcceptanceRecordDetailOccurrenceSeed>();
+    const addOccurrenceSeed = (
+      headCycleId: unknown,
+      headSha: unknown,
+      requiresReviewJob: boolean,
+    ): boolean => {
+      if (!isUuid(headCycleId) || typeof headSha !== "string" || !EXACT_SHA1.test(headSha)) return false;
+      const seed = occurrenceSeeds.get(headCycleId) ?? {
+        headShas: new Set<string>(),
+        requiresReviewJob: false,
+      };
+      seed.headShas.add(headSha.toLowerCase());
+      seed.requiresReviewJob ||= requiresReviewJob;
+      occurrenceSeeds.set(headCycleId, seed);
+      return true;
+    };
+
+    let summaryFocus: AcceptanceRecordSummaryHeadOccurrence | null = null;
+    if (summary.pullRequest.kind === "attached" && summary.pullRequest.head.kind !== "unknown") {
+      summaryFocus = summary.pullRequest.head;
+      if (!addOccurrenceSeed(summaryFocus.headCycleId, summaryFocus.sha, summaryFocus.kind === "merged")) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+    }
+    if (record.currentPrHeadAuthoritative
+      && (!summaryFocus || summaryFocus.kind !== "current"
+        || summaryFocus.headCycleId !== record.currentPrHeadCycleId
+        || summaryFocus.sha !== record.currentPrHeadSha?.toLowerCase()
+        || summaryFocus.authorityGeneration !== record.currentPrHeadAuthorityGeneration)) {
+      return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+    }
+    if ((record.state === "merged" || record.state === "reverted")
+      && (!summaryFocus || summaryFocus.kind !== "merged")) {
+      return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+    }
+
+    for (const snapshot of snapshots) {
+      if (!addOccurrenceSeed(snapshot.reviewJobId, snapshot.expectedHeadSha, true)) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+    }
+
+    const postedEventsByCycle = new Map<string, ChangeRecordEventRow[]>();
+    const correctionPacketsByCycle = new Map<
+      string,
+      Map<string, AcceptanceRecordDetailCorrectionPacket>
+    >();
+    const contractCriteria = new Map(confirmed.projection.acceptanceCriteria.map((criterion) => [
+      criterion.id,
+      criterion.text,
+    ]));
+    for (const event of events) {
+      const payload = event.payloadRef;
+      const authorityLike = event.eventKey.startsWith("external-pr:attached:")
+        || event.eventKey.startsWith("external-pr:head-advanced:")
+        || event.eventKey.startsWith("external-pr:head-reconciled:")
+        || payload["kind"] === "external_pr_attachment"
+        || payload["kind"] === "external_pr_head_advanced"
+        || payload["kind"] === "external_pr_head_reconciled";
+      if (authorityLike) {
+        const occurrence = acceptanceRecordDetailAuthorityOccurrence({
+          event,
+          record,
+          acceptanceContractVersion: confirmed.identity.version,
+        });
+        if (occurrence === "audit_only") continue;
+        if (!occurrence || occurrence === "invalid"
+          || !addOccurrenceSeed(
+            occurrence.headCycleId,
+            occurrence.headSha,
+            occurrence.requiresReviewJob,
+          )) {
+          return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+        }
+      }
+      const postedLike = event.eventKey.startsWith("review:github-posted:")
+        || event.stage === REVIEW_JOB_POSTED_ATTESTATION_STAGE
+          && payload["kind"] === REVIEW_JOB_POSTED_ATTESTATION_KIND
+        || payload["kind"] === REVIEW_JOB_POSTED_ATTESTATION_KIND;
+      if (postedLike) {
+        if (!postedReviewAttestationShape(payload)
+          || !isUuid(payload["jobId"]) || !EXACT_SHA1.test(payload["headSha"] as string)
+          || payload["workspaceId"] !== record.workspaceId
+          || payload["recordId"] !== record.id || payload["repo"] !== record.repo
+          || payload["prNumber"] !== record.prNumber
+          || payload["acceptanceContractId"] !== confirmed.identity.id
+          || payload["acceptanceContractVersion"] !== confirmed.identity.version
+          || event.eventKey !== reviewJobPostedAttestationEventKey(payload["jobId"] as string)
+          || event.id !== changeRecordEventId({
+            recordId: record.id,
+            eventKey: reviewJobPostedAttestationEventKey(payload["jobId"] as string),
+          })
+          || event.stage !== REVIEW_JOB_POSTED_ATTESTATION_STAGE
+          || event.actor !== REVIEW_JOB_POSTED_ATTESTATION_ACTOR
+          || !isCanonicalGithubReviewUrl(payload["postedReviewUrl"], record.repo, record.prNumber!)) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        const cycleId = payload["jobId"] as string;
+        if (!addOccurrenceSeed(cycleId, payload["headSha"], true)) {
+          return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+        }
+        const rows = postedEventsByCycle.get(cycleId) ?? [];
+        rows.push(event);
+        postedEventsByCycle.set(cycleId, rows);
+      }
+
+      const correctionLike = event.eventKey.startsWith("review:correction:")
+        || payload["kind"] === "review_job_correction_packet";
+      if (correctionLike) {
+        if (!validateReviewJobCorrectionPacketPayload(payload)
+          || !isRecord(payload["criterion"]) || !isRecord(payload["acceptanceContract"])) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        const packetId = correctionPacketIdForSnapshotEvent(event, {
+          workspaceId: record.workspaceId,
+          recordId: record.id,
+          reviewJobId: payload["jobId"] as string,
+          acceptanceContractId: confirmed.identity.id,
+          acceptanceContractVersion: confirmed.identity.version,
+          repo: record.repo,
+          prNumber: record.prNumber!,
+          expectedHeadSha: payload["headSha"] as string,
+        }, contractCriteria);
+        const cycleId = payload["jobId"] as string;
+        const criterionId = payload["criterion"]["id"] as string;
+        if (!packetId || payload["packetId"] !== packetId
+          || payload["acceptanceContract"]["id"] !== confirmed.identity.id
+          || payload["acceptanceContract"]["version"] !== confirmed.identity.version
+          || !addOccurrenceSeed(cycleId, payload["headSha"], true)) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        const packets = correctionPacketsByCycle.get(cycleId) ?? new Map();
+        if (packets.has(criterionId)) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        packets.set(
+          criterionId,
+          structuredClone(payload) as AcceptanceRecordDetailCorrectionPacket,
+        );
+        correctionPacketsByCycle.set(cycleId, packets);
+      }
+    }
+    if (occurrenceSeeds.size > ACCEPTANCE_RECORD_DETAIL_OCCURRENCE_LIMIT) {
+      return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+    }
+
+    const occurrenceCycleIds = [...occurrenceSeeds.keys()];
+    const jobs = occurrenceCycleIds.length === 0 ? [] : await tx.select().from(reviewJobs).where(and(
+      eq(reviewJobs.workspaceId, record.workspaceId),
+      inArray(reviewJobs.id, occurrenceCycleIds),
+    ));
+    const jobsById = new Map(jobs.map((job) => [job.id, job]));
+
+    let storedMerge: AcceptanceRecordSummaryStoredMerge | null = null;
+    if (summaryFocus?.kind === "merged") {
+      const merge = acceptanceRecordSummaryMergeBeforeLineage(record, events);
+      if (!merge || merge === "invalid" || !acceptanceRecordSummaryMergeLineageValid({
+        merge,
+        record,
+        contract: confirmed,
+        events,
+        jobsById,
+      })) return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      storedMerge = merge;
+    }
+
+    const occurrences: AcceptanceRecordDetailOccurrence[] = [];
+    for (const [headCycleId, seed] of occurrenceSeeds) {
+      if (seed.headShas.size !== 1) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+      const headSha = [...seed.headShas][0]!;
+      const job = jobsById.get(headCycleId);
+      const reviewJob = acceptanceRecordDetailReviewJob(job);
+      if (!reviewJob || (seed.requiresReviewJob && reviewJob.kind !== "recorded")
+        || (job && (job.workspaceId !== record.workspaceId || job.repo !== record.repo
+          || job.prNumber !== record.prNumber || job.headSha.toLowerCase() !== headSha))) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+      if (summaryFocus?.kind === "current" && summaryFocus.headCycleId === headCycleId) {
+        if (summaryFocus.sha !== headSha) {
+          return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+        }
+        occurrences.push({
+          kind: "current",
+          repo: record.repo,
+          prNumber: record.prNumber!,
+          headSha,
+          headCycleId,
+          authorityGeneration: summaryFocus.authorityGeneration,
+          reviewJob,
+        });
+      } else if (summaryFocus?.kind === "merged" && summaryFocus.headCycleId === headCycleId) {
+        if (summaryFocus.sha !== headSha || !storedMerge
+          || storedMerge.payload.mergeSha !== record.mergedSha) {
+          return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+        }
+        occurrences.push({
+          kind: "merged",
+          repo: record.repo,
+          prNumber: record.prNumber!,
+          headSha,
+          headCycleId,
+          authorityGeneration: summaryFocus.authorityGeneration,
+          mergeEventId: storedMerge.event.id,
+          mergeSha: storedMerge.payload.mergeSha,
+          mergedAt: new Date(storedMerge.payload.mergedAt),
+          reviewJob,
+        });
+      } else {
+        occurrences.push({
+          kind: "historical",
+          repo: record.repo,
+          prNumber: record.prNumber!,
+          headSha,
+          headCycleId,
+          reviewJob,
+        });
+      }
+    }
+    occurrences.sort((left, right) => {
+      const rank = acceptanceRecordDetailOccurrenceRank(left.kind)
+        - acceptanceRecordDetailOccurrenceRank(right.kind);
+      if (rank !== 0) return rank;
+      const leftAt = left.reviewJob.kind === "recorded" ? left.reviewJob.createdAt.valueOf() : 0;
+      const rightAt = right.reviewJob.kind === "recorded" ? right.reviewJob.createdAt.valueOf() : 0;
+      return rightAt - leftAt || left.headCycleId.localeCompare(right.headCycleId);
+    });
+    const occurrenceByCycle = new Map(occurrences.map((occurrence) => [
+      occurrence.headCycleId,
+      occurrence,
+    ]));
+    const current = occurrences.find((occurrence) => occurrence.kind === "current") as AcceptanceRecordDetailCurrentOccurrence | undefined;
+    const merged = occurrences.find((occurrence) => occurrence.kind === "merged") as AcceptanceRecordDetailMergedOccurrence | undefined;
+    if (occurrences.filter((occurrence) => occurrence.kind === "current").length > 1
+      || occurrences.filter((occurrence) => occurrence.kind === "merged").length > 1) {
+      return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+    }
+    let pullRequest: AcceptanceRecordDetailPullRequest;
+    if (record.prNumber === null) {
+      if (occurrences.length !== 0) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+      pullRequest = { kind: "not_attached", occurrences: [] };
+    } else {
+      pullRequest = {
+        kind: "attached",
+        prNumber: record.prNumber,
+        current: current ?? null,
+        merged: merged ?? null,
+        occurrences,
+      };
+    }
+
+    const wikiPageIds = new Set<string>();
+    for (const snapshot of snapshots) {
+      const snapshotInput = acceptanceRecordSummarySnapshotInput(snapshot);
+      if (snapshotInput.status === "admitted" && snapshotInput.baseIndex) {
+        for (const page of snapshotInput.baseIndex.pages) wikiPageIds.add(page.id);
+      }
+    }
+    const repositoryRows = record.prNumber === null ? [] : await tx.select().from(repositories).where(and(
+      eq(repositories.workspaceId, record.workspaceId),
+      eq(repositories.name, record.repo),
+    )).orderBy(asc(repositories.createdAt), asc(repositories.id));
+    const wikiRows = wikiPageIds.size === 0 ? [] : await tx.select().from(wikiPages).where(and(
+      eq(wikiPages.workspaceId, record.workspaceId),
+      inArray(wikiPages.id, [...wikiPageIds]),
+    ));
+    const wikiPagesById = new Map(wikiRows.map((page) => [page.id, page]));
+
+    const snapshotIds = snapshots.map((snapshot) => snapshot.id);
+    const rawPacks = snapshotIds.length === 0 ? [] : Array.from(await tx.execute(sql`
+      SELECT packs.*
+      FROM acceptance_compiled_context_packs AS packs
+      WHERE packs.source_snapshot_id IN (${sql.join(
+        snapshotIds.map((snapshotId) => sql`${snapshotId}::uuid`),
+        sql`, `,
+      )})
+      ORDER BY packs.source_snapshot_id ASC, packs.created_at ASC, packs.id ASC
+      LIMIT ${ACCEPTANCE_RECORD_DETAIL_COMPILED_PACK_LIMIT + 1}
+    `)) as Array<Record<string, unknown>>;
+    if (rawPacks.length > ACCEPTANCE_RECORD_DETAIL_COMPILED_PACK_LIMIT) {
+      return { kind: "unavailable", reason: "detail_output_limit" };
+    }
+    const packsBySnapshot = new Map<string, AcceptanceCompiledContextPackRow[]>();
+    for (const rawPack of rawPacks) {
+      const pack = mapAcceptanceRecordSummaryCompiledPackRow(rawPack);
+      const rows = packsBySnapshot.get(pack.sourceSnapshotId) ?? [];
+      rows.push(pack);
+      packsBySnapshot.set(pack.sourceSnapshotId, rows);
+    }
+    if ([...packsBySnapshot.values()].some((packs) =>
+      packs.length > ACCEPTANCE_RECORD_DETAIL_COMPILED_PACKS_PER_SNAPSHOT_LIMIT
+    )) return { kind: "unavailable", reason: "compiled_pack_custody_limit" };
+
+    const contextPacks: AcceptanceRecordDetailContextPack[] = [];
+    for (const snapshot of snapshots) {
+      const occurrence = occurrenceByCycle.get(snapshot.reviewJobId);
+      const job = jobsById.get(snapshot.reviewJobId);
+      if (!occurrence || !job || occurrence.headSha !== snapshot.expectedHeadSha.toLowerCase()) {
+        return { kind: "unavailable", reason: "invalid_occurrence_custody" };
+      }
+      const custody = acceptanceRecordSummaryContextCustody({
+        snapshot,
+        record,
+        focus: { headSha: occurrence.headSha, headCycleId: occurrence.headCycleId },
+        contract: confirmed,
+        job,
+        events,
+        repositoryRows,
+        wikiPagesById,
+      });
+      if (!custody) return { kind: "unavailable", reason: "invalid_context_custody" };
+      const storedPacks = packsBySnapshot.get(snapshot.id) ?? [];
+      if (snapshot.status === "not_proven" && storedPacks.length !== 0) {
+        return { kind: "unavailable", reason: "invalid_compiled_pack_custody" };
+      }
+      const compiledPacks: AcceptanceRecordDetailCompiledPack[] = [];
+      for (const storedPack of storedPacks) {
+        const projected = acceptanceRecordDetailCompiledPack({ row: storedPack, custody });
+        if (!projected) {
+          return { kind: "unavailable", reason: "invalid_compiled_pack_custody" };
+        }
+        compiledPacks.push(projected);
+      }
+      contextPacks.push({
+        occurrence: acceptanceRecordDetailOccurrenceIdentity(occurrence),
+        sourceSnapshot: acceptanceRecordDetailSnapshot(snapshot, occurrence, contract),
+        compiledPacks,
+      });
+    }
+    contextPacks.sort((left, right) => {
+      const rank = acceptanceRecordDetailOccurrenceRank(left.occurrence.kind)
+        - acceptanceRecordDetailOccurrenceRank(right.occurrence.kind);
+      return rank || left.sourceSnapshot.createdAt.valueOf() - right.sourceSnapshot.createdAt.valueOf()
+        || left.sourceSnapshot.id.localeCompare(right.sourceSnapshot.id);
+    });
+
+    const proofMatrix: AcceptanceRecordDetailProofCycle[] = [];
+    for (const occurrence of occurrences) {
+      const job = jobsById.get(occurrence.headCycleId);
+      const postedEvents = postedEventsByCycle.get(occurrence.headCycleId) ?? [];
+      let review: AcceptanceRecordDetailReview;
+      if (!job) {
+        if (postedEvents.length !== 0) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        review = { kind: "not_recorded" };
+      } else if (job.state === "posted") {
+        if (postedEvents.length !== 1) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        const posted = parseAcceptancePrReviewMetricsCycle({
+          event: postedEvents[0]!,
+          job,
+          record,
+          acceptanceContract: confirmed.identity,
+        });
+        if (!posted || posted.binding.headCycleId !== occurrence.headCycleId
+          || posted.binding.headSha !== occurrence.headSha
+          || job.createdAt > posted.reviewedAt || confirmed.row.confirmedAt! > posted.reviewedAt) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        review = {
+          kind: "posted",
+          reviewJobId: job.id,
+          verdict: posted.binding.reviewVerdict,
+          postedReviewUrl: posted.binding.postedReviewUrl,
+          postedAttestationEventId: posted.binding.postedAttestationEventId,
+          reviewedAt: posted.reviewedAt,
+        };
+      } else {
+        if (!isAcceptanceRecordDetailReviewJobState(job.state) || postedEvents.length !== 0) {
+          return { kind: "unavailable", reason: "invalid_review_custody" };
+        }
+        review = {
+          kind: "not_posted",
+          reviewJobId: job.id,
+          state: job.state as Exclude<AcceptanceRecordDetailReviewJobState, "posted">,
+        };
+      }
+      const packets = correctionPacketsByCycle.get(occurrence.headCycleId) ?? new Map();
+      if (review.kind === "posted"
+        && ((review.verdict === "proven" || review.verdict === "not_testable")
+          && packets.size !== 0
+          || (review.verdict === "failed" || review.verdict === "not_proven")
+            && packets.size === 0
+          || review.verdict === "not_proven"
+            && [...packets.values()].some((packet) => packet.state !== "not_proven")
+          || review.verdict === "failed"
+            && packets.size > 0
+            && ![...packets.values()].some((packet) => packet.state === "failed"))) {
+        return { kind: "unavailable", reason: "invalid_review_custody" };
+      }
+      proofMatrix.push({
+        occurrence: acceptanceRecordDetailOccurrenceIdentity(occurrence),
+        review,
+        criteria: confirmed.projection.acceptanceCriteria.map((criterion) => {
+          const packet = packets.get(criterion.id);
+          if (packet) {
+            return {
+              criterion: structuredClone(criterion),
+              proof: {
+                kind: "correction_packet" as const,
+                state: packet.state,
+                packet: structuredClone(packet),
+              },
+            };
+          }
+          const reason: AcceptanceRecordDetailCriterionUnknownReason = review.kind === "not_recorded"
+            ? "review_not_recorded"
+            : review.kind === "not_posted"
+              ? "review_not_posted"
+              : "criterion_result_not_durably_rederivable";
+          return {
+            criterion: structuredClone(criterion),
+            proof: { kind: "unknown" as const, reason },
+          };
+        }),
+      });
+    }
+
+    const detail: AcceptanceRecordDetail = {
+      summary,
+      contract,
+      pullRequest,
+      contextPacks,
+      proofMatrix,
+      artifactCustody: {
+        kind: "unknown",
+        reason: "artifact_custody_not_available",
+      },
+      gatedIssue: {
+        kind: "unknown",
+        reason: "gated_issue_custody_not_available",
+      },
+    };
+    if (acceptanceRecordDetailSerializedBytes(detail)
+      > ACCEPTANCE_RECORD_DETAIL_MAX_SERIALIZED_BYTES) {
+      return { kind: "unavailable", reason: "detail_output_limit" };
+    }
+    return { kind: "record", detail };
   });
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChangeRecordAnchors,
   ChangeRecordBackLink,
+  AcceptanceRecordDetailPanel,
   CorrectionsSection,
   DependencyObservationsPanel,
   FinalDecisionPanel,
@@ -13,11 +14,13 @@ import {
   formatChangeRecordDate,
   isCorrectionPacketsEnvelope,
   isChangeRecordResponse,
+  isAcceptanceRecordDetailEnvelope,
   isDependencyObservationsEnvelope,
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
   type AcceptanceCorrectionPacketsEnvelope,
+  type AcceptanceRecordDetailEnvelope,
   type AcceptanceDependencyObservationsEnvelope,
   type AcceptanceFinalDecisionEnvelope,
   type AcceptancePrReviewMetricsEnvelope,
@@ -469,6 +472,416 @@ const dependencyExternalBuilderPack = {
   scopeBoundary: "dependency_external_builder_pack_only" as const,
   reviewRequirement: "exact_head_r7_reentry" as const,
   mintedAt: "2026-08-11T09:15:00.000Z",
+};
+
+const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
+const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
+const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
+const DETAIL_BASE_SHA = "1".repeat(40);
+const DETAIL_MERGE_BASE_SHA = "2".repeat(40);
+const DETAIL_TREE_SHA = "3".repeat(40);
+const DETAIL_BLOB_SHA = "4".repeat(40);
+const DETAIL_RANGE_SHA = "5".repeat(64);
+const DETAIL_FULL_CONTENT_SHA = "6".repeat(64);
+const DETAIL_WIKI_PAGE_ID = "00000000-0000-4000-8000-000000000057";
+const DETAIL_WIKI_REPOSITORY_ID = "00000000-0000-4000-8000-000000000056";
+
+const detailCurrentOccurrence = {
+  kind: "current" as const,
+  repo: record.repo,
+  prNumber: 98,
+  headSha: DETAIL_CURRENT_HEAD,
+  headCycleId: currentFinalDecision.binding.headCycleId,
+  authorityGeneration: 7,
+  reviewJob: {
+    kind: "recorded" as const,
+    id: currentFinalDecision.binding.reviewJobId,
+    state: "posted" as const,
+    createdAt: "2026-08-11T08:58:00.000Z",
+    updatedAt: "2026-08-11T09:00:00.000Z",
+  },
+};
+const detailHistoricalOccurrence = {
+  kind: "historical" as const,
+  repo: record.repo,
+  prNumber: 98,
+  headSha: DETAIL_CURRENT_HEAD,
+  headCycleId: HISTORICAL_CYCLE,
+  reviewJob: { kind: "not_recorded" as const },
+};
+const detailContract = {
+  identity: currentFinalDecision.binding.acceptanceContract,
+  confirmedBy: "user:00000000-0000-4000-8000-000000000002",
+  confirmedAt: "2026-08-10T07:55:00.000Z",
+  contract: {
+    originalRequest: "Protect the account page and preserve its exact evidence.",
+    normalizedRequirements: ["A signed-in member can open the protected page."],
+    acceptanceCriteria: [
+      {
+        id: "criterion-login",
+        text: "A signed-in member can open the protected page.",
+        userVisible: true,
+        modality: "ui" as const,
+      },
+      {
+        id: "criterion-audit",
+        text: "The result retains exact-head audit custody.",
+        userVisible: false,
+        modality: "data" as const,
+      },
+    ],
+    nonGoals: ["Do not add merge automation."],
+    risks: ["A stale head could misstate proof."],
+    stops: ["Stop if the exact head cannot be proven."],
+    environment: { kind: "isolated_preview", browser: "chromium" },
+    unresolvedQuestions: [],
+  },
+};
+
+const currentAcceptanceDetail: AcceptanceRecordDetailEnvelope = {
+  kind: "record",
+  detail: {
+    summary: {
+      recordId: record.id,
+      workspaceId: record.workspaceId,
+      repo: record.repo,
+      issueNumber: record.issueNumber,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      requestedWork: {
+        kind: "confirmed",
+        originalRequest: detailContract.contract.originalRequest,
+        acceptanceContract: detailContract.identity,
+      },
+      suppliedContext: {
+        kind: "compiled",
+        sourceSnapshot: {
+          id: DETAIL_SNAPSHOT_ID,
+          headSha: DETAIL_CURRENT_HEAD,
+          headCycleId: currentFinalDecision.binding.headCycleId,
+          compilerVersion: "acceptance-context-pack-compiler-v2",
+          packetSetSha256: PACKET_SET_SHA256,
+        },
+        compiledPack: {
+          id: DETAIL_PACK_ID,
+          sha256: "7".repeat(64),
+          sourceCustodyIdentitySha256: "8".repeat(64),
+          compilerVersion: "acceptance-context-pack-compiler-v2",
+          policyVersion: "acceptance-context-pack-policy-v2",
+        },
+      },
+      pullRequest: {
+        kind: "attached",
+        prNumber: 98,
+        head: {
+          kind: "current",
+          sha: DETAIL_CURRENT_HEAD,
+          headCycleId: currentFinalDecision.binding.headCycleId,
+          authorityGeneration: 7,
+        },
+      },
+      proof: {
+        kind: "recorded",
+        reviewJobId: currentFinalDecision.binding.reviewJobId,
+        verdict: "failed",
+        postedReviewUrl: currentFinalDecision.binding.postedReviewUrl,
+        postedAttestationEventId: currentFinalDecision.binding.postedAttestationEventId,
+      },
+      unknownReasons: ["outcome_not_recorded"],
+      neededDecision: {
+        kind: "required",
+        choices: ["changes_requested", "rejected", "approved_with_exception"],
+      },
+      outcome: { kind: "not_recorded" },
+    },
+    contract: detailContract,
+    pullRequest: {
+      kind: "attached",
+      prNumber: 98,
+      current: detailCurrentOccurrence,
+      merged: null,
+      occurrences: [detailCurrentOccurrence, detailHistoricalOccurrence],
+    },
+    contextPacks: [{
+      occurrence: {
+        kind: "current",
+        repo: record.repo,
+        prNumber: 98,
+        headSha: DETAIL_CURRENT_HEAD,
+        headCycleId: currentFinalDecision.binding.headCycleId,
+      },
+      sourceSnapshot: {
+        id: DETAIL_SNAPSHOT_ID,
+        occurrence: {
+          kind: "current",
+          repo: record.repo,
+          prNumber: 98,
+          headSha: DETAIL_CURRENT_HEAD,
+          headCycleId: currentFinalDecision.binding.headCycleId,
+        },
+        binding: {
+          workspaceId: record.workspaceId,
+          recordId: record.id,
+          reviewJobId: currentFinalDecision.binding.reviewJobId,
+          acceptanceContract: detailContract.identity,
+          repo: record.repo,
+          prNumber: 98,
+          expectedHeadSha: DETAIL_CURRENT_HEAD,
+        },
+        baseSha: DETAIL_BASE_SHA,
+        mergeBaseSha: DETAIL_MERGE_BASE_SHA,
+        headTreeSha: DETAIL_TREE_SHA,
+        packetIds: [PACKET_ID],
+        packetSetSha256: PACKET_SET_SHA256,
+        correctionPacketPayloadSetSha256: PACKET_PAYLOAD_SET_SHA256,
+        compilerVersion: "acceptance-context-pack-compiler-v2",
+        baseIndex: {
+          schemaVersion: 2,
+          revisionSha256: "9".repeat(64),
+          backgroundOnly: true,
+          pages: [{
+            id: DETAIL_WIKI_PAGE_ID,
+            repositoryId: DETAIL_WIKI_REPOSITORY_ID,
+            slug: "architecture",
+            commitSha: "a".repeat(40),
+            inputsHashSha256: "a".repeat(64),
+            pageBodySha256: "b".repeat(64),
+            stale: false,
+          }],
+          gaps: [],
+        },
+        overlay: {
+          schemaVersion: 2,
+          manifestSha256: "c".repeat(64),
+          baseSha: DETAIL_BASE_SHA,
+          mergeBaseSha: DETAIL_MERGE_BASE_SHA,
+          headSha: DETAIL_CURRENT_HEAD,
+          files: [{
+            path: "apps/account/page.tsx",
+            status: "modified",
+            blobSha: DETAIL_BLOB_SHA,
+            previousPath: null,
+            patchSha256: "d".repeat(64),
+            patchByteCount: 240,
+            headRanges: [{ startLine: 10, endLine: 18, coordinateSha256: "e".repeat(64) }],
+          }],
+        },
+        provenance: {
+          schemaVersion: 1,
+          included: [{ path: "apps/account/page.tsx", source: "overlay", reason: "changed file" }],
+          excluded: [{ path: null, source: "base_index", reason: "background only" }],
+        },
+        status: "admitted",
+        reason: null,
+        createdAt: "2026-08-11T08:59:00.000Z",
+        updatedAt: "2026-08-11T08:59:30.000Z",
+      },
+      compiledPacks: [{
+        id: DETAIL_PACK_ID,
+        sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+        compilerVersion: "acceptance-context-pack-compiler-v2",
+        policyVersion: "acceptance-context-pack-policy-v2",
+        packSha256: "7".repeat(64),
+        sourceCustodyIdentitySha256: "8".repeat(64),
+        representations: {
+          jsonSha256: "f".repeat(64),
+          markdownSha256: "0".repeat(64),
+          renderedByteCount: 2048,
+        },
+        binding: {
+          sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+          workspaceId: record.workspaceId,
+          recordId: record.id,
+          reviewJobId: currentFinalDecision.binding.reviewJobId,
+          acceptanceContractId: detailContract.identity.id,
+          acceptanceContractVersion: detailContract.identity.version,
+          acceptanceContractSha256: detailContract.identity.sha256,
+          repo: record.repo,
+          prNumber: 98,
+          baseSha: DETAIL_BASE_SHA,
+          mergeBaseSha: DETAIL_MERGE_BASE_SHA,
+          headSha: DETAIL_CURRENT_HEAD,
+          headTreeSha: DETAIL_TREE_SHA,
+          packetSetSha256: PACKET_SET_SHA256,
+          correctionPacketPayloadSetSha256: PACKET_PAYLOAD_SET_SHA256,
+          sourceSnapshotCompilerVersion: "acceptance-context-pack-compiler-v2",
+          baseIndexRevisionSha256: "9".repeat(64),
+          overlayManifestSha256: "c".repeat(64),
+        },
+        manifest: {
+          acceptanceCriterionIds: ["criterion-login", "criterion-audit"],
+          unresolvedQuestionIds: [],
+          packetIds: [PACKET_ID],
+          sources: [
+            {
+              kind: "base_index_background",
+              pageId: DETAIL_WIKI_PAGE_ID,
+              slug: "architecture",
+              commitSha: "a".repeat(40),
+              inputsHashSha256: "a".repeat(64),
+              pageBodySha256: "b".repeat(64),
+              stale: false,
+              startLine: 1,
+              endLine: 12,
+              rangeSha256: "1".repeat(64),
+              byteCount: 180,
+              reason: "background_only",
+              citation: `wiki:architecture@${"a".repeat(40)}#L1-L12`,
+            },
+            {
+              kind: "exact_head_overlay",
+              path: "apps/account/page.tsx",
+              blobSha: DETAIL_BLOB_SHA,
+              fullContentSha256: DETAIL_FULL_CONTENT_SHA,
+              startLine: 10,
+              endLine: 18,
+              rangeSha256: DETAIL_RANGE_SHA,
+              byteCount: 320,
+              reason: "exact_patch_head_range",
+              citation: `apps/account/page.tsx@${DETAIL_BLOB_SHA}#L10-L18`,
+            },
+          ],
+          exclusions: [{
+            source: "exact_head_dependency",
+            path: "apps/account/secret.ts",
+            reason: "dependency_unsafe_path",
+            identitySha256: "2".repeat(64),
+          }],
+          sourceCount: 2,
+          exclusionCount: 1,
+          architectureBoundaries: ["Account page stays in the authenticated Console boundary."],
+          tests: ["Run the protected-page UI criterion."],
+          decisions: ["No raw source is persisted."],
+          custody: {
+            fullSourceUploadAllowed: false,
+            rawSourcePersisted: false,
+            snippetsPersisted: false,
+          },
+        },
+        sourceCustody: {
+          kind: "exact_head_source_custody",
+          schemaVersion: 2,
+          repo: record.repo,
+          prNumber: 98,
+          baseSha: DETAIL_BASE_SHA,
+          mergeBaseSha: DETAIL_MERGE_BASE_SHA,
+          headSha: DETAIL_CURRENT_HEAD,
+          headTreeSha: DETAIL_TREE_SHA,
+          manifestSha256: "3".repeat(64),
+          identitySha256: "8".repeat(64),
+          changedManifest: [{
+            path: "apps/account/page.tsx",
+            status: "modified",
+            blobSha: DETAIL_BLOB_SHA,
+            previousPath: null,
+            headRanges: [{ startLine: 10, endLine: 18 }],
+            patchSha256: "d".repeat(64),
+            patchByteCount: 240,
+          }],
+          records: [{
+            path: "apps/account/page.tsx",
+            blobSha: DETAIL_BLOB_SHA,
+            previousPath: null,
+            contentSha256: DETAIL_FULL_CONTENT_SHA,
+            byteCount: 320,
+            lineCount: 24,
+            source: "exact_head_overlay",
+            reason: "exact_base_to_head_compare",
+          }],
+          exclusions: [],
+          directReadReceipts: [{
+            requestedPath: "apps/account/page.tsx",
+            headSha: DETAIL_CURRENT_HEAD,
+            headTreeSha: DETAIL_TREE_SHA,
+            outcome: "record",
+            record: {
+              path: "apps/account/page.tsx",
+              blobSha: DETAIL_BLOB_SHA,
+              previousPath: null,
+              contentSha256: DETAIL_FULL_CONTENT_SHA,
+              byteCount: 320,
+              lineCount: 24,
+              source: "exact_head_tree_fallback",
+              reason: "exact_head_tree_path",
+            },
+          }],
+          selectedExactRanges: [{
+            kind: "exact_head_overlay",
+            path: "apps/account/page.tsx",
+            blobSha: DETAIL_BLOB_SHA,
+            fullContentSha256: DETAIL_FULL_CONTENT_SHA,
+            startLine: 10,
+            endLine: 18,
+            rangeSha256: DETAIL_RANGE_SHA,
+            byteCount: 320,
+          }],
+          changedFileCount: 1,
+          recordCount: 1,
+          exclusionCount: 0,
+          directReadReceiptCount: 1,
+          selectedExactRangeCount: 1,
+        },
+        exactHeadDependencyTreeProofs: [{
+          path: "apps/account/page.tsx",
+          blobSha: DETAIL_BLOB_SHA,
+          proofIdentitySha256: "4".repeat(64),
+        }],
+        createdAt: "2026-08-11T08:59:45.000Z",
+      }],
+    }],
+    proofMatrix: [
+      {
+        occurrence: {
+          kind: "current",
+          repo: record.repo,
+          prNumber: 98,
+          headSha: DETAIL_CURRENT_HEAD,
+          headCycleId: currentFinalDecision.binding.headCycleId,
+        },
+        review: {
+          kind: "posted",
+          reviewJobId: currentFinalDecision.binding.reviewJobId,
+          verdict: "failed",
+          postedReviewUrl: currentFinalDecision.binding.postedReviewUrl,
+          postedAttestationEventId: currentFinalDecision.binding.postedAttestationEventId,
+          reviewedAt: "2026-08-11T09:00:00.000Z",
+        },
+        criteria: [
+          {
+            criterion: detailContract.contract.acceptanceCriteria[0]!,
+            proof: {
+              kind: "correction_packet",
+              state: "failed",
+              packet: currentCorrections.packets[0]!,
+            },
+          },
+          {
+            criterion: detailContract.contract.acceptanceCriteria[1]!,
+            proof: {
+              kind: "unknown",
+              reason: "criterion_result_not_durably_rederivable",
+            },
+          },
+        ],
+      },
+      {
+        occurrence: {
+          kind: "historical",
+          repo: record.repo,
+          prNumber: 98,
+          headSha: DETAIL_CURRENT_HEAD,
+          headCycleId: HISTORICAL_CYCLE,
+        },
+        review: { kind: "not_recorded" },
+        criteria: detailContract.contract.acceptanceCriteria.map((criterion) => ({
+          criterion,
+          proof: { kind: "unknown" as const, reason: "review_not_recorded" as const },
+        })),
+      },
+    ],
+    artifactCustody: { kind: "unknown", reason: "artifact_custody_not_available" },
+    gatedIssue: { kind: "unknown", reason: "gated_issue_custody_not_available" },
+  },
 };
 
 describe("Change Record detail view", () => {
@@ -1196,6 +1609,91 @@ describe("Change Record detail view", () => {
     });
   });
 
+  it("strictly validates the full server-custodied Acceptance detail envelope", () => {
+    expect(isAcceptanceRecordDetailEnvelope(currentAcceptanceDetail)).toBe(true);
+    expect(isAcceptanceRecordDetailEnvelope({ kind: "not_found" })).toBe(true);
+    expect(isAcceptanceRecordDetailEnvelope({
+      kind: "unavailable",
+      reason: "detail_output_limit",
+    })).toBe(true);
+    expect(isAcceptanceRecordDetailEnvelope({
+      kind: "unavailable",
+      reason: "carrier_accepted",
+    })).toBe(false);
+
+    const extraClaim = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const extraDetail = extraClaim.detail as Record<string, unknown>;
+    (extraDetail.gatedIssue as Record<string, unknown>).issueCreated = true;
+    expect(isAcceptanceRecordDetailEnvelope(extraClaim)).toBe(false);
+
+    const wrongCycle = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const wrongCycleDetail = wrongCycle.detail as Record<string, unknown>;
+    const wrongProof = (wrongCycleDetail.proofMatrix as Array<Record<string, unknown>>)[0]!;
+    (wrongProof.occurrence as Record<string, unknown>).headCycleId = HISTORICAL_CYCLE;
+    expect(isAcceptanceRecordDetailEnvelope(wrongCycle)).toBe(false);
+
+    const rawSourceClaim = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const rawDetail = rawSourceClaim.detail as Record<string, unknown>;
+    const rawPack = (((rawDetail.contextPacks as Array<Record<string, unknown>>)[0]!
+      .compiledPacks as Array<Record<string, unknown>>)[0]!);
+    ((rawPack.manifest as Record<string, unknown>).custody as Record<string, unknown>).rawSourcePersisted = true;
+    expect(isAcceptanceRecordDetailEnvelope(rawSourceClaim)).toBe(false);
+
+    const badCount = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const countDetail = badCount.detail as Record<string, unknown>;
+    const countPack = (((countDetail.contextPacks as Array<Record<string, unknown>>)[0]!
+      .compiledPacks as Array<Record<string, unknown>>)[0]!);
+    (countPack.manifest as Record<string, unknown>).sourceCount = 3;
+    expect(isAcceptanceRecordDetailEnvelope(badCount)).toBe(false);
+
+    const inventedHistoricalGeneration = structuredClone(currentAcceptanceDetail) as Record<string, unknown>;
+    const historicalDetail = inventedHistoricalGeneration.detail as Record<string, unknown>;
+    const historical = ((historicalDetail.pullRequest as Record<string, unknown>)
+      .occurrences as Array<Record<string, unknown>>)[1]!;
+    historical.authorityGeneration = 6;
+    expect(isAcceptanceRecordDetailEnvelope(inventedHistoricalGeneration)).toBe(false);
+  });
+
+  it("renders full Contract, exact occurrences, selected context, and honest criterion unknowns without actions", () => {
+    const rendered = AcceptanceRecordDetailPanel({ acceptanceDetail: currentAcceptanceDetail });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Confirmed Acceptance Contract");
+    expect(content).toContain(detailContract.contract.originalRequest);
+    expect(content).toContain("Do not add merge automation.");
+    expect(content).toContain("Stop if the exact head cannot be proven.");
+    expect(content).toContain("criterion-login");
+    expect(content).toContain("criterion-audit");
+    expect(content).toContain("Current authoritative occurrence");
+    expect(content).toContain("Historical occurrence");
+    expect(content).toContain(detailCurrentOccurrence.headCycleId);
+    expect(content).toContain(detailHistoricalOccurrence.headCycleId);
+    expect(content).toContain("Not durably recorded for this historical cycle");
+    expect(content).toContain(DETAIL_CURRENT_HEAD);
+    expect(content).toContain("Compiled Pack receipt");
+    expect(content).toContain(`apps/account/page.tsx@${DETAIL_BLOB_SHA}#L10-L18`);
+    expect(content).toContain("apps/account/secret.ts");
+    expect(content).toContain("raw source and snippets are not persisted");
+    expect(content).toContain("Correction-backed failed evidence");
+    expect(content).toContain("criterion result not durably rederivable");
+    expect(content).toContain("Aggregate review verdicts are not treated as criterion proof");
+    expect(content).toContain("Artifact custody: Unknown");
+    expect(content).toContain("Gated issue custody: Unknown");
+    expect(elementTypes(rendered)).not.toContain("button");
+    expect(elementTypes(rendered)).not.toContain("form");
+    expect(links(rendered)).toEqual([]);
+    expect(content).not.toMatch(/(?:Create issue|Merge PR|Delivered|Acknowledged|Repaired)/u);
+  });
+
+  it("renders closed unavailable detail without falling back to timeline inference", () => {
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: { kind: "unavailable", reason: "invalid_review_custody" },
+    });
+
+    expect(textContent(rendered)).toContain("No detail is inferred from the raw timeline");
+    expect(buttonLabels(rendered)).toEqual([]);
+  });
+
   it("fails the load response closed on malformed dependency custody or capability flags", () => {
     const validResponse = {
       record,
@@ -1204,6 +1702,7 @@ describe("Change Record detail view", () => {
       finalDecision: currentFinalDecision,
       reviewMetrics: currentReviewMetrics,
       dependencyObservations: currentDependencyObservations,
+      acceptanceDetail: currentAcceptanceDetail,
       canRecordFinalDecision: true,
       canRecordReviewEffort: true,
       canApproveDependencyObservation: true,
@@ -1220,6 +1719,14 @@ describe("Change Record detail view", () => {
     expect(isChangeRecordResponse({
       ...validResponse,
       dependencyObservations: undefined,
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      acceptanceDetail: undefined,
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      acceptanceDetail: { kind: "record", detail: { merged: true } },
     })).toBe(false);
   });
 

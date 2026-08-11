@@ -1,9 +1,8 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `d212d124`, after merged PRs
-#1677–#1683. The current corrective slice updates the R10.1 observation
-contract and the merged R10.2 reader/Pack custody to one versioned manager
-identity without widening either source/test boundary.
+Last reconciled: 2026-08-11 at main commit `c9de7635`, after merged PRs
+#1677–#1683 and #1685. PR #1686 carries the bounded R11.2a strict
+Acceptance Record detail slice described below.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -216,17 +215,45 @@ Local R11.1 proof includes focused DB and Console tests, eight fresh migrated
 PostgreSQL summary cases, the full 1,698-test database suite, package
 typechecks/builds, scoped lint, and independent adversarial review. This is
 source/test and local PostgreSQL/UI-component proof only. No authenticated
-browser-to-server, deployed/live, or customer path was observed. R11.2 remains
-open for the strict full Contract/Pack detail, criterion evidence and artifact
-access, and packet-bound gated-issue path. R11 remains **FAIL / not
+browser-to-server, deployed/live, or customer path was observed.
+
+PR #1686 carries the bounded R11.2a source/test slice. One tenant-scoped,
+read-only detail resolver revalidates the confirmed Contract, occurrence-bound
+PR head cycles, posted review custody, correction packets, Context Pack
+snapshots, and compiled Pack metadata under the existing PR lock. It preserves
+A→B→A as distinct occurrences, rejects malformed or cross-workspace Pack
+custody, and fails closed on bounded event, snapshot, Pack, occurrence, or
+two-megabyte serialized-detail limits instead of truncating the result.
+
+The existing authenticated Record detail surface renders the full confirmed
+Contract, exact current and historical PR occurrences, metadata-only Context
+Pack and compiled Pack custody, and a Contract-ordered criterion matrix. Only
+an exact immutable correction packet establishes criterion-level failed or
+not-proven evidence. Other criterion results, artifact custody, and gated-issue
+custody remain explicitly unknown; raw timeline JSON stays audit-only and is
+never used to infer status. The surface adds no artifact access, issue action,
+queue, dispatch, delivery, pull-request mutation, or merge action.
+
+Local R11.2a proof includes two boundary tests, six fresh migrated PostgreSQL
+detail cases, the 79-case change-record integration suite, the full
+1,709-test database suite, 92 focused Console route/component tests, package
+typechecks/builds, scoped lint, and independent adversarial review. The
+serialized-byte guard is exercised with 56 valid Packs, below the separate
+64-Pack cap. This is source/test and local PostgreSQL/UI-component proof only.
+No authenticated browser-to-server, artifact-store, deployed/live, or customer
+path was observed.
+
+R11.2 remains open for the criterion-outcome and opaque artifact-custody path,
+then the packet-bound gated-issue path. R11 remains **FAIL / not
 release-ready**.
 
 ## Remaining canonical order
 
-The remaining implementation order is the R10.1 adapter correction and
-required v1 profiles, then R11.2 and R12. The bounded R10.2 Pack slice is merged
-and must remain compatible with each admitted profile. The canonical
-requirements remain:
+The remaining implementation order is the R10.1 manager-neutral correction and
+required v1 profiles, then the remaining R11.2 criterion/artifact and gated
+issue slices, followed by R12. The bounded R10.2 Pack slice is a merged
+foundation, and R11.2a must remain compatible with each admitted profile. The
+canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

@@ -38,6 +38,7 @@ import {
   acceptanceContextOverlayHeadRangeCoordinateSha256,
   acceptanceContextOverlayManifestSha256,
   acceptanceContextPackCanonicalSha256,
+  acceptanceCompiledContextPackId,
   acceptanceContextPacketSetSha256,
   acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256,
@@ -101,6 +102,7 @@ import {
   readDurableCorrectionDispatchFallback,
   recordDurableCorrectionDispatchFallback,
   readAcceptanceRecordSummaries,
+  readAcceptanceRecordDetail,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -442,14 +444,16 @@ async function createAcceptanceDependencyObservationFixture(input: {
   manifestContent?: string;
   lockfilePath?: string;
   lockfileContent?: string;
+  contractOverrides?: Record<string, unknown>;
 }) {
   const repoName = "acme/widgets";
+  const contractInput = completeContract(input.contractOverrides);
   const draft = await createDraftAcceptanceRecord({
     workspaceId: input.workspaceId,
     repo: repoName,
     workKey: input.workKey,
     originChannel: "codex_mcp",
-    contract: completeContract(),
+    contract: contractInput,
     createdBy: "user:lead",
   });
   await db.update(acceptanceContracts).set({
@@ -727,7 +731,10 @@ async function createAcceptanceDependencyObservationFixture(input: {
     unresolvedQuestionIds: [],
     packetIds,
     sources: exactSources,
-    architectureBoundaries: [],
+    architectureBoundaries: [
+      ...(contractInput["nonGoals"] as string[]).map((value) => `non_goal:${value}`),
+      ...(contractInput["stops"] as string[]).map((value) => `stop:${value}`),
+    ].sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))),
     tests: [],
     decisions: [],
     exclusions: [],
@@ -1502,6 +1509,551 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(overflow.suppliedContext).toEqual({ kind: "unknown" });
       expect(overflow.neededDecision).toEqual({ kind: "unknown" });
       expect(overflow.outcome).toEqual({ kind: "unknown" });
+    });
+
+    it("reads full current Contract, Context Pack metadata, and exact correction proof without crossing tenants", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-complete",
+        prNumber: 621,
+        headSha: "1".repeat(40),
+      });
+      const posted = await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        jobId: fixture.advanced.jobId,
+        repo: fixture.repo,
+        prNumber: 621,
+        headSha: "1".repeat(40),
+        acceptanceContractId: fixture.draft.contract.id,
+        verdict: "failed",
+      });
+
+      const result = await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      if (result.kind !== "record") throw new Error(`expected detail record, got ${result.kind}`);
+      expect(result.detail.contract).toMatchObject({
+        identity: { id: fixture.draft.contract.id, version: 1 },
+        confirmedBy: "console_user:user-1",
+        contract: {
+          originalRequest: "Add saved filters",
+          acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+          unresolvedQuestions: [],
+        },
+      });
+      expect(result.detail.pullRequest).toMatchObject({
+        kind: "attached",
+        current: {
+          kind: "current",
+          headSha: "1".repeat(40),
+          headCycleId: fixture.advanced.jobId,
+          reviewJob: { kind: "recorded", state: "posted" },
+        },
+        merged: null,
+      });
+      expect(result.detail.contextPacks).toHaveLength(1);
+      const context = result.detail.contextPacks[0]!;
+      expect(context).toMatchObject({
+        occurrence: { kind: "current", headCycleId: fixture.advanced.jobId },
+        sourceSnapshot: {
+          status: "admitted",
+          binding: {
+            workspaceId: wsId,
+            recordId: fixture.draft.record.id,
+            acceptanceContract: { id: fixture.draft.contract.id, version: 1 },
+          },
+        },
+      });
+      expect(context.compiledPacks).toHaveLength(1);
+      expect(context.compiledPacks[0]).toMatchObject({
+        id: fixture.pack.id,
+        manifest: {
+          acceptanceCriterionIds: ["AC-1"],
+          sourceCount: 2,
+          custody: {
+            fullSourceUploadAllowed: false,
+            rawSourcePersisted: false,
+            snippetsPersisted: false,
+          },
+        },
+        sourceCustody: {
+          kind: "exact_head_source_custody",
+          schemaVersion: 2,
+          headSha: "1".repeat(40),
+          changedFileCount: 2,
+          recordCount: 2,
+          selectedExactRangeCount: 2,
+        },
+      });
+      expect(context.compiledPacks[0]!.manifest.sources.every((source) =>
+        !("content" in source) && !("body" in source)
+      )).toBe(true);
+      expect(context.compiledPacks[0]!.sourceCustody.records.every((record) =>
+        !("content" in record)
+      )).toBe(true);
+      expect(result.detail.proofMatrix).toEqual([expect.objectContaining({
+        occurrence: expect.objectContaining({ kind: "current", headCycleId: fixture.advanced.jobId }),
+        review: expect.objectContaining({
+          kind: "posted",
+          verdict: "failed",
+          postedAttestationEventId: posted.event.id,
+        }),
+        criteria: [expect.objectContaining({
+          criterion: expect.objectContaining({ id: "AC-1" }),
+          proof: expect.objectContaining({
+            kind: "correction_packet",
+            state: "failed",
+            packet: expect.objectContaining({ jobId: fixture.advanced.jobId }),
+          }),
+        })],
+      })]);
+      expect(result.detail.artifactCustody).toEqual({
+        kind: "unknown",
+        reason: "artifact_custody_not_available",
+      });
+      expect(result.detail.gatedIssue).toEqual({
+        kind: "unknown",
+        reason: "gated_issue_custody_not_available",
+      });
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "acceptance detail tenant boundary",
+        slug: `acceptance-detail-tenant-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        await expect(readAcceptanceRecordDetail({
+          workspaceId: otherWorkspace.id,
+          recordId: fixture.draft.record.id,
+        })).resolves.toEqual({ kind: "not_found" });
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("keeps all deterministic A-to-B-to-A occurrences distinct and occurrence-binds historical context", async () => {
+      const headA = "2".repeat(40);
+      const headB = "3".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-a-b-a",
+        prNumber: 622,
+        headSha: headA,
+      });
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        jobId: fixture.advanced.jobId,
+        repo: fixture.repo,
+        prNumber: 622,
+        headSha: headA,
+        acceptanceContractId: fixture.draft.contract.id,
+        verdict: "failed",
+      });
+      const cycleB = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 622,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "acceptance-record-detail-a-b-a:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      if (cycleB.kind !== "advanced") throw new Error("expected B detail cycle");
+      const cycleA2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 622,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "acceptance-record-detail-a-b-a:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (cycleA2.kind !== "advanced") throw new Error("expected A2 detail cycle");
+
+      const result = await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      if (result.kind !== "record" || result.detail.pullRequest.kind !== "attached") {
+        throw new Error("expected attached A-B-A detail");
+      }
+      expect(result.detail.pullRequest.occurrences.map((occurrence) => ({
+        kind: occurrence.kind,
+        headSha: occurrence.headSha,
+        headCycleId: occurrence.headCycleId,
+      }))).toEqual([
+        { kind: "current", headSha: headA, headCycleId: cycleA2.jobId },
+        { kind: "historical", headSha: headB, headCycleId: cycleB.jobId },
+        { kind: "historical", headSha: headA, headCycleId: fixture.advanced.jobId },
+      ]);
+      expect(cycleA2.jobId).not.toBe(fixture.advanced.jobId);
+      expect(result.detail.contextPacks).toHaveLength(1);
+      expect(result.detail.contextPacks[0]!.occurrence).toMatchObject({
+        kind: "historical",
+        headSha: headA,
+        headCycleId: fixture.advanced.jobId,
+      });
+      expect(result.detail.proofMatrix.map((cycle) => cycle.occurrence.headCycleId))
+        .toEqual([cycleA2.jobId, cycleB.jobId, fixture.advanced.jobId]);
+    });
+
+    it("projects an exact merged occurrence and fails closed on historical snapshot Contract drift", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-merged",
+        prNumber: 630,
+        headSha: "c".repeat(40),
+        verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved",
+        decidedBy: owner,
+      });
+      const merge = await recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 630,
+        headSha: "c".repeat(40),
+        deliveryId: "acceptance-record-detail-merged:delivery",
+        mergeSha: "d".repeat(40),
+      }));
+      if (merge.kind !== "recorded") throw new Error("expected detail merge fixture");
+      const merged = await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      });
+      if (merged.kind !== "record" || merged.detail.pullRequest.kind !== "attached") {
+        throw new Error("expected merged detail record");
+      }
+      expect(merged.detail.pullRequest.current).toBeNull();
+      expect(merged.detail.pullRequest.merged).toMatchObject({
+        kind: "merged",
+        headSha: "c".repeat(40),
+        headCycleId: ready.advanced.jobId,
+        mergeEventId: merge.mergeEventId,
+        mergeSha: "d".repeat(40),
+      });
+      expect(merged.detail.pullRequest.occurrences[0]).toMatchObject({
+        kind: "merged",
+        headCycleId: ready.advanced.jobId,
+      });
+
+      const historical = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-historical-contract-drift",
+        prNumber: 631,
+        headSha: "e".repeat(40),
+      });
+      const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: historical.draft.record.id,
+        repo: historical.repo,
+        prNumber: 631,
+        headSha: "f".repeat(40),
+        event: "synchronize",
+        deliveryId: "acceptance-record-detail-historical-contract-drift:f",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: "e".repeat(40), afterHeadSha: "f".repeat(40) },
+        source: "github_webhook",
+      });
+      if (advanced.kind !== "advanced") throw new Error("expected historical drift successor");
+      await db.update(acceptanceContextPackSnapshots).set({
+        acceptanceContractSha256: "0".repeat(64),
+      }).where(eq(acceptanceContextPackSnapshots.id, historical.pack.sourceSnapshotId));
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: historical.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_context_custody" });
+    });
+
+    it("fails closed for missing failed-review packets, forged packet event identity, and cross-workspace Pack custody", async () => {
+      const missingPacket = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-missing-packet",
+        prNumber: 623,
+        headSha: "4".repeat(40),
+        verdict: "failed",
+      });
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: missingPacket.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_review_custody" });
+
+      const missingNotProvenPacket = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-missing-not-proven-packet",
+        prNumber: 629,
+        headSha: "b".repeat(40),
+        verdict: "not_proven",
+      });
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: missingNotProvenPacket.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_review_custody" });
+
+      const forgedEvent = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-forged-packet-event",
+        prNumber: 624,
+        headSha: "5".repeat(40),
+      });
+      await db.update(changeRecordEvents).set({ id: randomUUID() }).where(and(
+        eq(changeRecordEvents.recordId, forgedEvent.draft.record.id),
+        eq(changeRecordEvents.eventKey, `review:correction:${forgedEvent.advanced.jobId}:AC-1`),
+      ));
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: forgedEvent.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_review_custody" });
+
+      const mismatchedPack = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-cross-workspace-pack",
+        prNumber: 625,
+        headSha: "6".repeat(40),
+      });
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "acceptance detail Pack tenant mismatch",
+        slug: `acceptance-detail-pack-tenant-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      await db.update(acceptanceCompiledContextPacks).set({
+        workspaceId: otherWorkspace.id,
+      }).where(eq(acceptanceCompiledContextPacks.id, mismatchedPack.pack.id));
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: mismatchedPack.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_compiled_pack_custody" });
+      await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+    });
+
+    it("bounds aggregate Pack metadata and serializes a detail read with head advance", async () => {
+      const oversized = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-pack-bound",
+        prNumber: 626,
+        headSha: "7".repeat(40),
+      });
+      const storedPack = (await db.select().from(acceptanceCompiledContextPacks).where(
+        eq(acceptanceCompiledContextPacks.id, oversized.pack.id)
+      ).limit(1))[0]!;
+      await db.insert(acceptanceCompiledContextPacks).values(Array.from({ length: 64 }, (_, index) => ({
+        ...storedPack,
+        id: randomUUID(),
+        compilerVersion: `detail-bound-compiler-${index}`,
+        policyVersion: `detail-bound-policy-${index}`,
+        createdAt: new Date(Date.now() + index + 1),
+      })));
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: oversized.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "detail_output_limit" });
+
+      const largeBoundaries = Array.from({ length: 45 }, (_, index) =>
+        `${String(index).padStart(2, "0")}:${"bounded-context-metadata-".repeat(40)}`
+      );
+      const byteLimited = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-byte-bound",
+        prNumber: 632,
+        headSha: "0".repeat(40),
+        contractOverrides: { nonGoals: largeBoundaries },
+      });
+      const sourceSnapshot = (await db.select().from(acceptanceContextPackSnapshots).where(
+        eq(acceptanceContextPackSnapshots.id, byteLimited.pack.sourceSnapshotId)
+      ).limit(1))[0]!;
+      const sourcePack = (await db.select().from(acceptanceCompiledContextPacks).where(
+        eq(acceptanceCompiledContextPacks.id, byteLimited.pack.id)
+      ).limit(1))[0]!;
+      const variantSnapshots = [sourceSnapshot];
+      for (let snapshotIndex = 1; snapshotIndex < 7; snapshotIndex += 1) {
+        const recorded = await recordAcceptanceContextPackSnapshot({
+          workspaceId: sourceSnapshot.workspaceId,
+          recordId: sourceSnapshot.recordId,
+          reviewJobId: sourceSnapshot.reviewJobId,
+          acceptanceContractId: sourceSnapshot.acceptanceContractId,
+          acceptanceContractVersion: sourceSnapshot.acceptanceContractVersion,
+          acceptanceContractSha256: sourceSnapshot.acceptanceContractSha256!,
+          repo: sourceSnapshot.repo,
+          prNumber: sourceSnapshot.prNumber,
+          expectedHeadSha: sourceSnapshot.expectedHeadSha,
+          baseSha: sourceSnapshot.baseSha,
+          mergeBaseSha: sourceSnapshot.mergeBaseSha,
+          headTreeSha: sourceSnapshot.headTreeSha,
+          packetIds: sourceSnapshot.packetIds,
+          packetSetSha256: sourceSnapshot.packetSetSha256,
+          correctionPacketPayloadSetSha256: sourceSnapshot.correctionPacketPayloadSetSha256!,
+          compilerVersion: `detail-byte-snapshot-${snapshotIndex}`,
+          baseIndex: sourceSnapshot.baseIndex as never,
+          overlay: sourceSnapshot.overlay as never,
+          provenance: sourceSnapshot.provenance as never,
+          status: "admitted",
+          reason: null,
+        });
+        variantSnapshots.push(recorded.snapshot);
+      }
+      const variantRows = variantSnapshots.flatMap((snapshot, snapshotIndex) =>
+        Array.from({ length: 8 }, (_, variantIndex) => {
+          if (snapshotIndex === 0 && variantIndex === 0) return null;
+          const compilerVersion = `detail-byte-compiler-${snapshotIndex}-${variantIndex}`;
+          const policyVersion = `detail-byte-policy-${snapshotIndex}-${variantIndex}`;
+          const binding = {
+            ...sourcePack.binding,
+            sourceSnapshotId: snapshot.id,
+            sourceSnapshotCompilerVersion: snapshot.compilerVersion,
+          };
+          const compiler = {
+            version: compilerVersion,
+            policyVersion,
+            byteCounter: "utf8_byte_upper_bound_v1",
+            byteBudget: 65_536,
+          };
+          const core = {
+            kind: "compiled_acceptance_context_pack",
+            version: 1,
+            binding,
+            compiler,
+            manifest: sourcePack.manifest,
+            sourceCustodyReceipt: {
+              kind: sourcePack.sourceCustodyReceipt["kind"],
+              schemaVersion: sourcePack.sourceCustodyReceipt["schemaVersion"],
+              identitySha256: sourcePack.sourceCustodyReceipt["identitySha256"],
+            },
+            exactHeadDependencyTreeProofs: sourcePack.exactHeadDependencyTreeProofs,
+            representations: {
+              jsonSha256: sourcePack.jsonSha256,
+              markdownSha256: sourcePack.markdownSha256,
+            },
+            renderedByteCount: sourcePack.renderedByteCount,
+          };
+          return {
+            id: acceptanceCompiledContextPackId({
+              sourceSnapshotId: snapshot.id,
+              compilerVersion,
+              policyVersion,
+            }),
+            workspaceId: sourcePack.workspaceId,
+            sourceSnapshotId: snapshot.id,
+            compilerVersion,
+            policyVersion,
+            packSha256: acceptanceContextPackCanonicalSha256(core),
+            sourceCustodyIdentitySha256: sourcePack.sourceCustodyIdentitySha256,
+            jsonSha256: sourcePack.jsonSha256,
+            markdownSha256: sourcePack.markdownSha256,
+            renderedByteCount: sourcePack.renderedByteCount,
+            binding,
+            manifest: sourcePack.manifest,
+            sourceCustodyReceipt: sourcePack.sourceCustodyReceipt,
+            exactHeadDependencyTreeProofs: sourcePack.exactHeadDependencyTreeProofs,
+            createdAt: new Date(Date.now() + snapshotIndex * 10 + variantIndex),
+          };
+        }).filter((row): row is NonNullable<typeof row> => row !== null)
+      );
+      expect(variantRows).toHaveLength(55);
+      await db.insert(acceptanceCompiledContextPacks).values(variantRows);
+      const persistedVariantCount = await db.select({ id: acceptanceCompiledContextPacks.id })
+        .from(acceptanceCompiledContextPacks).where(inArray(
+          acceptanceCompiledContextPacks.sourceSnapshotId,
+          variantSnapshots.map((snapshot) => snapshot.id),
+        ));
+      expect(persistedVariantCount).toHaveLength(56);
+      await expect(readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: byteLimited.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "detail_output_limit" });
+
+      const headA = "8".repeat(40);
+      const headB = "9".repeat(40);
+      const raced = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-head-race",
+        prNumber: 627,
+        headSha: headA,
+      });
+      const [readResult, advanced] = await Promise.all([
+        readAcceptanceRecordDetail({ workspaceId: wsId, recordId: raced.draft.record.id }),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: raced.draft.record.id,
+          repo: raced.repo,
+          prNumber: 627,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "acceptance-record-detail-head-race:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+      ]);
+      if (advanced.kind !== "advanced" || readResult.kind !== "record"
+        || readResult.detail.pullRequest.kind !== "attached") {
+        throw new Error("expected coherent detail/head-advance race");
+      }
+      const current = readResult.detail.pullRequest.current;
+      if (!current) throw new Error("detail race must expose one current cycle");
+      if (current.headCycleId === raced.advanced.jobId) {
+        expect(current.headSha).toBe(headA);
+        expect(readResult.detail.contextPacks[0]!.occurrence.kind).toBe("current");
+        expect(readResult.detail.summary.pullRequest).toMatchObject({
+          head: { kind: "current", sha: headA, headCycleId: raced.advanced.jobId },
+        });
+      } else {
+        expect(current).toMatchObject({ headSha: headB, headCycleId: advanced.jobId });
+        expect(readResult.detail.contextPacks[0]!.occurrence).toMatchObject({
+          kind: "historical",
+          headSha: headA,
+          headCycleId: raced.advanced.jobId,
+        });
+        expect(readResult.detail.summary.pullRequest).toMatchObject({
+          head: { kind: "current", sha: headB, headCycleId: advanced.jobId },
+        });
+      }
+    });
+
+    it("ignores a generic legacy criterion timeline payload as proof authority", async () => {
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-record-detail-legacy-proof",
+        prNumber: 628,
+        headSha: "a".repeat(40),
+        verdict: "proven",
+      });
+      await appendChangeRecordEvent({
+        recordId: ready.draft.record.id,
+        eventKey: `review:posted:${ready.advanced.jobId}`,
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: {
+          kind: "legacy_review_posted",
+          criterionResults: [{ criterionId: "AC-1", state: "proven" }],
+        },
+      });
+      const result = await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      });
+      if (result.kind !== "record") throw new Error("expected legacy-proof detail");
+      expect(result.detail.proofMatrix[0]!.criteria).toEqual([
+        expect.objectContaining({
+          criterion: expect.objectContaining({ id: "AC-1" }),
+          proof: {
+            kind: "unknown",
+            reason: "criterion_result_not_durably_rederivable",
+          },
+        }),
+      ]);
     });
 
     it("executes the exact 0088 legacy-preview teardown statement against Postgres", async () => {

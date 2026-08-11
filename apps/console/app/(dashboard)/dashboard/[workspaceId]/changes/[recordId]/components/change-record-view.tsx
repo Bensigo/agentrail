@@ -2077,6 +2077,7 @@ export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrRe
 
 const DEPENDENCY_FINGERPRINT = /^sha256:[a-f0-9]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
+const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
@@ -2179,12 +2180,55 @@ function stableYarn4(version: string): boolean {
   return stableSemverParts(version)?.[0] === 4;
 }
 
+function compareStableSemver(
+  left: [number, number, number],
+  right: [number, number, number],
+): number {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]! > right[index]!) return 1;
+    if (left[index]! < right[index]!) return -1;
+  }
+  return 0;
+}
+
+function uvDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !NORMALIZED_PYPI_PACKAGE.test(candidate.package)) return false;
+  const lowerBound = /^>=(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u
+    .exec(candidate.specifier);
+  const current = stableSemverParts(candidate.currentVersion);
+  const target = stableSemverParts(candidate.targetVersion);
+  if (!lowerBound || !current || !target) return false;
+  const bound = lowerBound.slice(1).map(Number) as [number, number, number];
+  return bound.every(Number.isSafeInteger)
+    && compareStableSemver(current, bound) >= 0
+    && compareStableSemver(target, bound) >= 0
+    && compareStableSemver(target, current) > 0;
+}
+
+function stablePython3(version: string): boolean {
+  return stableSemverParts(version)?.[0] === 3;
+}
+
+function stableUv012(version: string): boolean {
+  const parts = stableSemverParts(version);
+  return parts?.[0] === 0 && parts[1] === 12;
+}
+
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
 ): boolean {
   return security.provider === "osv"
     && security.reference === `osv:npm:${candidate.package}@${candidate.targetVersion}`;
+}
+
+function osvPyPiReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
@@ -2235,6 +2279,24 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       const dependencyFlag = YARN_FLAG_BY_DEPENDENCY_KIND[candidate.dependencyKind];
       return dependencyFlag ? [...argv, dependencyFlag] : argv;
     },
+  }],
+  ["python:uv:uv_project_lockfile_only_v1", {
+    identity: {
+      ecosystem: "python",
+      manager: "uv",
+      profile: "uv_project_lockfile_only_v1",
+    },
+    candidateIsValid: uvDependencyCandidateIsValid,
+    runtimeVersionIsValid: stablePython3,
+    packageManagerVersionIsValid: stableUv012,
+    manifestPathIsValid: (path) => path === "pyproject.toml",
+    lockfilePathIsValid: (path) => path === "uv.lock",
+    securityIsValid: osvPyPiReceiptIsValid,
+    expectedArgv: (candidate) => [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package",
+      `${candidate.package}==${candidate.targetVersion}`,
+    ],
   }],
 ]);
 

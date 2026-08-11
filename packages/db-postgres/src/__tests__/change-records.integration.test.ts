@@ -1049,6 +1049,71 @@ function yarnAcceptanceDependencyObservationInput(input: {
   };
 }
 
+function uvAcceptanceDependencyObservationInput(input: {
+  workspaceId: string;
+  recordId: string;
+  compiledPackId: string;
+  headSha: string;
+  manifestBlobSha: string;
+  lockfileBlobSha: string;
+  currentVersion?: string;
+  targetVersion?: string;
+  specifier?: string;
+}) {
+  const currentVersion = input.currentVersion ?? "0.27.0";
+  const targetVersion = input.targetVersion ?? "0.28.1";
+  const identity = {
+    ecosystem: "python",
+    manager: "uv",
+    profile: "uv_project_lockfile_only_v1",
+  };
+  return {
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    compiledPackId: input.compiledPackId,
+    candidate: {
+      identity,
+      package: "httpx",
+      dependencyKind: "dependencies" as const,
+      specifier: input.specifier ?? ">=0.27.0",
+      currentVersion,
+      targetVersion,
+    },
+    runtime: {
+      identity,
+      disposition: "safe" as const,
+      version: "3.12.8",
+      evidenceSha256: "1".repeat(64),
+    },
+    packageManager: {
+      disposition: "safe" as const,
+      name: "uv",
+      version: "0.12.0",
+      profile: "uv_project_lockfile_only_v1",
+      updateArgv: [
+        "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+        "--no-sources", "--no-build", "--upgrade-package", `httpx==${targetVersion}`,
+      ],
+      evidenceSha256: "2".repeat(64),
+    },
+    manifest: { path: "pyproject.toml", blobSha: input.manifestBlobSha },
+    lockfile: {
+      disposition: "present" as const,
+      path: "uv.lock",
+      blobSha: input.lockfileBlobSha,
+      evidenceSha256: "3".repeat(64),
+    },
+    baseline: { headSha: input.headSha },
+    security: {
+      identity,
+      disposition: "clear" as const,
+      provider: "osv",
+      reference: `osv:PyPI:httpx@${targetVersion}`,
+      reportSha256: "4".repeat(64),
+    },
+  };
+}
+
 async function appendHistoricalUnsupportedDependencyObservationV2(
   evidence: RecordAcceptanceDependencyObservationInput,
 ) {
@@ -6461,6 +6526,408 @@ describe.skipIf(!DB_AVAILABLE)(
         kind: "recorded",
         observation: { status: "refused_lockfile", reasons: ["lockfile_evidence_unavailable"] },
       });
+    });
+
+    it("records the exact root uv profile and preserves its evidence through R10.2", async () => {
+      const headSha = "2".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-uv-profile",
+        prNumber: 340,
+        headSha,
+        manifestPath: "pyproject.toml",
+        manifestContent: [
+          "[project]",
+          'requires-python = ">=3.12"',
+          'dependencies = ["httpx>=0.27.0"]',
+          "",
+        ].join("\n"),
+        lockfilePath: "uv.lock",
+        lockfileContent: 'version = 1\nrequires-python = ">=3.12"\n',
+        compiledPackCompilerVersion: "exact-head-correction-pack-v5",
+        compiledPackPolicyVersion: "bounded-exact-ranges-v3",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected uv lock custody");
+      const evidence = uvAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+
+      const recorded = await recordAcceptanceDependencyObservation(evidence);
+      expect(recorded).toMatchObject({
+        kind: "recorded",
+        binding: {
+          compiledPack: {
+            id: fixture.pack.id,
+            compilerVersion: "exact-head-correction-pack-v5",
+            policyVersion: "bounded-exact-ranges-v3",
+          },
+        },
+        observation: {
+          status: "observed",
+          reasons: [],
+          candidate: {
+            identity: evidence.candidate.identity,
+            package: "httpx",
+            dependencyKind: "dependencies",
+            specifier: ">=0.27.0",
+            currentVersion: "0.27.0",
+            targetVersion: "0.28.1",
+          },
+          runtime: { identity: evidence.runtime.identity, version: "3.12.8" },
+          packageManager: {
+            name: "uv",
+            version: "0.12.0",
+            profile: "uv_project_lockfile_only_v1",
+            updateArgv: [
+              "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+              "--no-sources", "--no-build", "--upgrade-package", "httpx==0.28.1",
+            ],
+          },
+          manifest: { path: "pyproject.toml" },
+          lockfile: { path: "uv.lock", disposition: "present" },
+          security: { provider: "osv", reference: "osv:PyPI:httpx@0.28.1" },
+        },
+      });
+      if (recorded.kind !== "recorded") throw new Error("expected uv observation");
+      await expect(recordAcceptanceDependencyObservation(evidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: { eventId: recorded.observation.eventId, status: "observed" },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...evidence,
+        security: { ...evidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+
+      const selected = await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_codex",
+        configurationVersion: 6,
+      });
+      const ownerId = "17171717-1717-4171-8171-171717171717";
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: recorded.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      });
+      expect(approved).toMatchObject({
+        kind: "approved",
+        observation: { eventId: recorded.observation.eventId, candidate: evidence.candidate },
+        externalBuilderPack: {
+          candidate: evidence.candidate,
+          runtime: evidence.runtime,
+          packageManager: evidence.packageManager,
+          manifest: evidence.manifest,
+          lockfile: evidence.lockfile,
+          security: evidence.security,
+          route: { id: selected.route.id, adapter: "github_codex", configurationVersion: 6 },
+          deliveryAuthority: "not_granted",
+          reviewRequirement: "exact_head_r7_reentry",
+        },
+      });
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        observations: [{
+          payloadVersion: 2,
+          observation: { eventId: recorded.observation.eventId, status: "observed" },
+          approval: { approvedBy: `user:${ownerId}` },
+          externalBuilderPack: {
+            candidate: evidence.candidate,
+            packageManager: evidence.packageManager,
+          },
+        }],
+      });
+    }, 15_000);
+
+    it("fails closed for uv runner drift, refusals, and missing exact Pack source custody", async () => {
+      const headSha = "3".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-uv-refusals",
+        prNumber: 341,
+        headSha,
+        manifestPath: "pyproject.toml",
+        manifestContent: '[project]\ndependencies = ["httpx>=0.27.0"]\n',
+        lockfilePath: "uv.lock",
+        lockfileContent: "version = 1\n",
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected uv refusal lock custody");
+      const base = (targetVersion: string) => uvAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+        targetVersion,
+      });
+
+      const argvDrift = base("0.28.2");
+      await expect(recordAcceptanceDependencyObservation({
+        ...argvDrift,
+        packageManager: {
+          ...argvDrift.packageManager,
+          updateArgv: argvDrift.packageManager.updateArgv.filter((token) => token !== "--no-config"),
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"] },
+      });
+      const baseline = base("0.28.3");
+      await expect(recordAcceptanceDependencyObservation({
+        ...baseline,
+        baseline: { headSha: "f".repeat(40) },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_baseline", reasons: ["baseline_head_mismatch"] },
+      });
+      const unsafeRuntime = base("0.28.4");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeRuntime,
+        runtime: { ...unsafeRuntime.runtime, disposition: "unsafe" as const, version: "3.8.0" },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
+      });
+      const unavailableManager = base("0.28.5");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unavailableManager,
+        packageManager: {
+          ...unavailableManager.packageManager,
+          disposition: "unavailable" as const,
+          version: null,
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "not_proven", reasons: ["package_manager_evidence_unavailable"] },
+      });
+      const affected = base("0.28.6");
+      await expect(recordAcceptanceDependencyObservation({
+        ...affected,
+        security: { ...affected.security, disposition: "affected" as const },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_security", reasons: ["security_affected"] },
+      });
+
+      const missingHeadSha = "4".repeat(40);
+      const missing = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-uv-lockfile-missing",
+        prNumber: 342,
+        headSha: missingHeadSha,
+        manifestPath: "pyproject.toml",
+        manifestContent: '[project]\ndependencies = ["httpx>=0.27.0"]\n',
+        lockfilePath: "uv.lock",
+        lockfileReadReason: "path_not_found",
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...uvAcceptanceDependencyObservationInput({
+          workspaceId: wsId,
+          recordId: missing.draft.record.id,
+          compiledPackId: missing.pack.id,
+          headSha: missingHeadSha,
+          manifestBlobSha: missing.manifestBlobSha,
+          lockfileBlobSha: "0".repeat(40),
+        }),
+        lockfile: {
+          disposition: "missing" as const,
+          path: "uv.lock",
+          blobSha: null,
+          evidenceSha256: "3".repeat(64),
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_lockfile", reasons: ["lockfile_missing"] },
+      });
+
+      const noSourceHeadSha = "5".repeat(40);
+      const noSource = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-uv-source-not-proven",
+        prNumber: 343,
+        headSha: noSourceHeadSha,
+        manifestPath: "package.json",
+        lockfilePath: "uv.lock",
+        lockfileContent: "version = 1\n",
+      });
+      if (noSource.lockfileBlobSha === null) throw new Error("expected uv source lock custody");
+      await expect(recordAcceptanceDependencyObservation(uvAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: noSource.draft.record.id,
+        compiledPackId: noSource.pack.id,
+        headSha: noSourceHeadSha,
+        manifestBlobSha: noSource.manifestBlobSha,
+        lockfileBlobSha: noSource.lockfileBlobSha,
+      }))).resolves.toMatchObject({
+        kind: "recorded",
+        observation: { status: "not_proven", reasons: ["manifest_source_not_proven"] },
+      });
+
+      const strictCases = [
+        (() => {
+          const value = base("0.29.0");
+          return { ...value, candidate: { ...value.candidate, package: "HTTPX" } };
+        })(),
+        (() => {
+          const value = base("0.29.1");
+          return { ...value, candidate: { ...value.candidate, dependencyKind: "devDependencies" } };
+        })(),
+        (() => {
+          const value = base("0.29.2");
+          return { ...value, candidate: { ...value.candidate, specifier: "^0.27.0" } };
+        })(),
+        (() => {
+          const value = base("0.29.3");
+          return { ...value, runtime: { ...value.runtime, version: "3.13.0rc1" } };
+        })(),
+        (() => {
+          const value = base("0.29.4");
+          return { ...value, packageManager: { ...value.packageManager, version: "0.13.0" } };
+        })(),
+        (() => {
+          const value = base("0.29.5");
+          return { ...value, manifest: { ...value.manifest, path: "services/api/pyproject.toml" } };
+        })(),
+        (() => {
+          const value = base("0.29.6");
+          return { ...value, security: { ...value.security, reference: "osv:pypi:httpx@0.29.6" } };
+        })(),
+      ];
+      for (const malformed of strictCases) {
+        await expect(recordAcceptanceDependencyObservation(malformed))
+          .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+      }
+      const strictEvents = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ));
+      expect(strictEvents).toHaveLength(5);
+    });
+
+    it("replays frozen pre-support uv v2 refusals without admitting a new broad body", async () => {
+      const validHeadSha = "6".repeat(40);
+      const validFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-uv-valid",
+        prNumber: 344,
+        headSha: validHeadSha,
+        manifestPath: "pyproject.toml",
+        manifestContent: '[project]\ndependencies = ["httpx>=0.27.0"]\n',
+        lockfilePath: "uv.lock",
+        lockfileContent: "version = 1\n",
+      });
+      if (validFixture.lockfileBlobSha === null) throw new Error("expected valid historical uv lockfile");
+      const validEvidence = uvAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: validFixture.draft.record.id,
+        compiledPackId: validFixture.pack.id,
+        headSha: validHeadSha,
+        manifestBlobSha: validFixture.manifestBlobSha,
+        lockfileBlobSha: validFixture.lockfileBlobSha,
+      });
+      const validHistorical = await appendHistoricalUnsupportedDependencyObservationV2(validEvidence);
+      await expect(recordAcceptanceDependencyObservation(validEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: validHistorical.event.id,
+          status: "refused_unsupported_profile",
+          reasons: ["unsupported_manager_profile"],
+        },
+      });
+
+      const broadHeadSha = "7".repeat(40);
+      const broadFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-historical-unsupported-uv-broad",
+        prNumber: 345,
+        headSha: broadHeadSha,
+        manifestPath: "services/api/pyproject.toml",
+        manifestContent: '[project]\ndependencies = ["httpx @ https://example.invalid/httpx.whl"]\n',
+        lockfilePath: "services/api/uv.lock",
+        lockfileContent: "version = 'preview'\n",
+      });
+      if (broadFixture.lockfileBlobSha === null) throw new Error("expected broad historical uv lockfile");
+      const identity = {
+        ecosystem: "python",
+        manager: "uv",
+        profile: "uv_project_lockfile_only_v1",
+      };
+      const broadEvidence: RecordAcceptanceDependencyObservationInput = {
+        workspaceId: wsId,
+        recordId: broadFixture.draft.record.id,
+        compiledPackId: broadFixture.pack.id,
+        candidate: {
+          identity,
+          package: "HTTP_X",
+          dependencyKind: "optional:extra",
+          specifier: "https://example.invalid/httpx.whl",
+          currentVersion: "release-1",
+          targetVersion: "release-2",
+        },
+        runtime: {
+          identity,
+          disposition: "safe",
+          version: "python-release-3",
+          evidenceSha256: "1".repeat(64),
+        },
+        packageManager: {
+          disposition: "safe",
+          name: "uv",
+          version: "uv-release-preview",
+          profile: "uv_project_lockfile_only_v1",
+          updateArgv: ["uv", "lock", "--upgrade-package", "HTTP_X@release-2"],
+          evidenceSha256: "2".repeat(64),
+        },
+        manifest: { path: "services/api/pyproject.toml", blobSha: broadFixture.manifestBlobSha },
+        lockfile: {
+          disposition: "present",
+          path: "services/api/uv.lock",
+          blobSha: broadFixture.lockfileBlobSha,
+          evidenceSha256: "3".repeat(64),
+        },
+        baseline: { headSha: broadHeadSha },
+        security: {
+          identity,
+          disposition: "clear",
+          provider: "opaque",
+          reference: "opaque:pre-support-uv",
+          reportSha256: "4".repeat(64),
+        },
+      };
+      const broadHistorical = await appendHistoricalUnsupportedDependencyObservationV2(broadEvidence);
+      await expect(recordAcceptanceDependencyObservation(broadEvidence)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: {
+          eventId: broadHistorical.event.id,
+          status: "refused_unsupported_profile",
+          candidate: broadEvidence.candidate,
+        },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        security: { ...broadEvidence.security, reportSha256: "5".repeat(64) },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(recordAcceptanceDependencyObservation({
+        ...broadEvidence,
+        candidate: { ...broadEvidence.candidate, targetVersion: "release-3" },
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+      const events = await db.select().from(changeRecordEvents).where(and(
+        inArray(changeRecordEvents.recordId, [validFixture.draft.record.id, broadFixture.draft.record.id]),
+        eq(changeRecordEvents.stage, "dependency_observation"),
+      ));
+      expect(events).toHaveLength(2);
     });
 
     it("fails closed for npm command drift and rejects noncanonical new npm bodies without an event", async () => {

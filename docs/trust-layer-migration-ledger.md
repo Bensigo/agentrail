@@ -1,7 +1,8 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `2a2cd79c`, after merged PRs
-#1677–#1679 and the R9.2 outcome slice in PR #1680.
+Last reconciled: 2026-08-11 at main commit `66d3f3ad`, after merged PRs
+#1677–#1680. PR #1681 carries the bounded R10.1 dependency-observation
+slice described below.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -118,10 +119,36 @@ live human decision, authenticated browser run, or customer outcome has been
 observed. R9 remains **FAIL / not release-ready** because deployed/live proof
 and customer proof are still open.
 
+## R10 progress
+
+PR #1681 carries the bounded R10.1 source/test slice. It records one immutable
+dependency observation against the current authoritative Acceptance Record
+head cycle after revalidating the confirmed Contract, compiled Pack, source
+snapshot, manifest, lockfile, and exact-head tree custody under the existing
+PR lock. It derives the candidate identity server-side and records closed
+outcomes for observed evidence, unsafe runtime, lockfile refusal, baseline
+refusal, security refusal, and evidence that remains not proven.
+
+The trusted runner supplies bounded runtime and security evidence, but it
+cannot choose the repository, PR, head cycle, authority generation, Contract,
+status, or candidate fingerprint. The slice neither installs dependencies nor
+creates an issue, approval, queue entry, builder dispatch, pull request, or
+merge action. It does not extend the legacy dependency-watch or generic
+approval lanes.
+
+Local proof includes focused parser, route, and query tests; a fresh migrated
+PostgreSQL run covering replay, conflicts, refusal truth, source-custody drift,
+reconciliation, A→B→A, and head-advance races; the full database suite; package
+typechecks/builds; scoped lint; and independent adversarial review. No deployed
+runner, live OSV evidence acquisition, external-builder delivery, or customer
+dependency proposal has been observed. R10 remains **FAIL / not
+release-ready** until PR #1681 merges, R10.2 is closed, and deployed/live and
+customer proof gates are satisfied.
+
 ## Remaining canonical order
 
-The next implementation work is R10, then R11 and R12. Their canonical
-requirements remain:
+After the bounded R10.1 slice, the next implementation work is R10.2, R11,
+and R12. Their canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

@@ -3583,9 +3583,20 @@ export function validateReviewJobCorrectionPacketPayload(payload: unknown): payl
   });
 }
 
+type ReviewJobCorrectionPacketCustodyBinding = {
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repo: string;
+  prNumber: number;
+  expectedHeadSha: string;
+};
+
 function correctionPacketIdForSnapshotEvent(
   event: ChangeRecordEventRow,
-  input: AcceptanceContextPackSnapshotInput,
+  input: ReviewJobCorrectionPacketCustodyBinding,
   confirmedCriteria: ReadonlyMap<string, string>
 ): string | null {
   const payload = event.payloadRef;
@@ -3612,7 +3623,7 @@ function correctionPacketIdForSnapshotEvent(
 
 function correctionPacketPayloadsForSnapshotEvents(
   events: readonly ChangeRecordEventRow[],
-  input: AcceptanceContextPackSnapshotInput,
+  input: ReviewJobCorrectionPacketCustodyBinding,
   confirmedCriteria: ReadonlyMap<string, string>
 ): { packetIds: string[]; packets: Record<string, unknown>[] } | null {
   const pairs = events.map((event) => {
@@ -3627,6 +3638,168 @@ function correctionPacketPayloadsForSnapshotEvents(
   );
   if (new Set(ordered.map((pair) => pair.packetId)).size !== ordered.length) return null;
   return { packetIds: ordered.map((pair) => pair.packetId), packets: ordered.map((pair) => pair.payload) };
+}
+
+export type ReadCurrentAcceptanceCorrectionPacketsInput = {
+  workspaceId: string;
+  recordId: string;
+};
+
+export type CurrentAcceptanceCorrectionPackets = {
+  binding: {
+    workspaceId: string;
+    recordId: string;
+    reviewJobId: string;
+    repo: string;
+    prNumber: number;
+    headSha: string;
+    headCycleId: string;
+    authorityGeneration: number;
+    acceptanceContract: {
+      id: string;
+      version: number;
+      sha256: string;
+    };
+  };
+  packetIds: string[];
+  packetSetSha256: string;
+  correctionPacketPayloadSetSha256: string;
+  packets: Record<string, unknown>[];
+};
+
+export type ReadCurrentAcceptanceCorrectionPacketsNotReadyReason =
+  | "review_job_unavailable"
+  | "confirmed_contract_unavailable"
+  | "no_correction_packets"
+  | "invalid_packet_custody";
+
+export type ReadCurrentAcceptanceCorrectionPacketsResult =
+  | ({ kind: "current" } & CurrentAcceptanceCorrectionPackets)
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "not_ready"; reason: ReadCurrentAcceptanceCorrectionPacketsNotReadyReason };
+
+/**
+ * Returns only the immutable R8.1 packets for the Record's server-derived
+ * current authoritative head cycle. Historical packet events remain in the
+ * timeline for audit, but can never be selected by this operational read.
+ */
+export async function readCurrentAcceptanceCorrectionPackets(
+  input: ReadCurrentAcceptanceCorrectionPacketsInput
+): Promise<ReadCurrentAcceptanceCorrectionPacketsResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.recordId)) {
+    throw new Error("Current correction packet read requires only workspace and Record");
+  }
+
+  const candidate = (await db.select().from(changeRecords).where(and(
+    eq(changeRecords.id, input.recordId),
+    eq(changeRecords.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+  if (candidate.prNumber == null) return { kind: "not_current" };
+
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" };
+    if (record.repo !== candidate.repo || record.prNumber !== candidate.prNumber
+      || record.prNumber == null || !record.currentPrHeadAuthoritative
+      || typeof record.currentPrHeadSha !== "string" || !EXACT_SHA1.test(record.currentPrHeadSha)
+      || !isUuid(record.currentPrHeadCycleId)
+      || !record.headShas.includes(record.currentPrHeadSha)) {
+      return { kind: "not_current" };
+    }
+
+    const headSha = record.currentPrHeadSha;
+    const headCycleId = record.currentPrHeadCycleId;
+    const job = (await tx.select().from(reviewJobs).where(and(
+      eq(reviewJobs.id, headCycleId),
+      eq(reviewJobs.workspaceId, input.workspaceId),
+      eq(reviewJobs.repo, record.repo),
+      eq(reviewJobs.prNumber, record.prNumber),
+      eq(reviewJobs.headSha, headSha),
+    )).limit(1))[0];
+    if (!job) return { kind: "not_ready", reason: "review_job_unavailable" };
+
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, record.id),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    if (confirmedRows.length !== 1) {
+      return { kind: "not_ready", reason: "confirmed_contract_unavailable" };
+    }
+    const confirmed = confirmedRows[0]!;
+    const contract = projectConfirmedAcceptanceContract(confirmed.contract);
+    if (!contract) return { kind: "not_ready", reason: "invalid_packet_custody" };
+    const criteria = new Map(contract.acceptanceCriteria.map((criterion) => [criterion.id, criterion.text]));
+
+    const events = await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, record.id),
+      sql`${changeRecordEvents.eventKey} LIKE ${`review:correction:${headCycleId}:%`}`,
+    )).orderBy(asc(changeRecordEvents.eventKey));
+    if (events.length === 0) return { kind: "not_ready", reason: "no_correction_packets" };
+    if (events.length > 100) return { kind: "not_ready", reason: "invalid_packet_custody" };
+
+    const packetSet = correctionPacketPayloadsForSnapshotEvents(events, {
+      workspaceId: input.workspaceId,
+      recordId: record.id,
+      reviewJobId: job.id,
+      acceptanceContractId: confirmed.id,
+      acceptanceContractVersion: confirmed.version,
+      repo: record.repo,
+      prNumber: record.prNumber,
+      expectedHeadSha: headSha,
+    }, criteria);
+    if (!packetSet || packetSet.packetIds.length === 0) {
+      return { kind: "not_ready", reason: "invalid_packet_custody" };
+    }
+
+    let acceptanceContractDigest: string;
+    let packetPayloadSetDigest: string;
+    try {
+      acceptanceContractDigest = acceptanceContractSha256({
+        acceptanceContractId: confirmed.id,
+        acceptanceContractVersion: confirmed.version,
+        contract: confirmed.contract,
+      });
+      packetPayloadSetDigest = acceptanceCorrectionPacketPayloadSetSha256({ packets: packetSet.packets });
+    } catch {
+      return { kind: "not_ready", reason: "invalid_packet_custody" };
+    }
+
+    return {
+      kind: "current",
+      binding: {
+        workspaceId: record.workspaceId,
+        recordId: record.id,
+        reviewJobId: job.id,
+        repo: record.repo,
+        prNumber: record.prNumber,
+        headSha,
+        headCycleId,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        acceptanceContract: {
+          id: confirmed.id,
+          version: confirmed.version,
+          sha256: acceptanceContractDigest,
+        },
+      },
+      packetIds: packetSet.packetIds,
+      packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: packetSet.packetIds }),
+      correctionPacketPayloadSetSha256: packetPayloadSetDigest,
+      packets: packetSet.packets,
+    };
+  });
 }
 
 async function recheckWikiBaseIndex(

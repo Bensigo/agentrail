@@ -6,6 +6,7 @@ import {
   getRepositoryByName,
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
+  readCurrentAcceptanceCorrectionPackets,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 
@@ -22,6 +23,28 @@ type ConfirmedContract = {
   version: number;
   criteria: { id: string; text: string; userVisible: boolean }[];
 };
+
+type CorrectionPackets = Awaited<ReturnType<typeof readCurrentAcceptanceCorrectionPackets>>;
+
+function correctionPacketsForTimeline(
+  value: CorrectionPackets,
+  record: Awaited<ReturnType<typeof readChangeRecordTimelineByPr>> extends infer Timeline
+    ? Timeline extends { record: infer Record } ? Record : never
+    : never,
+): CorrectionPackets {
+  if (value.kind !== "current") return value;
+  const binding = value.binding;
+  return record.workspaceId === binding.workspaceId
+    && record.id === binding.recordId
+    && record.repo === binding.repo
+    && record.prNumber === binding.prNumber
+    && record.currentPrHeadAuthoritative === true
+    && record.currentPrHeadSha === binding.headSha
+    && record.currentPrHeadCycleId === binding.headCycleId
+    && record.currentPrHeadAuthorityGeneration === binding.authorityGeneration
+    ? value
+    : { kind: "not_current" };
+}
 
 function confirmedContract(contracts: Awaited<ReturnType<typeof readAcceptanceContracts>>): ConfirmedContract | null {
   const contract = contracts?.find((item) => item.status === "confirmed");
@@ -173,10 +196,21 @@ export async function POST(request: NextRequest) {
     if (!timeline) {
       return NextResponse.json({ found: false }, { status: 200 });
     }
-    const acceptanceContract = confirmedContract(await readAcceptanceContracts({
-      workspaceId: resolved.workspaceId,
-      recordId: timeline.record.id,
-    }));
+    const [contracts, currentCorrectionPackets] = await Promise.all([
+      readAcceptanceContracts({
+        workspaceId: resolved.workspaceId,
+        recordId: timeline.record.id,
+      }),
+      readCurrentAcceptanceCorrectionPackets({
+        workspaceId: resolved.workspaceId,
+        recordId: timeline.record.id,
+      }),
+    ]);
+    const acceptanceContract = confirmedContract(contracts);
+    const correctionPackets = correctionPacketsForTimeline(
+      currentCorrectionPackets,
+      timeline.record,
+    );
 
     const stageEvidence: StageEvidence[] = [];
     for (const event of timeline.events) {
@@ -203,6 +237,7 @@ export async function POST(request: NextRequest) {
         },
         stageEvidence,
         acceptanceContract,
+        correctionPackets,
       },
       { status: 200 }
     );

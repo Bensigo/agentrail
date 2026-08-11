@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
+  readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
 
@@ -25,6 +26,24 @@ export async function GET(
     if (!timeline) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+
+    const resolvedCorrectionPackets = await readCurrentAcceptanceCorrectionPackets({
+      workspaceId,
+      recordId,
+    });
+    const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
+      !timeline.record.currentPrHeadAuthoritative
+      || timeline.record.workspaceId !== resolvedCorrectionPackets.binding.workspaceId
+      || timeline.record.id !== resolvedCorrectionPackets.binding.recordId
+      || timeline.record.repo !== resolvedCorrectionPackets.binding.repo
+      || timeline.record.prNumber !== resolvedCorrectionPackets.binding.prNumber
+      || timeline.record.currentPrHeadSha !== resolvedCorrectionPackets.binding.headSha
+      || timeline.record.currentPrHeadCycleId !== resolvedCorrectionPackets.binding.headCycleId
+      || timeline.record.currentPrHeadAuthorityGeneration
+        !== resolvedCorrectionPackets.binding.authorityGeneration
+    )
+      ? { kind: "not_current" as const }
+      : resolvedCorrectionPackets;
 
     return NextResponse.json({
       record: {
@@ -52,11 +71,12 @@ export async function GET(
         at: event.at.toISOString(),
         createdAt: event.createdAt.toISOString(),
       })),
+      correctionPackets,
     });
   } catch (err) {
-    console.error("[change-records] failed to load timeline:", err);
+    console.error("[change-records] failed to load detail:", err);
     return NextResponse.json(
-      { error: "Failed to load change record timeline" },
+      { error: "Failed to load change record detail" },
       { status: 500 }
     );
   }

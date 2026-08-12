@@ -125,9 +125,6 @@ export default defineChannel({
         auth.attributes = {
           ...attributes,
           acceptanceIntakeId: intake.intakeId,
-          // Trusted provider-message identity for a later, separate channel
-          // confirmation. It is not supplied by the model.
-          acceptanceInboundSourceKey: normalized.sourceKey,
         };
       }
 

@@ -186,7 +186,6 @@ const EXPECTED_TOOL_FILES = [
   "execute_review_api.ts", // operational + ungated by design: performs one server-reserved same-origin GET/status check inside an isolated exact-head preview; target, descriptor, result, and receipt are server-bound
   "execute_review_data.ts", // operational + ungated by design: performs one server-reserved bounded JSON-scalar readback inside an isolated exact-head preview; target, descriptor, typed HMAC observations, and receipt are server-bound
   "execute_review_job.ts", // operational + ungated by design: replays one server-reserved preview-local POST and immediate bounded JSON readback; both endpoints, result, and custody are server-bound
-  "confirm_acceptance_contract.ts", // narrow channel confirmation: requires a post-draft inbound source message; no external execution
   "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_acceptance_intake.ts", // read-only compact, session-bound acceptance intake evidence
@@ -246,7 +245,6 @@ const UNGATED_ADVISORY_WRITES = [
   "save_investigation.ts",
   "record_verdict.ts",
   "draft_acceptance_contract.ts",
-  "confirm_acceptance_contract.ts", // human-gated by a distinct post-draft source-channel turn, verified server-side
 ];
 
 const EXPECTED_CHILD_PROCESS_SITES = [

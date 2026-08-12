@@ -118,7 +118,6 @@ import {
   deliverDiscordReply,
   resolveSessionAuthAttributes,
 } from "../lib/discord-followup.core.mjs";
-import { recordDeliveredChannelReply } from "../lib/acceptance_intake_reply.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 import {
   createAckOnWork,
@@ -207,7 +206,6 @@ export default discordChannel({
         startTyping: () => channel.discord.startTyping(),
         splitMessage: splitIntoChatMessages,
       });
-      await recordDeliveredChannelReply({ session: ctx?.session, channel: "discord", text: data.message, env: process.env, transport: fetch });
     },
   },
 });

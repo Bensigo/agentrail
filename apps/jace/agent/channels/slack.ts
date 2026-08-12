@@ -107,7 +107,6 @@
 import { slackChannel } from "eve/channels/slack";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { postSlackReply, resolveSlackReplyTeamId } from "../lib/slack_reply.core.mjs";
-import { recordDeliveredChannelReply } from "../lib/acceptance_intake_reply.core.mjs";
 
 // Stdlib `fetch`, narrowed to the `{ status }` shape slack_reply.core.mjs
 // expects — mirrors console.ts's/discord.ts's identical `realTransport`
@@ -171,7 +170,6 @@ export default slackChannel({
           transport: realTransport,
         });
       }
-      await recordDeliveredChannelReply({ session: ctx?.session, channel: "slack", text: data.message, env: process.env, transport: fetch });
     },
 
     // eve's default calls `channel.thread.post(...)` UNCAUGHT (verified:

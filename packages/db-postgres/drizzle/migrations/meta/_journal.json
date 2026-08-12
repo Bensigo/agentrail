@@ -695,6 +695,13 @@
       "when": 1792900000000,
       "tag": "0098_dependency_watch_source_inventory_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1793000000000,
+      "tag": "0099_dependency_watch_go_sumdb_note_custody",
+      "breakpoints": true
     }
   ]
 }

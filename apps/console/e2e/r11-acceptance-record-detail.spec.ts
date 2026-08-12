@@ -335,8 +335,11 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       },
     ]);
     await expect(page.getByText(state.observedFailure).first()).toBeVisible();
+    const currentCorrections = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Corrections (1)", exact: true }),
+    });
     await expect(
-      page.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
+      currentCorrections.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
     ).toHaveText("Keep the saved filter visible after reload and retain new exact-head evidence.");
     await expect(page.getByText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`)).toBeVisible();
     await expect(page.getByText("Rerun the persisted verification plan against the next exact head.")).toBeVisible();

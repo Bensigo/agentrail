@@ -492,7 +492,8 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     const body = await response.json() as {
       record: { currentPrHeadSha: string; currentPrHeadCycleId: string };
       correctionPackets: { kind: string; reason?: string };
-      criterionOutcomes: { kind: string };
+      criterionOutcomes: { kind: string; reason?: string };
+      gatedIssue: { kind: string; reason?: string };
     };
     expect(body.record.currentPrHeadSha).toBe(state.headA);
     expect(body.record.currentPrHeadCycleId).toBe(state.currentHeadCycleId);
@@ -500,7 +501,14 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       kind: "not_ready",
       reason: "no_correction_packets",
     });
-    expect(body.criterionOutcomes.kind).not.toBe("current");
+    expect(body.criterionOutcomes).toEqual({
+      kind: "not_ready",
+      reason: "verification_plan_unavailable",
+    });
+    expect(body.gatedIssue).toEqual({
+      kind: "not_ready",
+      reason: "verification_plan_unavailable",
+    });
 
     const oldArtifact = await owner.request.get(artifactPath(original));
     expect(oldArtifact.status()).toBe(409);
@@ -528,9 +536,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     expect(inspection.correctionPackets).toBe("not_ready");
     expect(inspection.correctionPacketReason).toBe("no_correction_packets");
     expect(inspection.criterionOutcomes).toBe("not_ready");
-    expect(inspection.criterionOutcomeReason).toBe("review_job_unavailable");
+    expect(inspection.criterionOutcomeReason).toBe("verification_plan_unavailable");
     expect(inspection.gatedIssue).toBe("not_ready");
-    expect(inspection.gatedIssueReason).toBe("review_job_unavailable");
+    expect(inspection.gatedIssueReason).toBe("verification_plan_unavailable");
     expect(inspection.requests).toBe(0);
     expect(inspection.publications).toBe(0);
     expect(inspection.approvals).toBe(0);

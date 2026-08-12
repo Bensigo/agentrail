@@ -572,7 +572,7 @@ def _primary_goal(
             for key in ("goal", "summary", "request", "originalUserWording"):
                 value = acceptance_contract.get(key)
                 if isinstance(value, str) and value.strip():
-                    goal = value.strip()
+                    goal = redact_text(value.strip()).text
                     break
         return {
             "summary": goal or f"Prepare auditable {_target_label(target_kind, target_number)} {phase} context.",

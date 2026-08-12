@@ -90,6 +90,33 @@ class AcceptanceRecordPackTests(unittest.TestCase):
             any(item["citation"].endswith("#open-questions") for item in saved["openQuestions"])
         )
 
+    def test_redacts_secrets_from_contract_derived_goal_in_json_and_markdown(self) -> None:
+        secrets = {
+            "goal": "sk-goal-secret-1234567890",
+            "summary": "sk-summary-secret-1234567890",
+            "request": "sk-request-secret-1234567890",
+            "originalUserWording": "sk-original-secret-1234567890",
+        }
+        contract = {key: f"Use this value {value}" for key, value in secrets.items()}
+
+        result = build_context_pack(
+            self.root,
+            "acceptance_record",
+            "record-redacted-goal",
+            "execute",
+            acceptance_contract=contract,
+            run_id="acceptance-redacted-goal",
+        )
+        saved = load_context_pack(self.root, result["packId"])
+        markdown = (self.root / result["markdownPath"]).read_text(encoding="utf-8")
+        serialized = json.dumps(saved, ensure_ascii=False)
+
+        for secret in secrets.values():
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(secret, markdown)
+        self.assertEqual(saved["goal"]["summary"], "Use this value [REDACTED:api_key]")
+        self.assertIn("Goal: Use this value [REDACTED:api_key]", markdown)
+
     def test_rejects_unconfirmed_or_missing_contract_input(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "confirmed contract"):
             build_context_pack(self.root, "acceptance_record", "record-123", "execute")

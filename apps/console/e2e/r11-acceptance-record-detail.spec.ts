@@ -509,8 +509,17 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     await expect(page.getByText("Current criterion outcomes are not available.")).toBeVisible();
     await expect(page.getByText("Current artifact receipts: Unknown")).toBeVisible();
     await expect(page.getByText("Current recorded outcome: Failed")).toHaveCount(0);
-    await expect(page.getByText(state.observedFailure)).toHaveCount(0);
-    await expect(page.getByText("Keep the saved filter visible after reload and retain new exact-head evidence.")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Corrections (1)", exact: true })).toHaveCount(0);
+    const unavailableCorrections = page.getByRole("heading", { name: "Corrections", exact: true })
+      .locator("xpath=ancestor::section[1]");
+    await expect(unavailableCorrections.getByText("No current corrections", { exact: true })).toBeVisible();
+    await expect(unavailableCorrections.getByText(
+      "No failed or not-proven correction packet is recorded for the current exact head and head cycle.",
+      { exact: true },
+    )).toBeVisible();
+    const lifecycle = page.getByRole("heading", { name: /^Lifecycle events \(\d+\)$/u })
+      .locator("xpath=ancestor::section[1]");
+    await expect(lifecycle.getByText(state.observedFailure)).toHaveCount(1);
     await owner.close();
 
     const inspection = await runFixture<FixtureInspection>("inspect", state);

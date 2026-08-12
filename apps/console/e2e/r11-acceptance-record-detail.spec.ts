@@ -335,7 +335,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       },
     ]);
     await expect(page.getByText(state.observedFailure).first()).toBeVisible();
-    await expect(page.getByText("Keep the saved filter visible after reload and retain new exact-head evidence.")).toBeVisible();
+    await expect(
+      page.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText("Keep the saved filter visible after reload and retain new exact-head evidence.");
     await expect(page.getByText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`)).toBeVisible();
     await expect(page.getByText("Rerun the persisted verification plan against the next exact head.")).toBeVisible();
     await expect(page.getByText("Current artifact receipts: 1")).toBeVisible();

@@ -334,15 +334,21 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
         outcome: "Current recorded outcome: Not testable",
       },
     ]);
-    await expect(page.getByText(state.observedFailure).first()).toBeVisible();
     const currentCorrections = page.locator("section").filter({
       has: page.getByRole("heading", { name: "Corrections (1)", exact: true }),
     });
     await expect(
+      currentCorrections.getByText("Observed", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText(state.observedFailure);
+    await expect(
       currentCorrections.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
     ).toHaveText("Keep the saved filter visible after reload and retain new exact-head evidence.");
-    await expect(page.getByText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`)).toBeVisible();
-    await expect(page.getByText("Rerun the persisted verification plan against the next exact head.")).toBeVisible();
+    await expect(
+      currentCorrections.getByText("Impact", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`);
+    await expect(
+      currentCorrections.getByText("Re-verification", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText("Rerun the persisted verification plan against the next exact head.");
     await expect(page.getByText("Current artifact receipts: 1")).toBeVisible();
     await expect(page.getByText(/Ask Jace to create the current correction issue/)).toBeVisible();
     await expect(page.getByRole("button", { name: /create.*issue/i })).toHaveCount(0);

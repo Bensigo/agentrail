@@ -153,7 +153,7 @@ export function RecompileButton({
         >
           {state.kind === "queued" && (
             <p className="text-xs text-[var(--green-11)]">
-              Queued — Jace&apos;s factory will recompile shortly
+              Queued — the repository wiki will be recompiled shortly
             </p>
           )}
           {state.kind === "already_pending" && (

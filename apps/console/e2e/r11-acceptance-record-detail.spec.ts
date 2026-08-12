@@ -271,6 +271,7 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       criterion: { id: "AC-1", snapshot: CRITERION_TEXT },
       expected: CRITERION_TEXT,
       observed: state.observedFailure,
+      impact: "The server-attested receipt does not prove the confirmed criterion on the exact head.",
       requiredCorrection: "Keep the saved filter visible after reload and retain new exact-head evidence.",
       scopeBoundary: `Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`,
       reverification: "Rerun the persisted verification plan against the next exact head.",
@@ -345,6 +346,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     ).toHaveText("Keep the saved filter visible after reload and retain new exact-head evidence.");
     await expect(
       currentCorrections.getByText("Impact", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText("The server-attested receipt does not prove the confirmed criterion on the exact head.");
+    await expect(
+      currentCorrections.getByText("Scope boundary", { exact: true }).locator("..").locator("dd"),
     ).toHaveText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`);
     await expect(
       currentCorrections.getByText("Re-verification", { exact: true }).locator("..").locator("dd"),

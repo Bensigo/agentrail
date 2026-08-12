@@ -1,11 +1,11 @@
 # Jace trust-layer migration ledger
 
 Last reconciled in this proof checkout: 2026-08-12 against the exact main tree
-at commit `9380c8e3` (PR #1724), after the R11.2 authenticated-browser proof
-lane merged. Publication must replay this bounded diff onto the then-current
-main; no later source state is claimed here. The bounded dependency source/test
-foundations are recorded below; canonical R10 completion and release proof
-remain open.
+at commit `9d80b70f52d8a386b215e0811b2777a21ee715de` (PR #1725). The
+one-time PR #1638 salvage source head before this ledger-only commit is
+`f8eee841908eeb45cc9e02782582ec4e5d24af2e`. The replacement PR description
+must bind this ledger to its final exact head and CI result; no later source
+state is claimed here. Canonical R10 completion and release proof remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -21,6 +21,138 @@ criteria; it does not replace them with implementation history.
 
 Source/test or local runtime proof must never be described as deployed, live,
 or customer proof.
+
+## One-time PR #1638 salvage reconciliation
+
+This is the terminal inventory for original draft PR #1638. Future work must
+use this section instead of reopening or rediscovering that draft.
+
+- Current-main base: `9d80b70f52d8a386b215e0811b2777a21ee715de`.
+- Original draft head: `1fe3729db53dd01f1405ec189e4e33e118057c02`.
+- Merge base: `72c4b82892d2ee4da01d94238f7526a80537f3a6`.
+- Original final diff: 231 commits, 355 files, 23,742 insertions, and 18,055
+  deletions.
+- Clean replacement source head before this ledger-only commit:
+  `f8eee841908eeb45cc9e02782582ec4e5d24af2e`.
+
+Do not restart, update, or merge PR #1638. The replacement preserves current
+main on conflict and carries only the compatible missing behavior below.
+
+### Absorbed value
+
+- **Acceptance Intake lifecycle.** Replayed `cc9a4bb0`, `058fcea1`,
+  `319affd8`, and `e913c16e`, plus the safe part of `3209b018`. Hosted channel
+  turns retain trusted Intake/source-message bindings; Jace can create a draft,
+  append delivered replies, read a bounded resume projection, and request the
+  existing human approval without confirming a Contract itself.
+- **Immutable Brief provenance.** Replayed `0b454670`, `76f62704`, and
+  `57d0dc24`. One Brief can bind multiple Records; each Record retains one
+  deterministic Brief snapshot, SHA-256, provenance, and exact confirmed
+  Contract identity. Snapshot reads use repeatable-read isolation. The query is
+  fail-closed and tested, but no current-main production transition safely
+  supplies the Brief identity yet, so automatic binding remains named source
+  work rather than an implied runtime claim.
+- **Local Acceptance Record Context Packs.** Replayed the compatible local
+  compiler behavior from `989e3b7c`, `a4f7b8cc`, `d8dc8601`, `9517d8e6`, and
+  `2560b1a1`: an `acceptance_record` target, confirmed Contract input, bounded
+  cited/redacted retrieval, exclusions/gaps, deterministic hash, custody,
+  freshness, JSON, and Markdown. It does not replace current main's newer
+  exact-head Pack database model or claim a hosted worker.
+- **Offline Acceptance Case evaluator.** Replayed the manifest-bound corpus,
+  four isolated arms, independent scorecards, exact-head/environment proof
+  validation, tri-state promotion, deterministic report publisher, tests, and
+  evaluation PRD from `81468b7d` through `90b9c404`. It provides offline
+  evaluation infrastructure only; it does not prove a product AC, live builder,
+  customer outcome, or market value.
+- **Operating authority.** Retained the trust-layer `AGENTS.md`, reconciled
+  `CONTEXT.md`, and durable ADR 0012 decision while removing stale
+  implementation inventories that conflict with this ledger.
+
+### Console UI disposition
+
+The production Console was reported to still show the old experience. Source
+comparison is not deployment proof; these rows state only what the replacement
+branch changes.
+
+| PR #1638 UI family | Disposition | Exact current surface |
+| --- | --- | --- |
+| Workspace Context Packs index and navigation | **Absorbed.** Main had no workspace index route. The replacement adds a bounded current-custody list and restores the Evidence & context navigation link. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/context-packs/page.tsx`; `apps/console/app/components/sidebar-nav.ts` |
+| Brief-to-Acceptance transition | **Absorbed and adapted.** The panel lists immutable Record links without claiming confirmation. It moved out of the Next.js page module so the current App Router type contract remains valid. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/acceptance-brief-transition-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/page.tsx` |
+| Chat Acceptance Context strip | **Absorbed.** The authenticated chat route derives its Intake from the member's server-owned conversation identity and returns only bounded Intake/Record/Brief navigation. The client cannot select those identities. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/acceptance-context-strip.tsx`; `apps/console/app/api/v1/workspaces/[workspaceId]/chat/route.ts` |
+| Acceptance list, Record detail, criterion artifacts, gated issue, decision controls, and Home summary | **Excluded as superseded in source.** Current main has the stricter tenant-scoped, occurrence-aware, artifact-proxy-safe R11 projections. Replaying the old pages would weaken current custody. This is not a claim that production has deployed them. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/page.tsx` |
+| Connector/factory/review-gate navigation and product copy | **Excluded as obsolete or non-migration.** The old route catalog conflicts with the current Acceptance/Changes-first navigation. | `apps/console/app/components/sidebar-nav.ts` |
+
+### Explicit exclusions
+
+- The old Intake direct-confirm endpoint was not carried forward. It bypassed
+  current main's human approval resolver. The replacement only creates an
+  approval request from a distinct trusted post-draft inbound message.
+- The old Intake Context Pack admission/claim/report worker and compilation
+  tables were not carried forward. Their routes are absent on current main and
+  their metadata shape is weaker than the current exact-head Context Pack
+  snapshot and compiled-Pack custody.
+- Old direct `agent_mcp` credentials/scopes, direct Intake/Record/Pack delivery
+  routes, and caller-selected task locators were not carried forward. Current
+  main keeps server-selected, credential-bound read/ack seams.
+- Old evidence-review tables, parallel reviewer worker architecture, and
+  deletion of the active `review_job`/executor lanes were not carried forward.
+  Current main's exact-head review, criterion execution, artifact, correction,
+  human-decision, and signed-merge custody is newer and stricter.
+- Legacy factory/task/product surfaces, stale schemas/migrations, old
+  deployment sidecars, and the PR's marketing rewrite were not carried forward.
+  Marketing is R12.1 work and remains outside this salvage implementation.
+- Non-migration support edits and aliases with no current consumer were not
+  carried forward.
+
+### Exact-head AC classification
+
+These classifications apply to the replacement source head named above. An
+`absorbed-and-proven in this PR` row means the named bounded source/test
+contribution is present and verified; it does not convert missing deployed or
+customer evidence into proof. An `already proven on main` row is not reopened
+by this salvage. `awaiting deployed/live/customer proof` is a release gap, not
+a source regression.
+
+| AC | Canonical requirement | Classification | Exact boundary after salvage |
+| --- | --- | --- | --- |
+| R1.1 | Workspace Record and versioned Contract retain complete intent, provenance, criteria, boundaries, and codebase references. | `absorbed-and-proven in this PR` | Intake draft/readback/reply and immutable Brief-binding primitives are source/test proven. Automatic production Brief binding is still not wired; no live request-to-outcome Record is claimed. |
+| R1.2 | Append-only Record lineage joins Packs, builder, PR heads, evidence, decision, and post-merge facts without issue-keying. | `already proven on main` | New reply/binding custody is additive. Existing exact-head event and outcome lineage remains authoritative. |
+| R2.1 | Primary chat, scoped MCP, and Console fallback use the same Record/approval seam. | `absorbed-and-proven in this PR` | Chat now projects the canonical Intake/Record/Brief seam, and Jace uses the existing approval route. No deployed channel or MCP customer run is claimed. |
+| R2.2 | Slack/Discord and other channels share that model instead of creating another acceptance path. | `absorbed-and-proven in this PR` | Console, Slack, Discord, and Telegram retain delivered outbound reply evidence through the same bound Intake helper. Live provider proof is missing. |
+| R3.1 | Authenticated MCP exposes bounded central Record/Contract/Pack/status/correction reads. | `already proven on main` | Old direct MCP write routes were intentionally excluded. Live customer MCP use remains separate. |
+| R3.2 | MCP separates read/mutation and exposes no merge, deploy, shell, filesystem, or unrestricted source authority. | `already proven on main` | The salvaged tools remain session-bound; the no-second-write-path suite covers the expanded tool set. |
+| R4.1 | An Acceptance Record Pack carries Contract/questions, bounded authoritative context, exclusions/gaps, custody/freshness/redaction, budget, and compiler version. | `absorbed-and-proven in this PR` | The compatible local compiler is restored and focused-tested. The obsolete hosted worker was excluded; current-main central Pack custody remains authoritative. |
+| R4.2 | JSON/Markdown Pack representations reach only the selected builder and delivery is not implementation proof. | `already proven on main` | Local compiler outputs both forms. No real external builder retrieved them in this PR. |
+| R5.1 | Manual/MCP/GitHub discovery and explicit human disambiguation safely select a Record. | `already proven on main` | No PR #1638 correlation path replaced current main. |
+| R5.2 | Attachment and evidence bind workspace/repo/PR/head and invalidate stale heads. | `already proven on main` | Current occurrence-aware exact-head custody is preserved. |
+| R6.1 | Review retains Contract version, exact head/diff, criterion evidence/refusal, risk/environment, and verifier metadata. | `already proven on main` | Offline evaluator is separate post-MVP evidence infrastructure and does not replace the product review. |
+| R6.2 | Terminal states are exactly proven/failed/not_proven/not_testable and required non-proof blocks. | `already proven on main` | Old review architecture was excluded; current blocking semantics remain. |
+| R7.1 | Verification uses an existing preview, bounded isolated exact-head boot, or explicit not_testable, with cleanup. | `already proven on main` | No old sidecar or runtime path replaces current preview/executor custody. |
+| R7.2 | UI/API/data/job proof is safe, criterion-specific, and retains bounded artifacts. | `already proven on main` | CI/local runtime evidence remains main evidence; deployed safe-preview proof remains separate. |
+| R8.1 | Failed/unproven required criteria create evidence-bound correction packets. | `already proven on main` | No correction implementation was replayed. |
+| R8.2 | Correction retrieval is bounded through MCP/chat/Console and issue creation is gated. | `already proven on main` | The salvaged chat strip is navigation only and creates no second correction path. |
+| R9.1 | Human accept/rework/reject/revert/unknown decisions remain explicit and Jace never merges. | `already proven on main` | No old decision writer or merge authority was replayed. |
+| R9.2 | Effort/outcome metrics preserve denominators and known/unknown samples. | `already proven on main` | Offline evaluator scorecards are additive and do not relabel product outcomes. |
+| R10.1 | Dependency observations use the R1-R9 spine and refuse unsafe runtime, lockfile, baseline, or security evidence. | `still incomplete source work` | This salvage does not change the accepted manager matrix. Required unsupported managers/canonical callers remain open. |
+| R10.2 | Human-approved dependency work produces a bounded external-builder Pack or explicit optional managed route and re-enters exact-head review. | `still incomplete source work` | Current safe Pack foundation remains; end-to-end supported-manager delivery/re-entry depends on R10.1 completion. |
+| R11.1 | Primary Console is Acceptance/Changes-first and answers intent, context, PR/head, proof, unknowns, decision, and outcome. | `awaiting deployed/live/customer proof` | Current-main source remains authoritative. Production was reported old; no authenticated deployment proof was available in this checkout. |
+| R11.2 | List/detail/timeline, Contract/Pack, evidence/artifacts, corrections, decisions, and honest metrics are accessible without factory primacy. | `absorbed-and-proven in this PR` | Context Pack index, Brief transition, and Chat context are restored around current main's stronger Record surfaces. Source/tests are proven; deployed/live and customer proof are missing. |
+| R12.1 | Landing tells the ordered Trust Layer story without factory/codegen/auto-merge/live-looking claims. | `still incomplete source work` | The known copy regression remains owner-held and outside this salvage. The PR #1638 marketing rewrite was not used as an implicit R12 fix. |
+| R12.2 | Technical docs retain optional adapters and pricing remains an honest team experiment. | `awaiting deployed/live/customer proof` | Current-main source/test closure is preserved; no hosted commercial or customer proof is claimed. |
+
+### Next queue after salvage
+
+1. **First actual unfinished AC: R10.1.** Continue the accepted-manager matrix
+   and authenticated evidence callers. Every unsupported manager remains
+   `refused_unsupported_profile`; no weaker PR #1638 adapter is reusable.
+2. **Then R10.2.** Prove an approved supported-manager Pack reaches one selected
+   external builder and re-enters the existing exact-head review path.
+3. **R11 proof lane.** Deploy the replacement Console source, then run an
+   authenticated production journey over Changes, Context Packs, Brief
+   transition, Chat context, artifact access/refusal, and decision controls.
+   Customer proof remains separate.
+4. **R12.1 remains open but outside this salvage execution.** Do not silently
+   absorb it into UI or marketing work.
 
 ## R8 exit reconciliation
 

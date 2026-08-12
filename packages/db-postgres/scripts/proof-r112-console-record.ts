@@ -338,7 +338,7 @@ async function seed(): Promise<ProofState> {
       previewUrl,
       uiSteps: plan.uiSteps,
     };
-    const observedFailure = "The exact-head browser did not observe Saved filters after reload; the retained screenshot proves the failing state only.";
+    const observedFailure = "The deterministic browser did not observe the planned text \"Saved filters\" on the exact-head preview; the failing state was retained as the decisive screenshot.";
     const result = {
       ...attempt,
       kind: "review_job_ui_execution_result",

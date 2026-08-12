@@ -533,7 +533,7 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     expect(inspection.criterionOutcomes).toBe("not_ready");
     expect(inspection.criterionOutcomeReason).toBe("verification_plan_unavailable");
     expect(inspection.gatedIssue).toBe("not_ready");
-    expect(inspection.gatedIssueReason).toBe("verification_plan_unavailable");
+    expect(inspection.gatedIssueReason).toBe("criterion_outcome_bundle_not_recorded");
     expect(inspection.requests).toBe(0);
     expect(inspection.publications).toBe(0);
     expect(inspection.approvals).toBe(0);

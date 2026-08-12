@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   readAcceptanceContracts,
+  readAcceptanceIntake,
   recordApprovalRequest,
   validateAcceptanceContract,
 } from "@agentrail/db-postgres";
@@ -12,25 +13,43 @@ import {
   sendTelegramMessage,
 } from "../../workspaces/[workspaceId]/connectors/secret/telegram";
 
-type ConfirmationRequest = {
+type DirectConfirmationRequest = {
   eveSessionId: string;
   recordId: string;
   acceptanceContractId: string;
   idempotencyKey: string;
 };
 
-function isConfirmationRequest(value: unknown): value is ConfirmationRequest {
+type IntakeConfirmationRequest = {
+  eveSessionId: string;
+  intakeId: string;
+  version: number;
+  confirmationSourceKey: string;
+};
+
+function isConfirmationRequest(
+  value: unknown,
+): value is DirectConfirmationRequest | IntakeConfirmationRequest {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
-  return (
-    typeof body["eveSessionId"] === "string" &&
-    body["eveSessionId"].length > 0 &&
+  if (typeof body["eveSessionId"] !== "string" || body["eveSessionId"].length === 0) {
+    return false;
+  }
+  const direct =
     typeof body["recordId"] === "string" &&
     body["recordId"].length > 0 &&
     typeof body["acceptanceContractId"] === "string" &&
     body["acceptanceContractId"].length > 0 &&
     typeof body["idempotencyKey"] === "string" &&
-    body["idempotencyKey"].length > 0
+    body["idempotencyKey"].length > 0;
+  if (direct) return true;
+  return (
+    typeof body["intakeId"] === "string" &&
+    body["intakeId"].length > 0 &&
+    Number.isInteger(body["version"]) &&
+    (body["version"] as number) > 0 &&
+    typeof body["confirmationSourceKey"] === "string" &&
+    body["confirmationSourceKey"].length > 0
   );
 }
 
@@ -92,7 +111,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Body must have eveSessionId, recordId, acceptanceContractId, and idempotencyKey strings",
+          "Body must have either the bound Intake confirmation fields or eveSessionId, recordId, acceptanceContractId, and idempotencyKey strings",
       },
       { status: 400 }
     );
@@ -103,11 +122,49 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  let recordId: string;
+  let contractId: string;
+  let idempotencyKey: string;
+  if ("intakeId" in body) {
+    const intake = await readAcceptanceIntake({
+      workspaceId: session.workspaceId,
+      intakeId: body.intakeId,
+    });
+    const sourceMessage = intake?.messages.find(
+      (message) =>
+        message.direction === "inbound" &&
+        message.sourceKey === body.confirmationSourceKey,
+    );
+    if (!intake?.intake.recordId || !sourceMessage) {
+      return NextResponse.json({ error: "Acceptance Intake confirmation not found" }, { status: 404 });
+    }
+    const contracts = await readAcceptanceContracts({
+      workspaceId: session.workspaceId,
+      recordId: intake.intake.recordId,
+    });
+    const draft = contracts?.find(
+      (item) => item.version === body.version && item.status === "draft",
+    );
+    if (!draft || sourceMessage.createdAt <= draft.createdAt) {
+      return NextResponse.json(
+        { error: "Confirmation must come from a new inbound channel message after this draft" },
+        { status: 409 },
+      );
+    }
+    recordId = intake.intake.recordId;
+    contractId = draft.id;
+    idempotencyKey = `acceptance-intake:${body.intakeId}:contract:${body.version}`;
+  } else {
+    recordId = body.recordId;
+    contractId = body.acceptanceContractId;
+    idempotencyKey = body.idempotencyKey;
+  }
+
   const contracts = await readAcceptanceContracts({
     workspaceId: session.workspaceId,
-    recordId: body.recordId,
+    recordId,
   });
-  const contract = contracts?.find((item) => item.id === body.acceptanceContractId);
+  const contract = contracts?.find((item) => item.id === contractId);
   if (!contract || contract.status !== "draft") {
     return NextResponse.json({ error: "Acceptance Contract not found" }, { status: 404 });
   }
@@ -120,7 +177,7 @@ export async function POST(request: NextRequest) {
 
   const toolInput = {
     kind: "acceptance_contract_confirmation",
-    recordId: body.recordId,
+    recordId,
     acceptanceContractId: contract.id,
     version: contract.version,
     // This is a server-selected view of the persisted draft. It gives the
@@ -148,7 +205,7 @@ export async function POST(request: NextRequest) {
     chatIdentityId: session.chatIdentityId ?? undefined,
     sessionId: session.id,
     eveSessionId: body.eveSessionId,
-    requestId: body.idempotencyKey,
+    requestId: idempotencyKey,
     toolName: "confirm_acceptance_contract",
     toolInput,
     approveOptionId: "approve",

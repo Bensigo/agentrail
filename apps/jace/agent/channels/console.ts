@@ -67,6 +67,7 @@ import {
   workPhraseFor,
   isProactiveTurn,
 } from "../lib/ack-on-work.core.mjs";
+import { recordDeliveredChannelReply } from "../lib/acceptance_intake_reply.core.mjs";
 
 const ack = createAckOnWork();
 const convoKey = (ctx: { session?: { id?: string } }) =>
@@ -167,6 +168,7 @@ export default defineChannel<ConsoleState>({
         env: process.env,
         transport: realTransport,
       });
+      await recordDeliveredChannelReply({ session: ctx?.session, channel: "console", text: data.message, env: process.env, transport: fetch });
     },
   },
 });

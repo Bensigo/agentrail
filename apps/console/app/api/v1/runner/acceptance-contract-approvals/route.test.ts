@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   readAcceptanceContracts: vi.fn(),
+  readAcceptanceIntake: vi.fn(),
   recordApprovalRequest: vi.fn(),
   validateAcceptanceContract: vi.fn(),
 }));
@@ -16,6 +17,7 @@ vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
 import {
   getJaceSessionByEveSessionId,
   readAcceptanceContracts,
+  readAcceptanceIntake,
   recordApprovalRequest,
   validateAcceptanceContract,
 } from "@agentrail/db-postgres";
@@ -34,6 +36,7 @@ const draft = {
   recordId: "record-1",
   version: 2,
   status: "draft",
+  createdAt: new Date("2026-08-06T10:00:00.000Z"),
   contract: {
     originalRequest: "Add saved filters",
     normalizedRequirements: ["Users can save filters"],
@@ -64,6 +67,10 @@ beforeEach(() => {
   process.env["JACE_CONSOLE_TOKEN"] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(session as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([draft] as never);
+  vi.mocked(readAcceptanceIntake).mockResolvedValue({
+    intake: { recordId: "record-1" },
+    messages: [{ direction: "inbound", sourceKey: "message-2", createdAt: new Date("2026-08-06T10:02:00.000Z") }],
+  } as never);
   vi.mocked(validateAcceptanceContract).mockReturnValue({ ok: true });
   vi.mocked(recordApprovalRequest).mockResolvedValue({
     created: true,
@@ -141,5 +148,40 @@ describe("POST /api/v1/runner/acceptance-contract-approvals", () => {
     const response = await POST(request(body));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ approvalId: "approval-1", status: "approved" });
+  });
+
+  it("derives the approval binding from the trusted Intake and post-draft source message", async () => {
+    const response = await POST(request({
+      eveSessionId: "eve-1",
+      intakeId: "intake-1",
+      version: 2,
+      confirmationSourceKey: "message-2",
+    }));
+
+    expect(response.status).toBe(201);
+    expect(readAcceptanceIntake).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      intakeId: "intake-1",
+    });
+    expect(recordApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "acceptance-intake:intake-1:contract:2",
+      acceptanceContractId: "contract-1",
+    }));
+  });
+
+  it("rejects a pre-draft Intake source message before recording approval", async () => {
+    vi.mocked(readAcceptanceIntake).mockResolvedValue({
+      intake: { recordId: "record-1" },
+      messages: [{ direction: "inbound", sourceKey: "message-2", createdAt: new Date("2026-08-06T09:59:00.000Z") }],
+    } as never);
+    const response = await POST(request({
+      eveSessionId: "eve-1",
+      intakeId: "intake-1",
+      version: 2,
+      confirmationSourceKey: "message-2",
+    }));
+
+    expect(response.status).toBe(409);
+    expect(recordApprovalRequest).not.toHaveBeenCalled();
   });
 });

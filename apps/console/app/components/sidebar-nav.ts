@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Target,
   FileText,
+  Layers3,
   SearchCode,
   History,
 } from "lucide-react";
@@ -135,6 +136,7 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // still gets the page, showing the honest "no wiki compiled yet" empty
     // state rather than disappearing (spec §4.5 empty state).
     { label: "Wiki", href: "wiki", icon: BookOpen },
+    { label: "Context Packs", href: "context-packs", icon: Layers3 },
     { label: "Failures", href: "failures", icon: AlertTriangle },
   ],
 };

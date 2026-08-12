@@ -8100,6 +8100,78 @@ export async function resolveAcceptanceCompiledContextPack(
   return rows[0]?.pack ?? null;
 }
 
+const ACCEPTANCE_CONTEXT_PACK_INDEX_DEFAULT_LIMIT = 100;
+const ACCEPTANCE_CONTEXT_PACK_INDEX_MAX_LIMIT = 200;
+
+export type AcceptanceContextPackIndexItem = {
+  id: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  compilerVersion: string;
+  policyVersion: string;
+  createdAt: Date;
+};
+
+function parseAcceptanceContextPackIndexInput(
+  input: unknown,
+): { workspaceId: string; limit: number } {
+  if (!isRecord(input)
+    || !Object.keys(input).every((key) => key === "workspaceId" || key === "limit")
+    || !hasOwn(input, "workspaceId") || !isUuid(input["workspaceId"])
+    || (hasOwn(input, "limit")
+      && (!Number.isSafeInteger(input["limit"])
+        || (input["limit"] as number) < 1
+        || (input["limit"] as number) > ACCEPTANCE_CONTEXT_PACK_INDEX_MAX_LIMIT))) {
+    throw new Error("Context Pack index requires only workspace and bounded limit");
+  }
+  return {
+    workspaceId: input["workspaceId"],
+    limit: (input["limit"] as number | undefined) ?? ACCEPTANCE_CONTEXT_PACK_INDEX_DEFAULT_LIMIT,
+  };
+}
+
+/**
+ * Lists metadata for compiled, admitted Packs while retaining the canonical
+ * snapshot-to-Record binding. Pack source content is never returned here.
+ */
+export async function listAcceptanceContextPacksForWorkspace(
+  input: { workspaceId: string; limit?: number },
+): Promise<AcceptanceContextPackIndexItem[]> {
+  const parsed = parseAcceptanceContextPackIndexInput(input);
+  return db
+    .select({
+      id: acceptanceCompiledContextPacks.id,
+      recordId: acceptanceContextPackSnapshots.recordId,
+      repo: acceptanceContextPackSnapshots.repo,
+      prNumber: acceptanceContextPackSnapshots.prNumber,
+      compilerVersion: acceptanceCompiledContextPacks.compilerVersion,
+      policyVersion: acceptanceCompiledContextPacks.policyVersion,
+      createdAt: acceptanceCompiledContextPacks.createdAt,
+    })
+    .from(acceptanceCompiledContextPacks)
+    .innerJoin(
+      acceptanceContextPackSnapshots,
+      and(
+        eq(acceptanceCompiledContextPacks.sourceSnapshotId, acceptanceContextPackSnapshots.id),
+        eq(acceptanceCompiledContextPacks.workspaceId, acceptanceContextPackSnapshots.workspaceId),
+      ),
+    )
+    .innerJoin(
+      changeRecords,
+      and(
+        eq(changeRecords.id, acceptanceContextPackSnapshots.recordId),
+        eq(changeRecords.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+      ),
+    )
+    .where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceContextPackSnapshots.status, "admitted"),
+    ))
+    .orderBy(desc(acceptanceCompiledContextPacks.createdAt))
+    .limit(parsed.limit);
+}
+
 export type AcceptanceDependencyObservationStatus =
   | "observed"
   | "refused_unsupported_profile"

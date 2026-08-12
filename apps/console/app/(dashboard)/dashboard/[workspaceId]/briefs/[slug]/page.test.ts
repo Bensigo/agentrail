@@ -1,11 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AcceptanceBriefBindingRead } from "@agentrail/db-postgres";
-import { AcceptanceBriefTransitionPanel } from "./page";
-
-vi.mock("../../../../../../lib/cached", () => ({
-  getMembership: vi.fn(),
-  getSession: vi.fn(),
-}));
+import { AcceptanceBriefTransitionPanel } from "./acceptance-brief-transition-panel";
 
 interface ReactElementLike {
   props: Record<string, unknown>;

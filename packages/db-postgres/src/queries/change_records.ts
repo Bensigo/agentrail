@@ -3228,6 +3228,7 @@ export async function linkAcceptanceBriefToRecord(
   }
 
   return db.transaction(async (tx) => {
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
     await tx.execute(sql`
       SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:record:${input.workspaceId}:${input.recordId}`}))
     `);

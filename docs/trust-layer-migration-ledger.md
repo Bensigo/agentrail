@@ -3,7 +3,7 @@
 Last reconciled in this proof checkout: 2026-08-12 against the exact main tree
 at commit `9d80b70f52d8a386b215e0811b2777a21ee715de` (PR #1725). The
 one-time PR #1638 salvage source head before this ledger-only commit is
-`f8eee841908eeb45cc9e02782582ec4e5d24af2e`. The replacement PR description
+`cf94888dd7339e56565dc3a3bbd32a4abfb1a9b7`. The replacement PR description
 must bind this ledger to its final exact head and CI result; no later source
 state is claimed here. Canonical R10 completion and release proof remain open.
 
@@ -33,18 +33,17 @@ use this section instead of reopening or rediscovering that draft.
 - Original final diff: 231 commits, 355 files, 23,742 insertions, and 18,055
   deletions.
 - Clean replacement source head before this ledger-only commit:
-  `f8eee841908eeb45cc9e02782582ec4e5d24af2e`.
+  `cf94888dd7339e56565dc3a3bbd32a4abfb1a9b7`.
 
 Do not restart, update, or merge PR #1638. The replacement preserves current
 main on conflict and carries only the compatible missing behavior below.
 
 ### Absorbed value
 
-- **Acceptance Intake lifecycle.** Replayed `cc9a4bb0`, `058fcea1`,
-  `319affd8`, and `e913c16e`, plus the safe part of `3209b018`. Hosted channel
-  turns retain trusted Intake/source-message bindings; Jace can create a draft,
-  append delivered replies, read a bounded resume projection, and request the
-  existing human approval without confirming a Contract itself.
+- **Acceptance Intake lifecycle.** Replayed `cc9a4bb0` and `e913c16e`. Hosted
+  channel turns retain a trusted Intake binding; Jace can create a draft and
+  read a bounded resume projection without confirming a Contract itself. The
+  weaker outbound-reply and channel-confirmation paths are excluded below.
 - **Immutable Brief provenance.** Replayed `0b454670`, `76f62704`, and
   `57d0dc24`. One Brief can bind multiple Records; each Record retains one
   deterministic Brief snapshot, SHA-256, provenance, and exact confirmed
@@ -57,7 +56,9 @@ main on conflict and carries only the compatible missing behavior below.
   `2560b1a1`: an `acceptance_record` target, confirmed Contract input, bounded
   cited/redacted retrieval, exclusions/gaps, deterministic hash, custody,
   freshness, JSON, and Markdown. It does not replace current main's newer
-  exact-head Pack database model or claim a hosted worker.
+  exact-head Pack database model or claim a hosted worker. Salvage fix
+  `991ecb82` applies the same redaction policy to the derived Pack goal, and
+  `8b17bc1f` keeps the workspace index on current authoritative head custody.
 - **Offline Acceptance Case evaluator.** Replayed the manifest-bound corpus,
   four isolated arms, independent scorecards, exact-head/environment proof
   validation, tri-state promotion, deterministic report publisher, tests, and
@@ -76,24 +77,42 @@ branch changes.
 
 | PR #1638 UI family | Disposition | Exact current surface |
 | --- | --- | --- |
-| Workspace Context Packs index and navigation | **Absorbed.** Main had no workspace index route. The replacement adds a bounded current-custody list and restores the Evidence & context navigation link. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/context-packs/page.tsx`; `apps/console/app/components/sidebar-nav.ts` |
-| Brief-to-Acceptance transition | **Absorbed and adapted.** The panel lists immutable Record links without claiming confirmation. It moved out of the Next.js page module so the current App Router type contract remains valid. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/acceptance-brief-transition-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/page.tsx` |
-| Chat Acceptance Context strip | **Absorbed.** The authenticated chat route derives its Intake from the member's server-owned conversation identity and returns only bounded Intake/Record/Brief navigation. The client cannot select those identities. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/acceptance-context-strip.tsx`; `apps/console/app/api/v1/workspaces/[workspaceId]/chat/route.ts` |
-| Acceptance list, Record detail, criterion artifacts, gated issue, decision controls, and Home summary | **Excluded as superseded in source.** Current main has the stricter tenant-scoped, occurrence-aware, artifact-proxy-safe R11 projections. Replaying the old pages would weaken current custody. This is not a claim that production has deployed them. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/page.tsx` |
-| Connector/factory/review-gate navigation and product copy | **Excluded as obsolete or non-migration.** The old route catalog conflicts with the current Acceptance/Changes-first navigation. | `apps/console/app/components/sidebar-nav.ts` |
+| Workspace Context Packs index, navigation, and breadcrumb (`181c372b`) | **Absorbed and adapted.** Main had no workspace index route. The replacement adds a bounded current-authoritative-custody list, a Context Packs item under the newer Engine room navigation section, and the matching breadcrumb without replaying old connector/channel labels. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/context-packs/page.tsx`; `apps/console/app/components/sidebar-nav.ts`; `apps/console/app/components/breadcrumb-label.ts` |
+| Brief-to-Acceptance transition (`38bff08a`, `5e89ebcb`) | **Absorbed and adapted.** The panel lists immutable Record links without claiming confirmation. It moved out of the Next.js page module so the current App Router type contract remains valid. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/acceptance-brief-transition-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/page.tsx` |
+| Chat Acceptance Context strip (`316a90e0`, `9e9797b6`) | **Absorbed.** The authenticated chat route derives its Intake from the member's server-owned conversation identity and returns only bounded Intake/Record/Brief navigation. The client cannot select those identities. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/acceptance-context-strip.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/chat-thread.tsx`; `apps/console/app/api/v1/workspaces/[workspaceId]/chat/route.ts` |
+| Wiki recompile terminology (`7f21c5ea`) | **Absorbed.** The queued state now names repository Wiki compilation instead of presenting Jace as a factory. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/wiki/components/recompile-button.tsx` |
+| Home Acceptance Evidence (`be45aea9`) | **Excluded as superseded in source.** Current main's summary list is tenant-scoped and preserves current Record state instead of replaying the old evidence panel. | Old: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-evidence-panel.tsx`; current: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-record-summary-list.tsx` |
+| Home outcome summary/ranges (`52d9e454`, `435c27fe`, `980e7118`) | **Excluded as superseded in source.** Current main separates Acceptance outcomes, review metrics, and human false-green evidence while preserving unknown and not-recorded samples. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/review-metrics-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/human-false-green-panel.tsx` |
+| Changes list/detail redesign (`ce0f1e80` through `6682109b`) | **Excluded as superseded in source.** Current main has the stricter tenant-scoped, occurrence-aware, artifact-proxy-safe R11 projections at the same routes. Replaying the old pages would weaken current custody. This is not a claim that production has deployed them. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.tsx` |
+| Review-Gates create-issue action (`0e396beb`, `63434b71`) | **Excluded as incompatible.** Current main quarantines the legacy Review-Gate issue route; Record detail uses the newer Jace-only, human-approved gated issue custody. | Old: `apps/console/app/(dashboard)/dashboard/[workspaceId]/review-gates/components/create-issue-button.tsx`; current boundary: `apps/console/app/api/v1/workspaces/[workspaceId]/review-gates/[gateId]/issue/route.ts` |
+| Connector redesign/catalog/copy (`181c372b`, `714ede9a`, `5f2c3d7f`, `7f21c5ea`) | **Excluded as obsolete or non-migration.** Current main has newer Connector UX and provider/security behavior; old heartbeat and projection changes do not improve Acceptance Record custody. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/components/` |
+| Gateway relabel and sidebar restructuring (`741cbde5`, `240ee81a`, `4c855efe`) | **Excluded except for Context Packs.** Old Channels, Trust layer, and Evidence & context groupings conflict with current main's Gateways and Engine room structure. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/gateways/page.tsx`; `apps/console/app/components/sidebar-nav.ts` |
+| Brief index copy (`6682109b`) | **Excluded as weaker.** Current main's durable-understanding and human-correction wording is more accurate. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/page.tsx` |
+| Marketing/layout rewrite (`6eee9453` family) | **Excluded from this salvage.** It belongs to the still-open R12.1 lane and cannot be treated as implicit R12 completion. | `apps/console/app/layout.tsx`; `apps/console/app/(marketing)/` |
 
 ### Explicit exclusions
 
-- The old Intake direct-confirm endpoint was not carried forward. It bypassed
-  current main's human approval resolver. The replacement only creates an
-  approval request from a distinct trusted post-draft inbound message.
+- Neither the old Intake direct-confirm endpoint nor its adapted post-draft
+  approval-request branch was carried forward. The former bypassed current
+  main's human approval resolver; the latter proved only that a new inbound
+  message existed, not that its text explicitly confirmed the draft. Current
+  main's human approval seam remains unchanged.
+- The post-delivery outbound Intake recorder was not carried forward. Its
+  best-effort audit write could fail after a provider delivered the reply,
+  leaving canonical custody incomplete. A durable outbox or two-phase receipt
+  model is required before that behavior is safe; this salvage does not invent
+  one.
 - The old Intake Context Pack admission/claim/report worker and compilation
   tables were not carried forward. Their routes are absent on current main and
   their metadata shape is weaker than the current exact-head Context Pack
   snapshot and compiled-Pack custody.
 - Old direct `agent_mcp` credentials/scopes, direct Intake/Record/Pack delivery
-  routes, and caller-selected task locators were not carried forward. Current
-  main keeps server-selected, credential-bound read/ack seams.
+  routes, and caller-selected task locators were not carried forward. This
+  includes the absent MCP task-context Intake/Jace bridge from `cb190b86`,
+  `3488a058`, and `8227d6f2` (`apps/jace/agent/channels/mcp.ts`,
+  `apps/console/lib/agent-mcp-intake.ts`, and the old MCP Intake routes).
+  Current main keeps server-selected, credential-bound read/ack seams; the old
+  bridge is not queued ahead of the canonical R10.1 work.
 - Old evidence-review tables, parallel reviewer worker architecture, and
   deletion of the active `review_job`/executor lanes were not carried forward.
   Current main's exact-head review, criterion execution, artifact, correction,
@@ -103,6 +122,11 @@ branch changes.
   Marketing is R12.1 work and remains outside this salvage implementation.
 - Non-migration support edits and aliases with no current consumer were not
   carried forward.
+
+The final finite audit covered all 231 original commits and 355 changed files.
+No additional migration-aligned family is both absent from this replacement and
+safe to replay on current main. This inventory is terminal; later work must use
+the AC queue below rather than reopen PR #1638.
 
 ### Exact-head AC classification
 
@@ -115,10 +139,10 @@ a source regression.
 
 | AC | Canonical requirement | Classification | Exact boundary after salvage |
 | --- | --- | --- | --- |
-| R1.1 | Workspace Record and versioned Contract retain complete intent, provenance, criteria, boundaries, and codebase references. | `absorbed-and-proven in this PR` | Intake draft/readback/reply and immutable Brief-binding primitives are source/test proven. Automatic production Brief binding is still not wired; no live request-to-outcome Record is claimed. |
-| R1.2 | Append-only Record lineage joins Packs, builder, PR heads, evidence, decision, and post-merge facts without issue-keying. | `already proven on main` | New reply/binding custody is additive. Existing exact-head event and outcome lineage remains authoritative. |
-| R2.1 | Primary chat, scoped MCP, and Console fallback use the same Record/approval seam. | `absorbed-and-proven in this PR` | Chat now projects the canonical Intake/Record/Brief seam, and Jace uses the existing approval route. No deployed channel or MCP customer run is claimed. |
-| R2.2 | Slack/Discord and other channels share that model instead of creating another acceptance path. | `absorbed-and-proven in this PR` | Console, Slack, Discord, and Telegram retain delivered outbound reply evidence through the same bound Intake helper. Live provider proof is missing. |
+| R1.1 | Workspace Record and versioned Contract retain complete intent, provenance, criteria, boundaries, and codebase references. | `absorbed-and-proven in this PR` | Intake draft/readback and immutable Brief-binding primitives are source/test proven. Automatic production Brief binding is still not wired; no live request-to-outcome Record is claimed. |
+| R1.2 | Append-only Record lineage joins Packs, builder, PR heads, evidence, decision, and post-merge facts without issue-keying. | `already proven on main` | New Brief binding custody is additive. Existing exact-head event and outcome lineage remains authoritative. |
+| R2.1 | Primary chat, scoped MCP, and Console fallback use the same Record/approval seam. | `absorbed-and-proven in this PR` | Chat projects the canonical Intake/Record/Brief seam, and Jace can draft and read the bound Intake. Current main's human approval route remains authoritative. No deployed channel or MCP customer run is claimed. |
+| R2.2 | Slack/Discord and other channels share that model instead of creating another acceptance path. | `absorbed-and-proven in this PR` | Console, Slack, Discord, and Telegram bind the same canonical Intake before Jace receives the turn. Delivered outbound reply custody is not claimed. Live provider proof is missing. |
 | R3.1 | Authenticated MCP exposes bounded central Record/Contract/Pack/status/correction reads. | `already proven on main` | Old direct MCP write routes were intentionally excluded. Live customer MCP use remains separate. |
 | R3.2 | MCP separates read/mutation and exposes no merge, deploy, shell, filesystem, or unrestricted source authority. | `already proven on main` | The salvaged tools remain session-bound; the no-second-write-path suite covers the expanded tool set. |
 | R4.1 | An Acceptance Record Pack carries Contract/questions, bounded authoritative context, exclusions/gaps, custody/freshness/redaction, budget, and compiler version. | `absorbed-and-proven in this PR` | The compatible local compiler is restored and focused-tested. The obsolete hosted worker was excluded; current-main central Pack custody remains authoritative. |

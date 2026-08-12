@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "crypto";
 import { isDeepStrictEqual } from "util";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
   changeRecords,
+  acceptanceBriefBindings,
   acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
@@ -22,6 +23,7 @@ import {
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
+  type AcceptanceBriefBindingRow,
   type AcceptanceBuilderRouteCapabilityProfileRow,
   type AcceptanceBuilderRouteGithubClaudeAckProfileRow,
   type AcceptanceBuilderRouteRow,
@@ -48,6 +50,8 @@ import { reviewJobs, type ReviewJobRow } from "../schema/review_jobs.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
 import { repositories } from "../schema/repositories.js";
+import { briefs, briefItems } from "../schema/briefs.js";
+import type { Brief, BriefItem } from "../schema/briefs.js";
 import { wikiPages } from "../schema/wiki_pages.js";
 import {
   exactGitTreeInclusionProofIdentity,
@@ -89,6 +93,13 @@ function uuid5Url(name: string): string {
   b[8] = (b[8]! & 0x3f) | 0x80;
   const h = b.toString("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Hashes the canonical JSON representation persisted in a Brief binding. */
+export function acceptanceBriefSnapshotSha256(snapshot: unknown): string {
+  return createHash("sha256")
+    .update(acceptanceContextPackCanonicalJson(snapshot), "utf8")
+    .digest("hex");
 }
 
 function toDate(value: unknown): Date {
@@ -2694,6 +2705,28 @@ export type AcceptanceRecordDraft = {
   contract: AcceptanceContractRow;
 };
 
+export type LinkAcceptanceBriefToRecordInput = {
+  workspaceId: string;
+  recordId: string;
+  briefId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  linkedBy: string;
+  /** Optional caller assertion; the stored hash is always server-derived. */
+  briefSnapshotSha256?: string;
+};
+
+export type ReadAcceptanceBriefBindingInput =
+  | { workspaceId: string; recordId: string; briefId?: never }
+  | { workspaceId: string; briefId: string; recordId?: never };
+
+export type AcceptanceBriefBindingRead = {
+  binding: AcceptanceBriefBindingRow;
+  record: ChangeRecordRow;
+  brief: Brief;
+  contract: AcceptanceContractRow;
+};
+
 export type CreateDraftAcceptanceRecordFromIntakeInput = {
   workspaceId: string;
   intakeId: string;
@@ -2866,6 +2899,146 @@ function assertValidAcceptanceContract(contract: Record<string, unknown>): void 
       `Acceptance Contract is incomplete: ${validation.errors.join(", ")}`
     );
   }
+}
+
+export const ACCEPTANCE_INTAKE_READBACK_LIMITS = Object.freeze({
+  messageText: 2_000,
+  recentMessages: 8,
+  contractText: 1_000,
+  contractItems: 24,
+});
+
+type CompactContractItem = {
+  id: string;
+  text: string;
+  required?: boolean;
+  userVisible?: boolean;
+  status?: string;
+  resolution?: string;
+};
+
+function boundedText(value: unknown, limit: number): { value: string; truncated: boolean } {
+  const text = typeof value === "string" ? value : "";
+  return { value: text.slice(0, limit), truncated: text.length > limit };
+}
+
+function compactContractItems(value: unknown, kind: "criterion" | "question") {
+  const items = Array.isArray(value) ? value : [];
+  const included = items.slice(0, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractItems).flatMap((item): CompactContractItem[] => {
+    if (item == null || typeof item !== "object" || Array.isArray(item)) return [];
+    const source = item as Record<string, unknown>;
+    const id = boundedText(source.id, 256).value;
+    const text = boundedText(source.text, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractText).value;
+    if (!id || !text) return [];
+    if (kind === "criterion") {
+      return [{ id, text, required: source.required !== false, userVisible: source.userVisible === true }];
+    }
+    const result: CompactContractItem = { id, text, status: source.status === "resolved" ? "resolved" : "open" };
+    if (typeof source.resolution === "string" && source.resolution) {
+      result.resolution = boundedText(source.resolution, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractText).value;
+    }
+    return [result];
+  });
+  return {
+    items: included,
+    total: items.length,
+    included: included.length,
+    truncated: items.length > included.length,
+  };
+}
+
+function compactAcceptanceContract(value: unknown) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const contract = value as Record<string, unknown>;
+  return {
+    acceptanceCriteria: compactContractItems(contract.acceptanceCriteria, "criterion"),
+    openQuestions: compactContractItems(contract.openQuestions ?? contract.unresolvedQuestions, "question"),
+  };
+}
+
+function compactIntakeMessage(row: AcceptanceIntakeMessageRow) {
+  const text = boundedText(row.text, ACCEPTANCE_INTAKE_READBACK_LIMITS.messageText);
+  return {
+    id: row.id,
+    direction: row.direction,
+    text: text.value,
+    textTruncated: text.truncated,
+    createdAt: row.createdAt,
+  };
+}
+
+export type AcceptanceIntakeReadback = {
+  intake: {
+    id: string;
+    status: string;
+    originChannel: string;
+    recordId: string | null;
+  };
+  firstInbound: ReturnType<typeof compactIntakeMessage> | null;
+  recentMessages: ReturnType<typeof compactIntakeMessage>[];
+  messageCounts: { total: number; included: number; truncated: boolean };
+  contract: {
+    id: string;
+    version: number;
+    status: string;
+    acceptanceCriteria: ReturnType<typeof compactContractItems>;
+    openQuestions: ReturnType<typeof compactContractItems>;
+  } | null;
+};
+
+/**
+ * Read only the bounded evidence Jace needs to resume a compacted intake.
+ * Workspace and intake are always part of the same lookup; source references,
+ * message metadata, and the full contract never cross this boundary.
+ */
+export async function readAcceptanceIntakeReadback(input: {
+  workspaceId: string;
+  intakeId: string;
+}): Promise<AcceptanceIntakeReadback | null> {
+  const intakes = await db
+    .select({ id: acceptanceIntakes.id, status: acceptanceIntakes.status, originChannel: acceptanceIntakes.originChannel, recordId: acceptanceIntakes.recordId })
+    .from(acceptanceIntakes)
+    .where(and(eq(acceptanceIntakes.id, input.intakeId), eq(acceptanceIntakes.workspaceId, input.workspaceId)))
+    .limit(1);
+  const intake = intakes[0];
+  if (!intake) return null;
+
+  const [totalRows, firstRows, recentRows, contracts] = await Promise.all([
+    db.select({ total: count() }).from(acceptanceIntakeMessages).where(eq(acceptanceIntakeMessages.intakeId, input.intakeId)),
+    db.select().from(acceptanceIntakeMessages)
+      .where(and(eq(acceptanceIntakeMessages.intakeId, input.intakeId), eq(acceptanceIntakeMessages.direction, "inbound")))
+      .orderBy(asc(acceptanceIntakeMessages.createdAt), asc(acceptanceIntakeMessages.id)).limit(1),
+    db.select().from(acceptanceIntakeMessages)
+      .where(eq(acceptanceIntakeMessages.intakeId, input.intakeId))
+      .orderBy(desc(acceptanceIntakeMessages.createdAt), desc(acceptanceIntakeMessages.id))
+      .limit(ACCEPTANCE_INTAKE_READBACK_LIMITS.recentMessages),
+    intake.recordId
+      ? db.select({ id: acceptanceContracts.id, version: acceptanceContracts.version, status: acceptanceContracts.status, contract: acceptanceContracts.contract })
+        .from(acceptanceContracts)
+        .where(eq(acceptanceContracts.recordId, intake.recordId))
+        .orderBy(desc(acceptanceContracts.version)).limit(1)
+      : Promise.resolve([]),
+  ]);
+
+  const firstInbound = firstRows[0] ? compactIntakeMessage(firstRows[0]) : null;
+  const recentMessages = recentRows
+    .slice()
+    .reverse()
+    .filter((row) => !firstRows[0] || row.id !== firstRows[0].id)
+    .map(compactIntakeMessage);
+  const total = Number(totalRows[0]?.total ?? 0);
+  const included = (firstInbound ? 1 : 0) + recentMessages.length;
+  const latestContract = contracts[0];
+
+  return {
+    intake: { id: intake.id, status: intake.status, originChannel: intake.originChannel, recordId: intake.recordId },
+    firstInbound,
+    recentMessages,
+    messageCounts: { total, included, truncated: total > included },
+    contract: latestContract
+      ? { id: latestContract.id, version: latestContract.version, status: latestContract.status, ...compactAcceptanceContract(latestContract.contract)! }
+      : null,
+  };
 }
 
 function normalizedWorkKey(value: string | undefined): string {
@@ -3132,6 +3305,187 @@ export async function createDraftAcceptanceRecordFromIntake(
   });
 }
 
+function briefItemBindingSnapshot(item: BriefItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    briefId: item.briefId,
+    area: item.area,
+    statement: item.statement,
+    evidence: item.evidence,
+    kind: item.kind,
+    state: item.state,
+    resolution: item.resolution,
+    authority: item.authority,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingSnapshot(brief: Brief, items: BriefItem[]): Record<string, unknown> {
+  return {
+    briefId: brief.id,
+    workspaceId: brief.workspaceId,
+    repositoryId: brief.repositoryId,
+    slug: brief.slug,
+    title: brief.title,
+    status: brief.status,
+    openQuestion: brief.openQuestion,
+    grounding: brief.grounding,
+    jaceSessionIds: brief.jaceSessionIds,
+    items: items.map(briefItemBindingSnapshot),
+    createdAt: brief.createdAt.toISOString(),
+    updatedAt: brief.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingProvenance(input: {
+  linkedBy: string;
+  record: ChangeRecordRow;
+  brief: Brief;
+}): Record<string, unknown> {
+  return {
+    boundBy: input.linkedBy,
+    recordSourceReferences: input.record.sourceReferences,
+    recordCreatedAt: input.record.createdAt.toISOString(),
+    recordUpdatedAt: input.record.updatedAt.toISOString(),
+    recordState: input.record.state,
+    briefCreatedAt: input.brief.createdAt.toISOString(),
+    briefUpdatedAt: input.brief.updatedAt.toISOString(),
+  };
+}
+
+export async function linkAcceptanceBriefToRecord(
+  input: LinkAcceptanceBriefToRecordInput
+): Promise<AcceptanceBriefBindingRow> {
+  if (!Number.isInteger(input.acceptanceContractVersion) || input.acceptanceContractVersion <= 0) {
+    throw new Error("Acceptance Brief binding requires a positive Contract version");
+  }
+  if (
+    input.briefSnapshotSha256 !== undefined &&
+    !/^[a-f0-9]{64}$/i.test(input.briefSnapshotSha256)
+  ) {
+    throw new Error("Acceptance Brief binding requires a SHA-256 snapshot hash");
+  }
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:record:${input.workspaceId}:${input.recordId}`}))
+    `);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:brief:${input.workspaceId}:${input.briefId}`}))
+    `);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:contract:${input.workspaceId}:${input.acceptanceContractId}:${input.acceptanceContractVersion}`}))
+    `);
+
+    const [record] = await tx
+      .select()
+      .from(changeRecords)
+      .where(
+        and(
+          eq(changeRecords.workspaceId, input.workspaceId),
+          eq(changeRecords.id, input.recordId)
+        )
+      )
+      .limit(1);
+    if (!record) {
+      throw new Error("Acceptance Record was not found in workspace");
+    }
+
+    const [contract] = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.id, input.acceptanceContractId),
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.version, input.acceptanceContractVersion),
+          eq(acceptanceContracts.status, "confirmed")
+        )
+      )
+      .limit(1);
+    if (!contract) {
+      throw new Error("Acceptance Contract id/version mismatch or Contract is not confirmed");
+    }
+
+    const existing = await tx
+      .select()
+      .from(acceptanceBriefBindings)
+      .where(eq(acceptanceBriefBindings.recordId, input.recordId))
+      .limit(1);
+    if (existing[0]) {
+      if (existing[0].briefId !== input.briefId) {
+        throw new Error("Acceptance Record already has a linked Brief");
+      }
+      if (
+        existing[0].acceptanceContractId !== contract.id ||
+        existing[0].acceptanceContractVersion !== contract.version
+      ) {
+        throw new Error("Acceptance Brief binding Contract/version mismatch");
+      }
+      const storedHash = acceptanceBriefSnapshotSha256(existing[0].briefSnapshot);
+      if (storedHash !== existing[0].briefSnapshotSha256.toLowerCase()) {
+        throw new Error("Acceptance Brief binding snapshot hash mismatch");
+      }
+      if (
+        input.briefSnapshotSha256 !== undefined &&
+        input.briefSnapshotSha256.toLowerCase() !== existing[0].briefSnapshotSha256.toLowerCase()
+      ) {
+        throw new Error("Acceptance Brief binding snapshot hash mismatch");
+      }
+      return existing[0];
+    }
+
+    const [brief] = await tx
+      .select()
+      .from(briefs)
+      .where(
+        and(
+          eq(briefs.workspaceId, input.workspaceId),
+          eq(briefs.id, input.briefId)
+        )
+      )
+      .limit(1);
+    if (!brief) {
+      throw new Error("Brief was not found in workspace");
+    }
+
+    const items = await tx
+      .select()
+      .from(briefItems)
+      .where(eq(briefItems.briefId, brief.id))
+      .orderBy(asc(briefItems.createdAt), asc(briefItems.id));
+    const snapshot = briefBindingSnapshot(brief, items);
+    const snapshotSha256 = acceptanceBriefSnapshotSha256(snapshot);
+    if (
+      input.briefSnapshotSha256 !== undefined &&
+      input.briefSnapshotSha256.toLowerCase() !== snapshotSha256
+    ) {
+      throw new Error("Acceptance Brief binding snapshot hash mismatch");
+    }
+
+    const rows = await tx
+      .insert(acceptanceBriefBindings)
+      .values({
+        id: uuid5Url(
+          `acceptance-brief-binding:${input.workspaceId}:${input.recordId}:${input.briefId}`
+        ),
+        workspaceId: input.workspaceId,
+        recordId: input.recordId,
+        briefId: input.briefId,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        briefSnapshot: snapshot,
+        briefSnapshotSha256: snapshotSha256,
+        provenance: briefBindingProvenance({ linkedBy: input.linkedBy, record, brief }),
+        createdBy: input.linkedBy,
+      })
+      .returning();
+    return rows[0]!;
+  });
+}
+
 export type CreateDraftAcceptanceContractInput = {
   recordId: string;
   contract: Record<string, unknown>;
@@ -3201,6 +3555,94 @@ export async function readAcceptanceContracts(input: {
     .from(acceptanceContracts)
     .where(eq(acceptanceContracts.recordId, input.recordId))
     .orderBy(asc(acceptanceContracts.version));
+}
+
+function validateAcceptanceBriefBindingRead(
+  row: AcceptanceBriefBindingRead
+): AcceptanceBriefBindingRead {
+  const expectedHash = acceptanceBriefSnapshotSha256(row.binding.briefSnapshot);
+  if (expectedHash !== row.binding.briefSnapshotSha256.toLowerCase()) {
+    throw new Error("Acceptance Brief binding snapshot hash mismatch");
+  }
+  if (
+    row.contract.id !== row.binding.acceptanceContractId ||
+    row.contract.recordId !== row.record.id ||
+    row.contract.version !== row.binding.acceptanceContractVersion ||
+    row.contract.status !== "confirmed"
+  ) {
+    throw new Error("Acceptance Brief binding Contract/version mismatch");
+  }
+  return row;
+}
+
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  recordId: string;
+  briefId?: never;
+}): Promise<AcceptanceBriefBindingRead | null>;
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  briefId: string;
+  recordId?: never;
+}): Promise<AcceptanceBriefBindingRead[]>;
+export async function readAcceptanceBriefBinding(
+  input: ReadAcceptanceBriefBindingInput
+): Promise<AcceptanceBriefBindingRead | AcceptanceBriefBindingRead[] | null> {
+  const hasRecordId = typeof input.recordId === "string";
+  const hasBriefId = typeof input.briefId === "string";
+  if (hasRecordId === hasBriefId) {
+    throw new Error("readAcceptanceBriefBinding requires exactly one of recordId or briefId");
+  }
+  const rows = await db
+    .select({
+      binding: acceptanceBriefBindings,
+      record: changeRecords,
+      brief: briefs,
+      contract: acceptanceContracts,
+    })
+    .from(acceptanceBriefBindings)
+    .innerJoin(
+      changeRecords,
+      and(
+        eq(acceptanceBriefBindings.recordId, changeRecords.id),
+        eq(acceptanceBriefBindings.workspaceId, changeRecords.workspaceId),
+        eq(changeRecords.workspaceId, input.workspaceId)
+      )
+    )
+    .innerJoin(
+      briefs,
+      and(
+        eq(acceptanceBriefBindings.briefId, briefs.id),
+        eq(acceptanceBriefBindings.workspaceId, briefs.workspaceId)
+      )
+    )
+    .innerJoin(
+      acceptanceContracts,
+      and(
+        eq(acceptanceBriefBindings.acceptanceContractId, acceptanceContracts.id),
+        eq(acceptanceContracts.recordId, changeRecords.id)
+      )
+    )
+    .where(
+      and(
+        eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
+        hasRecordId
+          ? eq(acceptanceBriefBindings.recordId, input.recordId)
+          : eq(acceptanceBriefBindings.briefId, input.briefId)
+      )
+    )
+    .orderBy(asc(acceptanceBriefBindings.createdAt), asc(acceptanceBriefBindings.id));
+
+  const validated = rows.map((row) =>
+    validateAcceptanceBriefBindingRead({
+      binding: row.binding,
+      record: row.record,
+      brief: row.brief,
+      contract: row.contract,
+    })
+  );
+  if (hasRecordId) return validated[0] ?? null;
+  return validated;
 }
 
 const ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY = "acceptance-builder-route:selected";
@@ -8098,6 +8540,83 @@ export async function resolveAcceptanceCompiledContextPack(
       eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
     )).limit(1);
   return rows[0]?.pack ?? null;
+}
+
+const ACCEPTANCE_CONTEXT_PACK_INDEX_DEFAULT_LIMIT = 100;
+const ACCEPTANCE_CONTEXT_PACK_INDEX_MAX_LIMIT = 200;
+
+export type AcceptanceContextPackIndexItem = {
+  id: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  compilerVersion: string;
+  policyVersion: string;
+  createdAt: Date;
+};
+
+function parseAcceptanceContextPackIndexInput(
+  input: unknown,
+): { workspaceId: string; limit: number } {
+  if (!isRecord(input)
+    || !Object.keys(input).every((key) => key === "workspaceId" || key === "limit")
+    || !hasOwn(input, "workspaceId") || !isUuid(input["workspaceId"])
+    || (hasOwn(input, "limit")
+      && (!Number.isSafeInteger(input["limit"])
+        || (input["limit"] as number) < 1
+        || (input["limit"] as number) > ACCEPTANCE_CONTEXT_PACK_INDEX_MAX_LIMIT))) {
+    throw new Error("Context Pack index requires only workspace and bounded limit");
+  }
+  return {
+    workspaceId: input["workspaceId"],
+    limit: (input["limit"] as number | undefined) ?? ACCEPTANCE_CONTEXT_PACK_INDEX_DEFAULT_LIMIT,
+  };
+}
+
+/**
+ * Lists metadata for compiled, admitted Packs while retaining the canonical
+ * snapshot-to-Record binding. Pack source content is never returned here.
+ */
+export async function listAcceptanceContextPacksForWorkspace(
+  input: { workspaceId: string; limit?: number },
+): Promise<AcceptanceContextPackIndexItem[]> {
+  const parsed = parseAcceptanceContextPackIndexInput(input);
+  return db
+    .select({
+      id: acceptanceCompiledContextPacks.id,
+      recordId: acceptanceContextPackSnapshots.recordId,
+      repo: acceptanceContextPackSnapshots.repo,
+      prNumber: acceptanceContextPackSnapshots.prNumber,
+      compilerVersion: acceptanceCompiledContextPacks.compilerVersion,
+      policyVersion: acceptanceCompiledContextPacks.policyVersion,
+      createdAt: acceptanceCompiledContextPacks.createdAt,
+    })
+    .from(acceptanceCompiledContextPacks)
+    .innerJoin(
+      acceptanceContextPackSnapshots,
+      and(
+        eq(acceptanceCompiledContextPacks.sourceSnapshotId, acceptanceContextPackSnapshots.id),
+        eq(acceptanceCompiledContextPacks.workspaceId, acceptanceContextPackSnapshots.workspaceId),
+      ),
+    )
+    .innerJoin(
+      changeRecords,
+      and(
+        eq(changeRecords.id, acceptanceContextPackSnapshots.recordId),
+        eq(changeRecords.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+        eq(changeRecords.repo, acceptanceContextPackSnapshots.repo),
+        eq(changeRecords.prNumber, acceptanceContextPackSnapshots.prNumber),
+        eq(changeRecords.currentPrHeadAuthoritative, true),
+        eq(changeRecords.currentPrHeadSha, acceptanceContextPackSnapshots.expectedHeadSha),
+        eq(changeRecords.currentPrHeadCycleId, acceptanceContextPackSnapshots.reviewJobId),
+      ),
+    )
+    .where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceContextPackSnapshots.status, "admitted"),
+    ))
+    .orderBy(desc(acceptanceCompiledContextPacks.createdAt))
+    .limit(parsed.limit);
 }
 
 export type AcceptanceDependencyObservationStatus =

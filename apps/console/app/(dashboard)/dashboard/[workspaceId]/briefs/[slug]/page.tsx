@@ -1,12 +1,13 @@
 import { notFound } from "next/navigation";
 import { AlertTriangle, CircleHelp } from "lucide-react";
-import { computeBriefReadiness, getBriefBySlug } from "@agentrail/db-postgres";
+import { computeBriefReadiness, getBriefBySlug, readAcceptanceBriefBinding } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../../lib/cached";
 import { PageHeader } from "../../../../../components/page-header";
 import { AREA_LABELS, AREA_ORDER, groupItemsByArea, isBlockingItem } from "../briefs-format";
 import { BriefItemCard } from "../components/brief-item-card";
 import { BriefStatusToggle } from "../components/brief-status-toggle";
 import { NewBriefItemForm } from "../components/new-brief-item-form";
+import { AcceptanceBriefTransitionPanel } from "./acceptance-brief-transition-panel";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
@@ -51,6 +52,12 @@ export default async function BriefDetailPage({
   const brief = await getBriefBySlug(workspaceId, slug);
   if (!brief) return notFound();
 
+  const briefBindingRows = await readAcceptanceBriefBinding({ workspaceId, briefId: brief.id });
+  const briefBindings = Array.isArray(briefBindingRows)
+    ? briefBindingRows
+    : briefBindingRows
+      ? [briefBindingRows]
+      : [];
   const readiness = await computeBriefReadiness(brief.id);
   const canManage = ADMIN_ROLES.includes(membership.role as (typeof ADMIN_ROLES)[number]);
   const grouped = groupItemsByArea(brief.items);
@@ -70,6 +77,8 @@ export default async function BriefDetailPage({
           />
         }
       />
+
+      <AcceptanceBriefTransitionPanel workspaceId={workspaceId} bindings={briefBindings} />
 
       {brief.openQuestion && (
         <div className="mb-4 flex items-start gap-2 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">

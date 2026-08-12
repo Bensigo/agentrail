@@ -19,6 +19,7 @@ export const SEGMENT_LABELS: Record<string, string> = {
   queue: "Issue Queue",
   gateways: "Gateways",
   connectors: "Connectors",
+  "context-packs": "Context Packs",
   failures: "Failures",
   "review-gates": "Review Gates",
   costs: "Costs",

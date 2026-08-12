@@ -117,6 +117,16 @@ export default defineChannel({
           502
         );
       }
+      if (normalized.auth && typeof normalized.auth === "object" && !Array.isArray(normalized.auth)) {
+        const auth = normalized.auth as Record<string, unknown>;
+        const attributes = auth.attributes && typeof auth.attributes === "object" && !Array.isArray(auth.attributes)
+          ? auth.attributes as Record<string, unknown>
+          : {};
+        auth.attributes = {
+          ...attributes,
+          acceptanceIntakeId: intake.intakeId,
+        };
+      }
 
       // AWAIT, not waitUntil: the dispatcher needs sessionId synchronously to
       // write its ledger (bindEveSession) — see the header comment above.

@@ -17,6 +17,7 @@ import {
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
+  acceptanceBriefBindings,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -299,8 +300,52 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceContracts.confirmedAt.notNull).toBe(false);
   });
 
+  it("declares immutable Brief provenance with exact Contract identity and hash", () => {
+    expect(acceptanceBriefBindings.workspaceId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.recordId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.acceptanceContractVersion.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefSnapshot.getSQLType()).toBe("jsonb");
+    expect(acceptanceBriefBindings.briefSnapshotSha256.notNull).toBe(true);
+    expect(acceptanceBriefBindings.provenance.getSQLType()).toBe("jsonb");
+    const config = getTableConfig(acceptanceBriefBindings);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_record_key")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_workspace_brief_idx")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_contract_idx")).toBeDefined();
+  });
+
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
     expect(changeRecords.workKey.notNull).toBe(false);
+  });
+});
+
+describe("0100_acceptance_brief_bindings migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0100_acceptance_brief_bindings.sql"
+  );
+
+  it("stores immutable snapshot custody, deterministic hash, and Contract identity", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_brief_bindings"');
+    expect(sqlText).toContain('"brief_snapshot" jsonb NOT NULL');
+    expect(sqlText).toContain('"brief_snapshot_sha256" text NOT NULL');
+    expect(sqlText).toContain('"acceptance_contract_id" uuid NOT NULL');
+    expect(sqlText).toContain('"acceptance_contract_version" integer NOT NULL');
+    expect(sqlText).toContain('ON DELETE restrict');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_record_key"');
+    expect(sqlText).not.toContain("acceptance_brief_bindings_brief_key");
+  });
+
+  it("uses the next free migration journal index", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+      "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0100_acceptance_brief_bindings"
+    )).toMatchObject({ idx: 105, version: "7", breakpoints: true });
   });
 });
 

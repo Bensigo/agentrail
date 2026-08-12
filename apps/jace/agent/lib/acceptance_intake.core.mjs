@@ -42,7 +42,11 @@ export async function recordHostedAcceptanceIntake({ inbound, env = {}, transpor
       metadata: { target: inbound.target },
     }),
   });
-  return response.status >= 200 && response.status < 300
-    ? { ok: true }
-    : { ok: false, reason: `console_${response.status}` };
+  if (response.status < 200 || response.status >= 300) {
+    return { ok: false, reason: `console_${response.status}` };
+  }
+  const payload = await response.json().catch(() => null);
+  const intakeId = String(payload?.intake?.id ?? "").trim();
+  if (!intakeId) return { ok: false, reason: "console_invalid_response" };
+  return { ok: true, intakeId };
 }

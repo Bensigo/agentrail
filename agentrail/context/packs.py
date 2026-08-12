@@ -28,6 +28,8 @@ from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_sav
 # at +1 ("wiki", which nothing in symbolTable defines) instead of +5.
 from agentrail.context import wiki
 from agentrail.context import source_registry
+from agentrail.context.redaction import redact_text
+from agentrail.shared.fs import sha256_text
 from agentrail.shared.json import write_json
 
 
@@ -94,13 +96,23 @@ def _run_id_slug(value: str) -> str:
     return slug.strip("-")
 
 
-def _target_label(target_kind: str, target_number: int) -> str:
+def _target_label(target_kind: str, target_number: int | str) -> str:
+    if target_kind == "acceptance_record":
+        return f"Acceptance Record {target_number}"
     return f"{'PR' if target_kind == 'pr' else 'issue'} #{target_number}"
 
 
-def _query_for(target_kind: str, target_number: int, phase: str) -> str:
+def _query_for(target_kind: str, target_number: int | str, phase: str, acceptance_contract: Optional[Dict[str, Any]] = None) -> str:
     label = _target_label(target_kind, target_number)
-    return f"{label} {phase} context pack required context likely files docs memory prior mistakes active state tools skills excluded context open questions"
+    contract_text = ""
+    if target_kind == "acceptance_record" and acceptance_contract:
+        # The contract is untrusted user input. Redact it before using its
+        # vocabulary for retrieval and bound it so a prompt dump cannot consume
+        # the entire query budget.
+        contract_text = redact_text(
+            json.dumps(acceptance_contract, sort_keys=True, ensure_ascii=False)
+        ).text[:4000]
+    return f"{label} {phase} {contract_text} context pack required context likely files docs tests callers callees impact graph memory prior mistakes active state tools skills excluded context open questions"
 
 
 def _citation_for(item: Dict[str, Any]) -> str:
@@ -283,7 +295,11 @@ def _record_text(source: Dict[str, Any], chunk: Dict[str, Any] | None) -> str:
     ).lower()
 
 
-def _target_linked_items(index: Dict[str, Any], target_kind: str, target_number: int) -> List[Dict[str, Any]]:
+def _target_linked_items(index: Dict[str, Any], target_kind: str, target_number: int | str) -> List[Dict[str, Any]]:
+    if target_kind == "acceptance_record":
+        # The durable contract is supplied explicitly below. Local indexes have
+        # issue/PR links but no database knowledge of central record IDs.
+        return []
     target_token = f"#{target_number}".lower()
     target_url = f"/{'issues' if target_kind == 'issue' else 'pull'}/{target_number}".lower()
     sources = {record["id"]: record for record in index.get("records", [])}
@@ -510,7 +526,7 @@ def _load_workflow_goals(root: Path) -> List[Dict[str, Any]]:
     return [goal for goal in goals if isinstance(goal, dict)]
 
 
-def _goal_relevant(goal: Dict[str, Any], target_kind: str, target_number: int, phase: str) -> bool:
+def _goal_relevant(goal: Dict[str, Any], target_kind: str, target_number: int | str, phase: str) -> bool:
     status = str(goal.get("status") or "").lower()
     if phase in {"gather", "plan", "execute", "verify"} and status not in {"active", "blocked"}:
         return False
@@ -521,7 +537,7 @@ def _goal_relevant(goal: Dict[str, Any], target_kind: str, target_number: int, p
     return False
 
 
-def _relevant_goals(root: Path, target_kind: str, target_number: int, phase: str) -> List[Dict[str, Any]]:
+def _relevant_goals(root: Path, target_kind: str, target_number: int | str, phase: str) -> List[Dict[str, Any]]:
     values: List[Dict[str, Any]] = []
     for goal in _load_workflow_goals(root):
         if not _goal_relevant(goal, target_kind, target_number, phase):
@@ -537,14 +553,159 @@ def _relevant_goals(root: Path, target_kind: str, target_number: int, phase: str
     return values
 
 
-def _primary_goal(target_kind: str, target_number: int, phase: str, goals: List[Dict[str, Any]]) -> Dict[str, str]:
+def _primary_goal(
+    target_kind: str,
+    target_number: int | str,
+    phase: str,
+    goals: List[Dict[str, Any]],
+    acceptance_contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
     if goals:
         goal = goals[0]
         return {
             "summary": str(goal.get("summary") or f"Complete {_target_label(target_kind, target_number)} {phase}."),
             "citation": str(goal.get("citation") or ".agentrail/state.json#workflow.goals"),
         }
+    if target_kind == "acceptance_record":
+        goal = ""
+        if acceptance_contract:
+            for key in ("goal", "summary", "request", "originalUserWording"):
+                value = acceptance_contract.get(key)
+                if isinstance(value, str) and value.strip():
+                    goal = redact_text(value.strip()).text
+                    break
+        return {
+            "summary": goal or f"Prepare auditable {_target_label(target_kind, target_number)} {phase} context.",
+            "citation": f"acceptance-record:{target_number}#contract",
+        }
     return {"summary": f"Prepare auditable {_target_label(target_kind, target_number)} {phase} context.", "citation": f"github:{target_kind}/{target_number}"}
+
+
+def _acceptance_contract_item(record_id: str, contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Make the confirmed contract a cited, redacted pack item.
+
+    This is deliberately separate from repository retrieval. It preserves the
+    approved objective while making clear that it is an acceptance authority,
+    not implementation evidence.
+    """
+    raw = json.dumps(contract, sort_keys=True, ensure_ascii=False, indent=2)
+    redacted = redact_text(raw)
+    return {
+        "kind": "acceptance_contract",
+        "sourceType": "acceptance_record",
+        "path": f"acceptance-record/{record_id}",
+        "citation": f"acceptance-record:{record_id}#contract",
+        "reason": "Confirmed Acceptance Contract supplied by the technical lead; it defines the objective, not proof of implementation.",
+        "content": redacted.text,
+        "contentHash": sha256_text(redacted.text),
+        "authority": "primary",
+        "visibility": "workspace",
+        "freshness": {"status": "current", "observedAt": None, "expiresAt": None},
+        "redactions": [
+            {"detector": finding.detector, "count": finding.count}
+            for finding in redacted.findings
+        ],
+    }
+
+
+def _acceptance_open_question_item(record_id: str, contract: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    questions = contract.get("openQuestions", contract.get("unresolvedQuestions"))
+    if not isinstance(questions, list) or not questions:
+        return None
+    raw = json.dumps(questions, sort_keys=True, ensure_ascii=False, indent=2)
+    redacted = redact_text(raw)
+    return {
+        "kind": "open_question_state",
+        "sourceType": "acceptance_record",
+        "path": f"acceptance-record/{record_id}",
+        "citation": f"acceptance-record:{record_id}#open-questions",
+        "reason": "Open questions remain unresolved; the external builder must not silently decide them.",
+        "content": redacted.text,
+        "contentHash": sha256_text(redacted.text),
+        "authority": "primary",
+        "visibility": "workspace",
+        "freshness": {"status": "current", "observedAt": None, "expiresAt": None},
+        "redactions": [
+            {"detector": finding.detector, "count": finding.count}
+            for finding in redacted.findings
+        ],
+    }
+
+
+def _stable_pack_hash(pack: Dict[str, Any]) -> str:
+    """Hash durable delivery content, excluding generated time and artifact paths."""
+    included = [
+        {
+            "path": item.get("path"),
+            "citation": item.get("citation"),
+            "contentHash": item.get("contentHash") or item.get("textHash"),
+            "startLine": item.get("startLine") or item.get("lineStart"),
+            "endLine": item.get("endLine") or item.get("lineEnd"),
+        }
+        for item in pack.get("included", [])
+        if isinstance(item, dict)
+    ]
+    excluded = [
+        {
+            "path": item.get("path"),
+            "citation": item.get("citation"),
+            "reason": item.get("reason"),
+            "contentHash": item.get("contentHash") or item.get("textHash"),
+        }
+        for item in pack.get("excludedContext", [])
+        if isinstance(item, dict)
+    ]
+    payload = {
+        "target": pack.get("target"),
+        "acceptanceContract": pack.get("acceptanceContract"),
+        "included": included,
+        "excluded": excluded,
+        "index": pack.get("indexProvenance") or pack.get("index"),
+        "retrievalBudget": pack.get("retrievalBudget"),
+        "compilerVersion": (pack.get("compiler") or {}).get("contractVersion"),
+    }
+    return sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
+def _index_provenance(root: Path, index: Dict[str, Any]) -> Dict[str, Any]:
+    """Return reproducibility metadata without copying indexed source content."""
+    snapshot = index.get("snapshot") if isinstance(index.get("snapshot"), dict) else {}
+    freshness_path = root / ".agentrail" / "context" / "index" / "freshness.json"
+    try:
+        freshness_file = json.loads(freshness_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        freshness_file = {}
+    return {
+        "version": index.get("version"),
+        "builtAt": index.get("builtAt"),
+        "commitSha": snapshot.get("commitSha"),
+        "sourceTreeFingerprint": freshness_file.get("sourceTreeFingerprint"),
+        "sourceHashes": snapshot.get("sourceHashes") or {},
+        "sourceFreshness": snapshot.get("freshness") or {},
+        "ingestionHealth": snapshot.get("ingestionHealth") or {},
+    }
+
+
+def _retrieval_gaps(query: Dict[str, Any], sections: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """Make missing evidence explicit rather than letting an empty pack look complete."""
+    gaps: List[Dict[str, str]] = []
+    compiler = query.get("compiler") if isinstance(query.get("compiler"), dict) else {}
+    graph = compiler.get("graphExpansion") if isinstance(compiler.get("graphExpansion"), dict) else {}
+    if graph.get("status") != "expanded":
+        gaps.append({
+            "kind": "graph_context",
+            "reason": f"Deterministic graph expansion did not produce added context (status={graph.get('status') or 'unknown'}).",
+        })
+    if not sections.get("likelyFiles"):
+        gaps.append({"kind": "affected_code", "reason": "No relevant code source was retrieved."})
+    test_items = [
+        item
+        for item in sections.get("likelyFiles", []) + sections.get("likelyDocs", [])
+        if "test" in str(item.get("path") or "").lower()
+    ]
+    if not test_items:
+        gaps.append({"kind": "tests", "reason": "No relevant test source was retrieved."})
+    return gaps
 
 
 def _render_item(item: Dict[str, Any]) -> str:
@@ -687,9 +848,15 @@ def _greedy_token_budget_fill(sections: Dict[str, List[Dict[str, Any]]]) -> List
     return dropped
 
 
+def _markdown_target_label(target: Dict[str, Any]) -> str:
+    if target.get("kind") == "acceptance_record":
+        return f"Acceptance Record {target.get('id')} {target.get('phase')}"
+    return f"{target.get('kind')} #{target.get('number')} {target.get('phase')}"
+
+
 def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     lines = [
-        f"# Context Pack: {pack['target']['kind']} #{pack['target']['number']} {pack['target']['phase']}",
+        f"# Context Pack: {_markdown_target_label(pack['target'])}",
         "",
         f"Pack ID: `{pack['packId']}`",
         f"Generated: {pack['generatedAt']}",
@@ -719,6 +886,11 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             # bullets -- render the compiled prose verbatim (provenance
             # blockquote included) rather than through _render_item.
             lines.append(str(values[0].get("content") or "") if values else "None.")
+        elif key == "openQuestions" and values:
+            for item in values:
+                lines.append(_render_item(item))
+                if item.get("sourceType") == "acceptance_record":
+                    lines.extend(["", "```json", str(item.get("content") or "{}"), "```"])
         elif values:
             lines.extend(_render_item(item) for item in values)
         else:
@@ -749,16 +921,24 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             *budget_lines,
             *rerank_lines,
             f"- Index: {pack['index'].get('version')} builtAt={pack['index'].get('builtAt')}",
+            f"- Commit: {(pack.get('indexProvenance') or {}).get('commitSha') or 'unknown'}",
+            f"- Source tree fingerprint: {(pack.get('indexProvenance') or {}).get('sourceTreeFingerprint') or 'unknown'}",
+            f"- Retrieval gaps: {len(pack.get('retrievalGaps') or [])}",
             f"- Provider mode: {pack['provider'].get('mode')}",
             f"- Audit event: {pack['audit'].get('event')} citation={pack['audit'].get('citation')}",
             "",
         ]
     )
+    gaps = pack.get("retrievalGaps") or []
+    if gaps:
+        lines.extend(["## Unresolved Retrieval Gaps"])
+        lines.extend(f"- {gap.get('kind')}: {gap.get('reason')}" for gap in gaps if isinstance(gap, dict))
+        lines.append("")
     return "\n".join(lines)
 
 
-def _load_prior_run_items(packs_dir: Path, run_id: str, target_kind: str, target_number: int) -> List[Dict[str, Any]]:
-    """Return included items from all packs in *packs_dir* that share *run_id*, target_kind, target_number."""
+def _load_prior_run_items(packs_dir: Path, run_id: str, target_kind: str, target_number: int | str) -> List[Dict[str, Any]]:
+    """Return included items from all packs in *packs_dir* that share one target."""
     prior_items: List[Dict[str, Any]] = []
     if not packs_dir.exists():
         return prior_items
@@ -770,7 +950,8 @@ def _load_prior_run_items(packs_dir: Path, run_id: str, target_kind: str, target
         if not isinstance(data, dict) or data.get("runId") != run_id:
             continue
         tgt = data.get("target") or {}
-        if tgt.get("kind") != target_kind or tgt.get("number") != target_number:
+        target_ref = tgt.get("id") if target_kind == "acceptance_record" else tgt.get("number")
+        if tgt.get("kind") != target_kind or target_ref != target_number:
             continue
         phase_label = str(tgt.get("phase") or "prior")
         for item in (data.get("included") or []):
@@ -784,22 +965,39 @@ def _load_prior_run_items(packs_dir: Path, run_id: str, target_kind: str, target
 def build_context_pack(
     target_dir: Path,
     target_kind: str,
-    target_number: int,
+    target_number: int | str,
     phase: str,
     *,
     budget_usd: float | None = None,
     model: str = _DEFAULT_BUDGET_MODEL,
     run_id: Optional[str] = None,
     memory_items: Optional[List[Dict[str, Any]]] = None,
+    acceptance_contract: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     root = target_dir.resolve()
-    if target_kind not in {"issue", "pr"}:
-        raise RuntimeError("context build requires target kind: issue or pr")
-    if target_kind == "issue" and phase not in {"gather", "plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
-        raise RuntimeError("context build phase must be one of: issue gather|plan|execute|verify, pr review")
+    if target_kind not in {"issue", "pr", "acceptance_record"}:
+        raise RuntimeError("context build requires target kind: issue, pr, or acceptance_record")
+    valid_phase = (
+        target_kind == "issue" and phase in {"gather", "plan", "execute", "verify"}
+    ) or (target_kind == "pr" and phase == "review") or (
+        target_kind == "acceptance_record" and phase in {"plan", "execute", "verify", "review"}
+    )
+    if not valid_phase:
+        raise RuntimeError("context build phase must be issue gather|plan|execute|verify, pr review, or acceptance_record plan|execute|verify|review")
+    if target_kind == "acceptance_record":
+        if not isinstance(target_number, str) or not target_number.strip():
+            raise RuntimeError("acceptance_record target requires a non-empty record id")
+        if not isinstance(acceptance_contract, dict) or not acceptance_contract:
+            raise RuntimeError("acceptance_record context build requires a confirmed contract object")
+        contract_preview = _acceptance_contract_item(str(target_number), acceptance_contract)
+        contract_token_limit = max(1, resolve_retrieval_max_tokens() // 4)
+        if _item_tokens(contract_preview) > contract_token_limit:
+            raise RuntimeError(
+                f"Acceptance Contract exceeds its bounded context allowance of {contract_token_limit} tokens"
+            )
 
     retrieval_budget = {"maxItems": 20, "maxTokens": resolve_retrieval_max_tokens()}
-    query_text = _query_for(target_kind, target_number, phase)
+    query_text = _query_for(target_kind, target_number, phase, acceptance_contract)
     # Context source registry (spec S.B, PR 3 of the S.K sequence), default
     # OFF. With the flag on, retrieval goes through the registry instead of
     # calling query_context directly -- but phase one registers only the
@@ -813,6 +1011,12 @@ def build_context_pack(
         query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
     index = load_index(root)
     sections = _sectioned_results(query.get("results", []))
+    if target_kind == "acceptance_record":
+        record_id = str(target_number)
+        sections["openQuestions"].append(_acceptance_contract_item(record_id, acceptance_contract or {}))
+        open_question_state = _acceptance_open_question_item(record_id, acceptance_contract or {})
+        if open_question_state:
+            sections["openQuestions"].append(open_question_state)
     for result in _target_linked_items(index, target_kind, target_number):
         section = _section_for(result)
         _append_unique(sections[section], _normalized_item(result, section, f"Included in {SECTION_TITLES[section].lower()} because it directly cites {_target_label(target_kind, target_number)}."))
@@ -872,7 +1076,8 @@ def build_context_pack(
     # function of (target, phase, run_id), stable across phases within one run.
     # Without a run_id (all current callers), the timestamp slug is unchanged.
     run_slug = _run_id_slug(run_id) if run_id is not None else ""
-    pack_id = f"{target_kind}-{target_number}-{phase}-{run_slug or _pack_slug(generated_at)}"
+    target_slug = _run_id_slug(str(target_number)) if target_kind == "acceptance_record" else str(target_number)
+    pack_id = f"{target_kind}-{target_slug}-{phase}-{run_slug or _pack_slug(generated_at)}"
     packs_dir = root / ".agentrail" / "context" / "packs"
     json_path = packs_dir / f"{pack_id}.json"
     md_path = packs_dir / f"{pack_id}.md"
@@ -887,15 +1092,26 @@ def build_context_pack(
     pack: Dict[str, Any] = {
         "schemaVersion": 1,
         "packId": pack_id,
-        "target": {"kind": target_kind, "number": target_number, "phase": phase},
+        "target": (
+            {"kind": target_kind, "id": str(target_number), "phase": phase}
+            if target_kind == "acceptance_record"
+            else {"kind": target_kind, "number": target_number, "phase": phase}
+        ),
         "generatedAt": generated_at,
         "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
+        "indexProvenance": _index_provenance(root, index),
         "retrievalBudget": retrieval_budget,
         "provider": query.get("provider") or index.get("provider") or {"mode": "disabled", "externalCalls": []},
         "audit": audit,
-        "goal": _primary_goal(target_kind, target_number, phase, sections["goals"]),
+        "goal": _primary_goal(target_kind, target_number, phase, sections["goals"], acceptance_contract),
         **sections,
     }
+    if target_kind == "acceptance_record":
+        # Store exactly the redacted snapshot delivered to the agent. The
+        # central Acceptance Record retains the authoritative immutable version.
+        pack["acceptanceContract"] = _acceptance_contract_item(
+            str(target_number), acceptance_contract or {}
+        )
     if budget_meta:
         pack["budgetUsd"] = budget_meta["budgetUsd"]
         pack["packCostUsd"] = budget_meta["packCostUsd"]
@@ -905,6 +1121,7 @@ def build_context_pack(
         pack["runId"] = run_id
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    pack["retrievalGaps"] = _retrieval_gaps(query, sections)
     # Symbol-range packing (issue #1044 AC4, default OFF): shrink symbol-bearing
     # code candidates to the symbol's exact line range AFTER selection is final,
     # so the flag never changes which candidates are included (precision/recall
@@ -971,6 +1188,7 @@ def build_context_pack(
             "skillsMapTo": "compiler.candidates[kind=procedural_guidance]",
         },
         token_pack_strategy="greedy_budget_fill",
+        graph_expansion=(query.get("compiler") or {}).get("graphExpansion"),
         rerank=rerank_meta,
     )
     if symbol_packing_on:
@@ -989,6 +1207,16 @@ def build_context_pack(
     rerank_llm_usage = (pack["compiler"].get("rerank") or {}).get("llm") if isinstance(pack["compiler"].get("rerank"), dict) else None
     if isinstance(rerank_llm_usage, dict):
         pack["rerankCostUsd"] = llm_rerank_cost_usd(rerank_llm_usage)
+    pack["compilerVersion"] = pack["compiler"]["contractVersion"]
+    pack["contentHash"] = _stable_pack_hash(pack)
+    pack["custody"] = pack["compiler"]["policy"]["sourceCustody"]
+    pack["freshness"] = {
+        "indexBuiltAt": pack["indexProvenance"].get("builtAt"),
+        "commitSha": pack["indexProvenance"].get("commitSha"),
+        "sourceTreeFingerprint": pack["indexProvenance"].get("sourceTreeFingerprint"),
+        "staleCount": pack["stale_count"],
+        "deniedCount": pack["denied_count"],
+    }
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")
     append_audit(
@@ -1018,6 +1246,10 @@ def build_context_pack(
         "provider": pack["provider"],
         "audit": audit,
         "compiler": pack["compiler"],
+        "compilerVersion": pack["compilerVersion"],
+        "contentHash": pack["contentHash"],
+        "custody": pack["custody"],
+        "freshness": pack["freshness"],
         "retrieval_dedup": pack["retrieval_dedup"],
     }
     if budget_meta:

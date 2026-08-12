@@ -20,10 +20,10 @@ test("records a bound hosted message with its durable source key", async () => {
     env: { JACE_CONSOLE_BASE_URL: "https://console.test/", JACE_CONSOLE_TOKEN: "secret" },
     transport: async (url, init) => {
       call = { url, init };
-      return { status: 201 };
+      return { status: 201, json: async () => ({ intake: { id: "intake-1" } }) };
     },
   });
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, intakeId: "intake-1" });
   assert.equal(call.url, `https://console.test${ACCEPTANCE_INTAKE_PATH}`);
   const body = JSON.parse(call.init.body);
   assert.equal(body.workspaceId, "workspace-1");

@@ -1,30 +1,40 @@
 # AgentRail — context for agents working in this repo
 
-The product is **Jace**: an open-source AI engineer you hire onto your team
-and talk to in chat. He turns rough ideas into concrete issues, **aligns with
-the user before any work starts** (goal, approach, acceptance criteria,
-model, cost), executes through the factory's SDLC, and opens pull requests —
-never merging by default. The hosted product lives at
-[heyjace.com](https://heyjace.com); self-hosting is fully supported.
+The trust-layer MVP is **Jace**: an agent-agnostic acceptance and evidence
+layer you hire onto your team and talk to in chat. Jace owns acceptance
+contracts, bounded Context Packs, exact-head evidence, blocking corrections,
+and the final human-decision seam. Selected external builders such as Codex or
+Claude Code implement confirmed work and may produce or attach the PR. Jace has
+no implementation or merge authority; the product is the inspectable contract
+→ context → exact-change proof → human-decision path. The hosted product lives
+at [heyjace.com](https://heyjace.com); self-hosting is fully supported.
+
+Product-language precedence during this migration: [ADR 0012](docs/adr/0012-jace-owns-the-acceptance-spine.md)
+and [the trust-layer migration ledger](docs/trust-layer-migration-ledger.md)
+override older factory-oriented framing in this file, generated artifacts, or
+historical plans. The factory remains technically relevant infrastructure and
+historical vocabulary, but it is not the canonical public MVP product model.
 
 Three components, one repo:
 
-- **Jace, the coordinator** (`apps/jace`, built on Eve) — owns all
-  conversation and every chat channel (Telegram live; Discord, Slack,
-  iMessage, WhatsApp being brought up), ideation skills
-  (`grill-me` → PRD → issues), and gated write tools (`create_issue`, with
-  `create_workspace`/`create_repo` in the current arc). His only write path
-  into the factory is the gated create-issue tool.
-- **The factory** (`agentrail/`) — a pure SDLC engine: queue → context pack →
-  failing test first → implement → independent review → objective gate → PR.
-  It does all execution and no conversation.
-- **The console** (`apps/console`, heyjace.com) — the evidence room: work
-  board, runs, review gates, costs, approvals. Secondary door; chat is
-  primary.
+- **Jace, the coordinator** (`apps/jace`, built on Eve) — owns conversation,
+  acceptance alignment, context/evidence provenance, correction packets, and
+  human decision seams across supported channels. He may hand confirmed work
+  to a selected external builder that produces or attaches the PR; Jace is not
+  the implementation agent and has no merge authority.
+- **The factory** (`agentrail/`) — retained execution infrastructure and
+  historical SDLC machinery. Its queue, runner, tests, reviews, and objective
+  gates remain relevant to legacy/internal operation and migration work, but
+  factory execution is not the canonical public trust-layer MVP flow.
+- **The console** (`apps/console`, heyjace.com) — the evidence room for
+  Acceptance Records, Context Packs, exact-head proof, blockers, corrections,
+  and human decisions. It is not a code-generation surface.
 
-Design authority: `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md`
-(the end-to-end arc — message-first door, cloud factory, alignment gate) and
-`TASTE.md` (product quality bar; light-first design direction).
+Design and product authority: [ADR 0012](docs/adr/0012-jace-owns-the-acceptance-spine.md)
+and [the trust-layer migration ledger](docs/trust-layer-migration-ledger.md).
+The `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md` document
+is historical factory-era execution context only; `TASTE.md` remains the
+product quality bar and light-first visual direction.
 
 ## Language
 
@@ -113,24 +123,37 @@ The unit of cost measurement: one good goal taken to a change that passes the **
 _Avoid_: Measuring cost per prompt, per phase, or per retrieval call as if that were the product's cost.
 
 **Execution-Only Autonomy (factory)**:
-The *factory's* autonomy is in execution, not goal selection — it never invents its own work; it drains a queue of approved issues. Goal-adjacent behavior lives one layer up in **Jace**, and every one of his write paths is human-gated: `create_issue` requires approval, the **Alignment Gate** holds every entry until the user confirms, and the goal loop (when it ships) files issues through the same gated path under a leash. Autonomy grows by widening *permissions* (alignment auto-confirm, merge rights), never by adding ungated write paths.
-_Avoid_: Ungated goal-seeking; a queue the factory fills itself; treating Jace's gated ideation as a violation of factory purity.
+The retained factory's autonomy is bounded to executing approved issues; it
+does not select its own work. Its gated issue and alignment path is legacy
+factory infrastructure, not a limit on current trust-layer review/evidence
+operations and not a grant of implementation or merge authority to Jace.
+_Avoid_: Treating legacy factory execution as the canonical trust-layer flow;
+ungated goal-seeking; a queue the factory fills itself.
 
-**Alignment Gate**:
-The flow step between admission and execution: Jace posts an **alignment brief** — goal, planned approach, acceptance criteria, suggested model with its cost estimate, budget — and the entry holds (parked, "awaiting alignment") until the user confirms through the single approval seam. Applies to chat-born and label-born work alike; `requireAlignment` defaults ON.
-_Avoid_: Starting development straight from an issue label; a second approval code path.
+**Alignment Gate (legacy factory intake)**:
+In the retained factory flow, Jace posts an **alignment brief** before an entry
+can execute. The confirmed Acceptance Contract is the canonical trust-layer
+boundary; legacy alignment metadata must not create a parallel contract.
+_Avoid_: Starting factory execution without its required confirmation;
+treating an alignment brief as a confirmed Acceptance Contract.
 
-**Single Approval Seam**:
-Every human yes/no — tool approvals, alignment confirms, run-decision buttons — is a `jace_approvals` row resolved by one atomic pending→resolved flip, whether the click came from a chat button or the console approvals page. One seam, many surfaces.
-_Avoid_: Parallel approval mechanisms per surface.
+**Approval Custody**:
+Tool approvals, legacy alignment confirmations, and other gated actions use
+`jace_approvals`. Final Acceptance Record decisions remain separate exact-head
+decision custody and do not grant Jace implementation or merge authority.
+_Avoid_: Parallel approval mechanisms for the same action; collapsing every
+human decision into a generic approval or merge grant.
 
 **Chat Identity**:
 The platform + platform-user-id pair that IS a user's provisional account. Inbound messages resolve chat identity → workspace; a connect-GitHub magic link sent in-chat binds chat identity + GitHub account + workspace. Unknown identities get an onboarding conversation, not an error.
 _Avoid_: Requiring console signup before Jace will talk to someone.
 
-**Merge Permission (trust ladder)**:
-Jace opens PRs; he cannot merge. Merge rights are a per-workspace, revocable, audited grant — OFF by default. The probation ladder: review everything → grant alignment auto-confirm → grant merge.
-_Avoid_: Any auto-merge without an explicit recorded grant (the AFK dogfood loop's auto-merge never touches hosted-customer repos).
+**Merge Authority (trust-layer boundary)**:
+Jace has no implementation or merge authority. The selected external builder
+may produce or attach the PR; Jace binds and reviews its exact head, while the
+final merge remains an explicit human decision in the external repository.
+_Avoid_: Treating PR attachment, review, approval, or carrier acceptance as a
+merge action or grant.
 
 **Issue Queue**:
 The concurrency-bounded queue of human-defined issues awaiting or undergoing autonomous execution. Each entry carries its tier (which model), remaining budget, and state. Escalation is a queue transition (re-enqueue at a higher tier with a compacted failure handoff and decremented budget).
@@ -194,8 +217,13 @@ _Avoid_: Reporting context-retrieval token deltas (e.g. the −21% retrieval ben
 - A repository may contain many **Codebase Units**, and retrieval should prefer the smallest relevant unit before expanding across dependency or ownership edges.
 - **Graph Enrichment** may help discovery, but it must not outrank deterministic code, tests, explicit docs, ownership config, git history, issues, PRs, or run evidence.
 - **Context Memory** is advisory and must not outrank current code, explicit docs, or current task instructions.
-- **Jace** is the only conversational surface; the factory produces events and data and does no talking. Jace's only write path into the factory is the gated create-issue tool, and the **Alignment Gate** holds every entry until the user confirms.
-- **The Console** shows what the factory did, what context it used, what it excluded, what failed, what it cost, and which policies or review gates applied — the evidence behind Jace's work.
+- **Jace** is the trust-layer conversational and coordination surface. The
+  retained factory produces events and data rather than conducting product
+  conversation; current bounded review/evidence operations follow Acceptance
+  Record, confirmed Contract, and exact-head authority.
+- **The Console** presents Acceptance Records, confirmed Contracts, bounded
+  Context Packs, exact-head evidence, correction custody, and human decisions
+  without making the factory queue the product authority.
 - **Console Design** guides the console's information architecture and interaction style per `TASTE.md` (light-first). AgentRail owns its implementation and visual system.
 - **Run Events**, **Cost Events**, and **Audit Events** are server-readable evidence for dashboard, billing, review gates, and incident review.
 - A **Retrieval Quality Gate** must pass before the **Context Compiler** is treated as production-ready.

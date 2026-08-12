@@ -181,6 +181,100 @@ class EvalsApplyCliTests(unittest.TestCase):
         self.assertNotIn("Applied:", out)
 
 
+class AcceptanceReportCliTests(unittest.TestCase):
+    def test_publishes_only_supplied_acceptance_case_evidence(self) -> None:
+        import tempfile
+
+        from agentrail.evals.acceptance_case.offline_runner import AcceptanceRunReport
+        from agentrail.evals.acceptance_case.report import serialize_acceptance_run_report
+        from agentrail.evals.acceptance_case.scorecards import AcceptanceObservation
+
+        observation = AcceptanceObservation(
+            case="case-1",
+            arm="full-jace-loop",
+            scorecard="proof",
+            segment="ui",
+            evidence_class="offline",
+            independent_truth=None,
+            jace_claim=None,
+            provenance={
+                "caseVersion": "case-v1",
+                "corpusVersion": "corpus-v1",
+                "repository": "acme/app",
+                "repositoryCommit": "base-sha",
+                "contractVersion": "contract-v1",
+                "model": "builder-v1",
+                "configVersion": "config-v1",
+                "promptVersion": "prompt-v1",
+                "guardrailVersion": "guardrail-v1",
+                "contextPackHash": "sha256:pack",
+                "contextPackTokenBudget": "900",
+                "prHead": "head-sha",
+                "diffIdentity": "sha256:diff",
+                "environmentId": "preview-1",
+                "artifactRefs": "artifact-1",
+                "scorerVersion": "scorer-v1",
+                "outcomeSource": "independent-label-v1",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "acceptance-report.json"
+            output_path = root / "acceptance-report.md"
+            input_path.write_text(
+                serialize_acceptance_run_report(
+                    AcceptanceRunReport(
+                        observations=(observation,),
+                        scorecards={
+                            "full-jace-loop:offline:proof:ui": {
+                                "total": 1,
+                                "scored": 0,
+                                "unscored": 1,
+                                "claim_true": 0,
+                                "truth_true": 0,
+                                "false_green": 0,
+                                "false_block": 0,
+                            }
+                        },
+                        promotion=None,
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            rc, out, err = _run(
+                ["acceptance-report", "--input", str(input_path), "--output", str(output_path)]
+            )
+
+            self.assertEqual(rc, 0, msg=f"stdout={out} stderr={err}")
+            self.assertEqual(out, "")
+            markdown = output_path.read_text(encoding="utf-8")
+            self.assertIn("OFFLINE EVIDENCE ONLY", markdown)
+            self.assertIn("| prHead | head-sha |", markdown)
+            self.assertNotIn("run_spine", markdown)
+
+    def test_rejects_malformed_input_without_writing_output(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "bad.json"
+            output_path = root / "report.md"
+            input_path.write_text("{", encoding="utf-8")
+            output_path.write_text("sentinel", encoding="utf-8")
+            rc, out, err = _run(
+                ["acceptance-report", "--input", str(input_path), "--output", str(output_path)]
+            )
+
+            self.assertEqual(rc, 2)
+            self.assertEqual(out, "")
+            self.assertIn("invalid JSON", err)
+            # Keep the no-write assertion inside the TemporaryDirectory; after
+            # cleanup every path would be absent regardless of CLI behavior.
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "sentinel")
+
+
 class EvalsRunNewFlowCliTests(unittest.TestCase):
     def test_full_and_new_flow_both_run_with_deltas(self) -> None:
         """AC4: --arm full --arm new-flow -> both rows + per-layer deltas."""

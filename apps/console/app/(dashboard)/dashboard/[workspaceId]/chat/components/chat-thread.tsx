@@ -5,6 +5,7 @@ import Image from "next/image";
 import { ArrowUp } from "lucide-react";
 import { mergeChatMessages, highestSeq, isAwaitingReply, type ChatMessage, type ChatApproval } from "./chat-helpers";
 import { ChatMarkdown } from "./chat-markdown";
+import { AcceptanceContextStrip, type ChatAcceptanceContext } from "./acceptance-context-strip";
 
 // Gentle enough not to hammer the poll endpoint, fast enough that Jace's
 // reply shows up without a manual refresh — same order of magnitude as the
@@ -89,6 +90,7 @@ export function ChatThread({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [approvals, setApprovals] = useState<ChatApproval[]>([]);
+  const [acceptance, setAcceptance] = useState<ChatAcceptanceContext | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
@@ -113,7 +115,11 @@ export function ChatThread({
         `/api/v1/workspaces/${workspaceId}/chat?n=${n}&after_seq=${afterSeqRef.current}`
       );
       if (!res.ok) return;
-      const body = (await res.json()) as { messages: ChatMessage[]; approvals: ChatApproval[] };
+      const body = (await res.json()) as {
+        messages: ChatMessage[];
+        approvals: ChatApproval[];
+        acceptance: ChatAcceptanceContext | null;
+      };
       if (!mountedRef.current) return;
       if (body.messages.length > 0) {
         setMessages((prev) => {
@@ -123,6 +129,7 @@ export function ChatThread({
         });
       }
       setApprovals(body.approvals);
+      setAcceptance(body.acceptance ?? null);
       setError(null);
     } catch {
       // A poll failure is silent — the next tick retries. Only the
@@ -248,12 +255,16 @@ export function ChatThread({
               ))}
             </div>
           ) : messages.length === 0 && approvals.length === 0 ? (
-            <p className="text-sm text-[var(--gray-09)]">
-              Say hi — Jace is listening. Ask it to check on a run, kick off work, or just say
-              hello.
-            </p>
+            <>
+              <AcceptanceContextStrip workspaceId={workspaceId} acceptance={acceptance} />
+              <p className="text-sm text-[var(--gray-09)]">
+                Say hi — Jace is listening. Ask it to check on a run, kick off work, or just say
+                hello.
+              </p>
+            </>
           ) : (
             <>
+              <AcceptanceContextStrip workspaceId={workspaceId} acceptance={acceptance} />
               {messages.map((m) => {
                 const isNew = !seenIdsRef.current.has(m.id);
                 return m.role === "user" ? (

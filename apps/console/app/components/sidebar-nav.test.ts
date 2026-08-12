@@ -51,7 +51,7 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), Briefs (spec PR #1487/#1489), Investigations (spec PR #1501), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
+  it("Engine room zone contains the existing evidence pages plus Context Packs", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
@@ -63,6 +63,7 @@ describe("NAV_ZONES data structure", () => {
       "briefs",
       "investigations",
       "wiki",
+      "context-packs",
       "failures",
     ]);
   });
@@ -166,6 +167,7 @@ describe("NAV_ZONES data structure", () => {
       "permissions", // #1278: owner-only grantable merge-permission toggle
       "model-selection", // #1338 PR③: per-task-type model-outcome observe view
       "wiki", // repo wiki 6/7: read-only Engine-room Wiki view, sibling of Memory
+      "context-packs", // metadata-only customer Context Pack index
       "gateways", // gateways-page T3: Settings-zone page for the 5 chat surfaces, above Connectors
       "billing", // subscription-platform spec, slice-3 plan Task 5: plan card + Starter/Growth checkout + Stripe customer-portal link
       // "api-keys" intentionally excluded: removed from the nav (owner

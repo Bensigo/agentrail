@@ -109,6 +109,29 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(explanation["packId"], pr_output["packId"])
         self.assertIn("likelyDocs", explanation["sections"])
 
+    def test_context_build_acceptance_record_requires_and_reads_contract(self) -> None:
+        repo = Path(__file__).resolve().parents[3]
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        (root / "CONTEXT.md").write_text("# Context\n\nAcceptance Record context.\n", encoding="utf-8")
+        contract_path = root / "contract.json"
+        contract_path.write_text(json.dumps({"goal": "Show the status", "acceptanceCriteria": [{"id": "AC-1"}]}), encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                str(repo / "agentrail" / "scripts" / "agentrail"),
+                "context", "build", "acceptance-record", "record-cli-1",
+                "--contract", str(contract_path), "--phase", "execute", "--target", str(root), "--json",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        output = json.loads(result.stdout)
+        self.assertEqual(output["target"], {"kind": "acceptance_record", "id": "record-cli-1", "phase": "execute"})
+        self.assertTrue((root / output["jsonPath"]).exists())
+
     def test_provider_facing_json_shape_for_context_commands(self) -> None:
         repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())

@@ -589,15 +589,17 @@ refusal; and zero approval, reservation, or publication writes.
 That lane was not executed in this checkout: the managed local sandbox refused
 both the production listener and Docker socket, while the fixture script's
 separate strict typecheck, the Console typecheck, and the production Console
-build passed. The dedicated CI job is therefore a required external merge gate,
-not a result claimed by this source text. No real GitHub issue write,
-deployed/live path, or customer outcome was observed.
+build passed. GitHub CI run `31552976700`, job `93979981919`, subsequently ran
+the production listener with fresh migrated PostgreSQL and MinIO at PR head
+`148cfbfc` and passed all seven Chromium scenarios in 15.2 seconds. This is
+CI-runner browser/runtime proof for that exact test tree, not deployed/live or
+customer proof. The final PR head must still pass the same external merge gate.
+No real GitHub issue write was performed.
 
 R11.2 product-source behavior remains source/test closed at this bounded
-boundary. The authenticated browser proof remains unproven until its dedicated
-CI job completes successfully. R11 remains **FAIL / not release-ready** until
-that local-runtime proof and the separate deployed/live and customer proof
-exist.
+boundary, and the bounded authenticated browser proof above is established at
+CI-runtime level. R11 remains **FAIL / not release-ready** until the separate
+deployed/live and customer proof exists.
 
 ## R12 progress
 

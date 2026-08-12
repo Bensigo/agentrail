@@ -493,7 +493,6 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       record: { currentPrHeadSha: string; currentPrHeadCycleId: string };
       correctionPackets: { kind: string; reason?: string };
       criterionOutcomes: { kind: string; reason?: string };
-      gatedIssue: { kind: string; reason?: string };
     };
     expect(body.record.currentPrHeadSha).toBe(state.headA);
     expect(body.record.currentPrHeadCycleId).toBe(state.currentHeadCycleId);
@@ -502,10 +501,6 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       reason: "no_correction_packets",
     });
     expect(body.criterionOutcomes).toEqual({
-      kind: "not_ready",
-      reason: "verification_plan_unavailable",
-    });
-    expect(body.gatedIssue).toEqual({
       kind: "not_ready",
       reason: "verification_plan_unavailable",
     });

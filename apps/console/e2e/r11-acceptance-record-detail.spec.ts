@@ -517,9 +517,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       "No failed or not-proven correction packet is recorded for the current exact head and head cycle.",
       { exact: true },
     )).toBeVisible();
-    const lifecycle = page.getByRole("heading", { name: /^Lifecycle events \(\d+\)$/u })
-      .locator("xpath=ancestor::section[1]");
-    await expect(lifecycle.getByText(state.observedFailure)).toHaveCount(1);
+    const historicalCorrection = page.getByText("Correction context (failed)", { exact: true })
+      .locator("xpath=ancestor::details[1]");
+    await expect(historicalCorrection.getByText(state.observedFailure)).toHaveCount(1);
     await owner.close();
 
     const inspection = await runFixture<FixtureInspection>("inspect", state);

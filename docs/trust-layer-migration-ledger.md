@@ -1,8 +1,11 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-12 at main commit `f9dd6b86`, after merged PR
-#1719. The bounded dependency source/test foundations are recorded below;
-canonical R10 completion and release proof remain open.
+Last reconciled in this proof checkout: 2026-08-12 against exact base commit
+`a5add671`, before the pending R11.2 authenticated-browser proof lane described
+below. Publication must replay this bounded diff onto the then-current main;
+no later source state is claimed here. The bounded dependency source/test
+foundations are recorded below; canonical R10 completion and release proof
+remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -33,7 +36,7 @@ never claims repair or resume without a receipt.
 | AC | Canonical requirement | Source/test | Local runtime | Deployed/live | Customer | Implementation exit |
 | --- | --- | --- | --- | --- | --- | --- |
 | R8.1 | Failed or unproven required criteria create evidence-bound correction packets with the original criterion, observed and expected behavior, reproduction, affected context, evidence, and scope boundary. | Complete. The immutable packet path landed in PR #1652. | Complete. Packet identity, validation, and PostgreSQL custody ran locally. | Missing. | Missing. | **Closed.** |
-| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | Complete. MCP, primary Jace chat, and Console resolve the same server-validated current packet custody. Those retrieval surfaces remain read-only; the later R11.2c path permits one separate owner/admin-gated issue for exact current custody. | Partial. Persistence and current-cycle isolation ran against local PostgreSQL, and the adapters passed local tests/builds. No authenticated browser-to-server or external-provider run was performed. | Missing. | Missing. | **Source/test slice closed; release FAIL until deployed/live and customer proof exist.** |
+| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | Complete. MCP, primary Jace chat, and Console resolve the same server-validated current packet custody. Those retrieval surfaces remain read-only; the later R11.2c path permits one separate Jace-only, human-approved issue for exact current custody. | Partial. Persistence and current-cycle isolation ran against local PostgreSQL, and the adapters passed local tests/builds. No authenticated browser-to-server or external-provider run was performed. | Missing. | Missing. | **Source/test slice closed; release FAIL until deployed/live and customer proof exist.** |
 
 The R8.2 extension is part of R8.2, not a new acceptance criterion:
 
@@ -538,12 +541,13 @@ PostgreSQL/component proof only. No authenticated browser flow, real
 artifact-store object, live GitHub write, deployed/live path, or customer
 outcome was observed.
 
-The R11.2c slice adds one owner/admin-gated GitHub issue path for the exact
-current correction-packet set. Its opaque binding includes the authoritative
-head occurrence, confirmed Contract, posted R11.2b bundle and attestation, and
-ordered packet identities and digests. Reservation rederives that custody and
-membership under the PR lock. Only a freshly inserted reservation releases the
-server-rendered `{title, body}` request; existing reservations and terminal
+The R11.2c slice adds one Jace-only, human-approved GitHub issue path for the
+exact current correction-packet set. Its opaque binding includes the
+authoritative head occurrence, confirmed Contract, posted R11.2b bundle and
+attestation, and ordered packet identities and digests. Reservation rederives
+that custody and membership under the PR lock. Only a freshly inserted
+reservation releases the server-rendered `{title, body}` request; existing
+reservations and terminal
 states withhold the request, so the route cannot automatically retry an
 uncertain external write.
 
@@ -560,9 +564,11 @@ absent. Orphan table/event states fail closed rather than becoming “not
 recorded.”
 
 The existing Record detail projection is the only browser read model for this
-state. It exposes the exact current binding and immutable issue status, and
-shows the action only to an owner/admin when no issue exists. No parallel raw
-timeline inference or optimistic success state is used.
+state. It exposes the exact current binding and immutable issue status but no
+issue-creation action. Even an owner or admin browser POST receives
+`jace_approval_required`; Jace must mint the request from an Eve session and
+obtain the human approval. No parallel raw timeline inference or optimistic
+success state is used.
 
 Local R11.2c proof includes 57 focused database boundary/schema/renderer tests,
 16 fresh migrated PostgreSQL R11.2b/gated-issue cases after the final rendered
@@ -571,13 +577,29 @@ suite, 203 focused Console route/helper/component tests, and a full
 142-file / 1,789-test fresh-migrated database run before the final focused
 evidence-reference and orphan-custody hardening. Package typechecks/builds,
 scoped lint, diff checks, and independent adversarial review also passed. This
-is source/test and local PostgreSQL/component proof only. No authenticated
-browser flow, real GitHub issue write, deployed/live path, or customer outcome
-was observed.
+is source/test and local PostgreSQL/component proof only.
 
-R11.2 source/test work is complete at this bounded boundary. R11 remains
-**FAIL / not release-ready** until authenticated browser, deployed/live, and
-customer proof exist.
+A separate R11.2 browser-proof lane is now source-wired to run the production
+Console with a directly minted Auth.js database session, fresh migrated
+PostgreSQL, and a real MinIO object. Its exact-ID fixture covers owner, member,
+foreign, and unauthenticated reads; opaque artifact success and hash-tamper
+refusal; A→B→A currentness; the owner `409` / member `403` browser publication
+refusal; and zero approval, reservation, or publication writes.
+
+That lane was not executed in this checkout: the managed local sandbox refused
+both the production listener and Docker socket, while the fixture script's
+separate strict typecheck, the Console typecheck, and the production Console
+build passed. GitHub CI run `31552976700`, job `93979981919`, subsequently ran
+the production listener with fresh migrated PostgreSQL and MinIO at PR head
+`148cfbfc` and passed all seven Chromium scenarios in 15.2 seconds. This is
+CI-runner browser/runtime proof for that exact test tree, not deployed/live or
+customer proof. The final PR head must still pass the same external merge gate.
+No real GitHub issue write was performed.
+
+R11.2 product-source behavior remains source/test closed at this bounded
+boundary, and the bounded authenticated browser proof above is established at
+CI-runtime level. R11 remains **FAIL / not release-ready** until the separate
+deployed/live and customer proof exists.
 
 ## R12 progress
 

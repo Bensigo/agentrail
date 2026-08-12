@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const { chain, database, rows } = vi.hoisted(() => {
   const rows = [{
@@ -52,5 +53,20 @@ describe("Context Pack workspace index query", () => {
     expect(result).toEqual(rows);
     expect(database.select).toHaveBeenCalledOnce();
     expect(chain.limit).toHaveBeenCalledWith(7);
+  });
+
+  it("excludes Packs whose source head is no longer authoritative", async () => {
+    await listAcceptanceContextPacksForWorkspace({ workspaceId });
+
+    const headCustodyJoin = chain.innerJoin.mock.calls[1]?.[1];
+    const sql = new PgDialect().sqlToQuery(headCustodyJoin).sql.toLowerCase();
+
+    expect(sql).toContain("current_pr_head_authoritative");
+    expect(sql).toContain("current_pr_head_sha");
+    expect(sql).toContain("current_pr_head_cycle_id");
+    expect(sql).toContain("expected_head_sha");
+    expect(sql).toContain("review_job_id");
+    expect(sql).toContain("repo");
+    expect(sql).toContain("pr_number");
   });
 });

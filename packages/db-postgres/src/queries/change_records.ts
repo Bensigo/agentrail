@@ -8674,6 +8674,11 @@ export async function listAcceptanceContextPacksForWorkspace(
       and(
         eq(changeRecords.id, acceptanceContextPackSnapshots.recordId),
         eq(changeRecords.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+        eq(changeRecords.repo, acceptanceContextPackSnapshots.repo),
+        eq(changeRecords.prNumber, acceptanceContextPackSnapshots.prNumber),
+        eq(changeRecords.currentPrHeadAuthoritative, true),
+        eq(changeRecords.currentPrHeadSha, acceptanceContextPackSnapshots.expectedHeadSha),
+        eq(changeRecords.currentPrHeadCycleId, acceptanceContextPackSnapshots.reviewJobId),
       ),
     )
     .where(and(

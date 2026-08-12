@@ -1,9 +1,9 @@
 # Jace trust-layer migration ledger
 
-Last reconciled in this proof checkout: 2026-08-12 against exact base commit
-`a5add671`, before the pending R11.2 authenticated-browser proof lane described
-below. Publication must replay this bounded diff onto the then-current main;
-no later source state is claimed here. The bounded dependency source/test
+Last reconciled in this proof checkout: 2026-08-12 against the exact main tree
+at commit `9380c8e3` (PR #1724), after the R11.2 authenticated-browser proof
+lane merged. Publication must replay this bounded diff onto the then-current
+main; no later source state is claimed here. The bounded dependency source/test
 foundations are recorded below; canonical R10 completion and release proof
 remain open.
 
@@ -352,6 +352,32 @@ legacy draft, canonical evidence, approval, external-builder Pack, and managed
 execution registries. The existing source-only observer and immutable audit
 history remain unchanged. Local source/test proof does not claim a live GitHub
 delivery, deployed runtime, or customer outcome.
+
+PR #1724 adds a separate pure Go checksum-database verifier and bounded
+transport/proof-construction foundation. The verifier pins the official
+`sum.golang.org` key, binds the exact requested module/version and zip plus
+`/go.mod` hashes to the signed lookup record, checks record inclusion, and
+maintains an in-memory monotonic signed-tree timeline with consistency proofs.
+The transport uses exact HTTPS paths, no ambient proxy or credentials, refuses
+redirects before following them, caps response bodies, and reconstructs the
+required tile proofs. That slice did not make a live checksum-database request
+and added no database, watcher, evidence, approval, Pack, builder, delivery, or
+execution authority.
+
+This follow-on stores only small opaque raw signed-tree-note metadata (at most
+4 KiB) as canonical Base64 with a recomputed SHA-256 and append-only
+compare-and-set lineage. Each row is bound to the exact workspace, watch,
+repository, prior generation, and Go source-inventory observation. A blocking
+per-watch transaction lock admits one bootstrap and one successor per current
+digest; exact retries are idempotent, while stale, reused, or competing
+successors conflict. Source-observation deletion is restricted while custody
+exists; one explicit whole-watch teardown removes the complete timeline before
+intentional watch or workspace deletion. PostgreSQL deliberately stores no
+caller-parsed tree size or root and does not claim to authenticate the note,
+record inclusion, or consistency. A later Python runtime slice must reload the
+raw prior note through the pinned-key verifier, authenticate the new lookup and
+proofs, then advance this custody. Go remains outside draft, accepted evidence,
+approval, Pack, builder, delivery, and managed execution authority.
 
 Poetry was audited rather than admitted. Its non-installing `update <package>
 --lock` command still has no exact-target argument and Poetry 2.4.1 can fall

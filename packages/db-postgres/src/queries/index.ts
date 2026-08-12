@@ -3178,6 +3178,7 @@ export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
 export { countAccountRunsStartedInWindow } from "./capacity.js";
 
 export * from "./dependency_watches.js";
+export * from "./go_sumdb_note_custody.js";
 export * from "./dependency_upgrade_contracts.js";
 export * from "./dependency_observation_acceptance_records.js";
 export {

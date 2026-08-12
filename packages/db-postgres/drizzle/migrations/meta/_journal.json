@@ -702,6 +702,13 @@
       "when": 1793000000000,
       "tag": "0099_dependency_watch_go_sumdb_note_custody",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1793100000000,
+      "tag": "0100_acceptance_brief_bindings",
+      "breakpoints": true
     }
   ]
 }

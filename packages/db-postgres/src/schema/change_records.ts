@@ -15,6 +15,7 @@ import { workspaces } from "./workspaces.js";
 import { reviewJobs } from "./review_jobs.js";
 import { users } from "./auth.js";
 import { jaceApprovals, jaceSessions } from "./jace_sessions.js";
+import { briefs } from "./briefs.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -152,6 +153,61 @@ export const acceptanceContracts = pgTable(
     recordCreated: index("acceptance_contracts_record_created_idx").on(
       t.recordId,
       t.createdAt
+    ),
+  })
+);
+
+/**
+ * Immutable provenance for one Brief snapshot bound to one Acceptance Record.
+ * The live Brief remains editable; this row preserves the exact content and
+ * confirmed Contract identity used for the binding.
+ */
+export const acceptanceBriefBindings = pgTable(
+  "acceptance_brief_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "restrict" }),
+    briefId: uuid("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id")
+      .notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    briefSnapshot: jsonb("brief_snapshot").$type<Record<string, unknown>>().notNull(),
+    briefSnapshotSha256: text("brief_snapshot_sha256").notNull(),
+    provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    workspaceRecord: index("acceptance_brief_bindings_workspace_record_idx").on(
+      t.workspaceId,
+      t.recordId
+    ),
+    workspaceBrief: index("acceptance_brief_bindings_workspace_brief_idx").on(
+      t.workspaceId,
+      t.briefId
+    ),
+    recordKey: uniqueIndex("acceptance_brief_bindings_record_key").on(t.recordId),
+    contractKey: index("acceptance_brief_bindings_contract_idx").on(
+      t.acceptanceContractId,
+      t.acceptanceContractVersion
+    ),
+    contractVersionCheck: check(
+      "acceptance_brief_bindings_contract_version_check",
+      sql`${t.acceptanceContractVersion} > 0`
+    ),
+    snapshotHashCheck: check(
+      "acceptance_brief_bindings_snapshot_hash_check",
+      sql`${t.briefSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'`
     ),
   })
 );
@@ -1517,6 +1573,7 @@ export const acceptanceGatedGithubIssuePublications = pgTable(
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
+export type AcceptanceBriefBindingRow = typeof acceptanceBriefBindings.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
 export type AcceptanceBuilderRouteCapabilityProfileRow = typeof acceptanceBuilderRouteCapabilityProfiles.$inferSelect;
 export type AcceptanceBuilderRouteGithubClaudeAckProfileRow = typeof acceptanceBuilderRouteGithubClaudeAckProfiles.$inferSelect;

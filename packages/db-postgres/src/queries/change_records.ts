@@ -5,6 +5,7 @@ import { db } from "../db.js";
 import {
   changeRecordEvents,
   changeRecords,
+  acceptanceBriefBindings,
   acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
@@ -22,6 +23,7 @@ import {
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
+  type AcceptanceBriefBindingRow,
   type AcceptanceBuilderRouteCapabilityProfileRow,
   type AcceptanceBuilderRouteGithubClaudeAckProfileRow,
   type AcceptanceBuilderRouteRow,
@@ -48,6 +50,8 @@ import { reviewJobs, type ReviewJobRow } from "../schema/review_jobs.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
 import { repositories } from "../schema/repositories.js";
+import { briefs, briefItems } from "../schema/briefs.js";
+import type { Brief, BriefItem } from "../schema/briefs.js";
 import { wikiPages } from "../schema/wiki_pages.js";
 import {
   exactGitTreeInclusionProofIdentity,
@@ -89,6 +93,13 @@ function uuid5Url(name: string): string {
   b[8] = (b[8]! & 0x3f) | 0x80;
   const h = b.toString("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Hashes the canonical JSON representation persisted in a Brief binding. */
+export function acceptanceBriefSnapshotSha256(snapshot: unknown): string {
+  return createHash("sha256")
+    .update(acceptanceContextPackCanonicalJson(snapshot), "utf8")
+    .digest("hex");
 }
 
 function toDate(value: unknown): Date {
@@ -2694,6 +2705,28 @@ export type AcceptanceRecordDraft = {
   contract: AcceptanceContractRow;
 };
 
+export type LinkAcceptanceBriefToRecordInput = {
+  workspaceId: string;
+  recordId: string;
+  briefId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  linkedBy: string;
+  /** Optional caller assertion; the stored hash is always server-derived. */
+  briefSnapshotSha256?: string;
+};
+
+export type ReadAcceptanceBriefBindingInput =
+  | { workspaceId: string; recordId: string; briefId?: never }
+  | { workspaceId: string; briefId: string; recordId?: never };
+
+export type AcceptanceBriefBindingRead = {
+  binding: AcceptanceBriefBindingRow;
+  record: ChangeRecordRow;
+  brief: Brief;
+  contract: AcceptanceContractRow;
+};
+
 export type CreateDraftAcceptanceRecordFromIntakeInput = {
   workspaceId: string;
   intakeId: string;
@@ -3132,6 +3165,186 @@ export async function createDraftAcceptanceRecordFromIntake(
   });
 }
 
+function briefItemBindingSnapshot(item: BriefItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    briefId: item.briefId,
+    area: item.area,
+    statement: item.statement,
+    evidence: item.evidence,
+    kind: item.kind,
+    state: item.state,
+    resolution: item.resolution,
+    authority: item.authority,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingSnapshot(brief: Brief, items: BriefItem[]): Record<string, unknown> {
+  return {
+    briefId: brief.id,
+    workspaceId: brief.workspaceId,
+    repositoryId: brief.repositoryId,
+    slug: brief.slug,
+    title: brief.title,
+    status: brief.status,
+    openQuestion: brief.openQuestion,
+    grounding: brief.grounding,
+    jaceSessionIds: brief.jaceSessionIds,
+    items: items.map(briefItemBindingSnapshot),
+    createdAt: brief.createdAt.toISOString(),
+    updatedAt: brief.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingProvenance(input: {
+  linkedBy: string;
+  record: ChangeRecordRow;
+  brief: Brief;
+}): Record<string, unknown> {
+  return {
+    boundBy: input.linkedBy,
+    recordSourceReferences: input.record.sourceReferences,
+    recordCreatedAt: input.record.createdAt.toISOString(),
+    recordUpdatedAt: input.record.updatedAt.toISOString(),
+    recordState: input.record.state,
+    briefCreatedAt: input.brief.createdAt.toISOString(),
+    briefUpdatedAt: input.brief.updatedAt.toISOString(),
+  };
+}
+
+export async function linkAcceptanceBriefToRecord(
+  input: LinkAcceptanceBriefToRecordInput
+): Promise<AcceptanceBriefBindingRow> {
+  if (!Number.isInteger(input.acceptanceContractVersion) || input.acceptanceContractVersion <= 0) {
+    throw new Error("Acceptance Brief binding requires a positive Contract version");
+  }
+  if (
+    input.briefSnapshotSha256 !== undefined &&
+    !/^[a-f0-9]{64}$/i.test(input.briefSnapshotSha256)
+  ) {
+    throw new Error("Acceptance Brief binding requires a SHA-256 snapshot hash");
+  }
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:record:${input.workspaceId}:${input.recordId}`}))
+    `);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:brief:${input.workspaceId}:${input.briefId}`}))
+    `);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:contract:${input.workspaceId}:${input.acceptanceContractId}:${input.acceptanceContractVersion}`}))
+    `);
+
+    const [record] = await tx
+      .select()
+      .from(changeRecords)
+      .where(
+        and(
+          eq(changeRecords.workspaceId, input.workspaceId),
+          eq(changeRecords.id, input.recordId)
+        )
+      )
+      .limit(1);
+    if (!record) {
+      throw new Error("Acceptance Record was not found in workspace");
+    }
+
+    const [contract] = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.id, input.acceptanceContractId),
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.version, input.acceptanceContractVersion),
+          eq(acceptanceContracts.status, "confirmed")
+        )
+      )
+      .limit(1);
+    if (!contract) {
+      throw new Error("Acceptance Contract id/version mismatch or Contract is not confirmed");
+    }
+
+    const existing = await tx
+      .select()
+      .from(acceptanceBriefBindings)
+      .where(eq(acceptanceBriefBindings.recordId, input.recordId))
+      .limit(1);
+    if (existing[0]) {
+      if (existing[0].briefId !== input.briefId) {
+        throw new Error("Acceptance Record already has a linked Brief");
+      }
+      if (
+        existing[0].acceptanceContractId !== contract.id ||
+        existing[0].acceptanceContractVersion !== contract.version
+      ) {
+        throw new Error("Acceptance Brief binding Contract/version mismatch");
+      }
+      const storedHash = acceptanceBriefSnapshotSha256(existing[0].briefSnapshot);
+      if (storedHash !== existing[0].briefSnapshotSha256.toLowerCase()) {
+        throw new Error("Acceptance Brief binding snapshot hash mismatch");
+      }
+      if (
+        input.briefSnapshotSha256 !== undefined &&
+        input.briefSnapshotSha256.toLowerCase() !== existing[0].briefSnapshotSha256.toLowerCase()
+      ) {
+        throw new Error("Acceptance Brief binding snapshot hash mismatch");
+      }
+      return existing[0];
+    }
+
+    const [brief] = await tx
+      .select()
+      .from(briefs)
+      .where(
+        and(
+          eq(briefs.workspaceId, input.workspaceId),
+          eq(briefs.id, input.briefId)
+        )
+      )
+      .limit(1);
+    if (!brief) {
+      throw new Error("Brief was not found in workspace");
+    }
+
+    const items = await tx
+      .select()
+      .from(briefItems)
+      .where(eq(briefItems.briefId, brief.id))
+      .orderBy(asc(briefItems.createdAt), asc(briefItems.id));
+    const snapshot = briefBindingSnapshot(brief, items);
+    const snapshotSha256 = acceptanceBriefSnapshotSha256(snapshot);
+    if (
+      input.briefSnapshotSha256 !== undefined &&
+      input.briefSnapshotSha256.toLowerCase() !== snapshotSha256
+    ) {
+      throw new Error("Acceptance Brief binding snapshot hash mismatch");
+    }
+
+    const rows = await tx
+      .insert(acceptanceBriefBindings)
+      .values({
+        id: uuid5Url(
+          `acceptance-brief-binding:${input.workspaceId}:${input.recordId}:${input.briefId}`
+        ),
+        workspaceId: input.workspaceId,
+        recordId: input.recordId,
+        briefId: input.briefId,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        briefSnapshot: snapshot,
+        briefSnapshotSha256: snapshotSha256,
+        provenance: briefBindingProvenance({ linkedBy: input.linkedBy, record, brief }),
+        createdBy: input.linkedBy,
+      })
+      .returning();
+    return rows[0]!;
+  });
+}
+
 export type CreateDraftAcceptanceContractInput = {
   recordId: string;
   contract: Record<string, unknown>;
@@ -3201,6 +3414,94 @@ export async function readAcceptanceContracts(input: {
     .from(acceptanceContracts)
     .where(eq(acceptanceContracts.recordId, input.recordId))
     .orderBy(asc(acceptanceContracts.version));
+}
+
+function validateAcceptanceBriefBindingRead(
+  row: AcceptanceBriefBindingRead
+): AcceptanceBriefBindingRead {
+  const expectedHash = acceptanceBriefSnapshotSha256(row.binding.briefSnapshot);
+  if (expectedHash !== row.binding.briefSnapshotSha256.toLowerCase()) {
+    throw new Error("Acceptance Brief binding snapshot hash mismatch");
+  }
+  if (
+    row.contract.id !== row.binding.acceptanceContractId ||
+    row.contract.recordId !== row.record.id ||
+    row.contract.version !== row.binding.acceptanceContractVersion ||
+    row.contract.status !== "confirmed"
+  ) {
+    throw new Error("Acceptance Brief binding Contract/version mismatch");
+  }
+  return row;
+}
+
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  recordId: string;
+  briefId?: never;
+}): Promise<AcceptanceBriefBindingRead | null>;
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  briefId: string;
+  recordId?: never;
+}): Promise<AcceptanceBriefBindingRead[]>;
+export async function readAcceptanceBriefBinding(
+  input: ReadAcceptanceBriefBindingInput
+): Promise<AcceptanceBriefBindingRead | AcceptanceBriefBindingRead[] | null> {
+  const hasRecordId = typeof input.recordId === "string";
+  const hasBriefId = typeof input.briefId === "string";
+  if (hasRecordId === hasBriefId) {
+    throw new Error("readAcceptanceBriefBinding requires exactly one of recordId or briefId");
+  }
+  const rows = await db
+    .select({
+      binding: acceptanceBriefBindings,
+      record: changeRecords,
+      brief: briefs,
+      contract: acceptanceContracts,
+    })
+    .from(acceptanceBriefBindings)
+    .innerJoin(
+      changeRecords,
+      and(
+        eq(acceptanceBriefBindings.recordId, changeRecords.id),
+        eq(acceptanceBriefBindings.workspaceId, changeRecords.workspaceId),
+        eq(changeRecords.workspaceId, input.workspaceId)
+      )
+    )
+    .innerJoin(
+      briefs,
+      and(
+        eq(acceptanceBriefBindings.briefId, briefs.id),
+        eq(acceptanceBriefBindings.workspaceId, briefs.workspaceId)
+      )
+    )
+    .innerJoin(
+      acceptanceContracts,
+      and(
+        eq(acceptanceBriefBindings.acceptanceContractId, acceptanceContracts.id),
+        eq(acceptanceContracts.recordId, changeRecords.id)
+      )
+    )
+    .where(
+      and(
+        eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
+        hasRecordId
+          ? eq(acceptanceBriefBindings.recordId, input.recordId)
+          : eq(acceptanceBriefBindings.briefId, input.briefId)
+      )
+    )
+    .orderBy(asc(acceptanceBriefBindings.createdAt), asc(acceptanceBriefBindings.id));
+
+  const validated = rows.map((row) =>
+    validateAcceptanceBriefBindingRead({
+      binding: row.binding,
+      record: row.record,
+      brief: row.brief,
+      contract: row.contract,
+    })
+  );
+  if (hasRecordId) return validated[0] ?? null;
+  return validated;
 }
 
 const ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY = "acceptance-builder-route:selected";

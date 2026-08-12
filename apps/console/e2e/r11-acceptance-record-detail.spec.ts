@@ -338,20 +338,27 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     const currentCorrections = page.locator("section").filter({
       has: page.getByRole("heading", { name: "Corrections (1)", exact: true }),
     });
+    const currentCorrectionCard = currentCorrections.locator("article").filter({
+      has: page.getByText("AC-1", { exact: true }),
+    });
+    await expect(currentCorrectionCard.getByText("AC-1", { exact: true })).toBeVisible();
     await expect(
-      currentCorrections.getByText("Observed", { exact: true }).locator("..").locator("dd"),
+      currentCorrectionCard.getByText("Expected", { exact: true }).locator("..").locator("dd"),
+    ).toHaveText(CRITERION_TEXT);
+    await expect(
+      currentCorrectionCard.getByText("Observed", { exact: true }).locator("..").locator("dd"),
     ).toHaveText(state.observedFailure);
     await expect(
-      currentCorrections.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
+      currentCorrectionCard.getByText("Required correction", { exact: true }).locator("..").locator("dd"),
     ).toHaveText("Keep the saved filter visible after reload and retain new exact-head evidence.");
     await expect(
-      currentCorrections.getByText("Impact", { exact: true }).locator("..").locator("dd"),
+      currentCorrectionCard.getByText("Impact", { exact: true }).locator("..").locator("dd"),
     ).toHaveText("The server-attested receipt does not prove the confirmed criterion on the exact head.");
     await expect(
-      currentCorrections.getByText("Scope boundary", { exact: true }).locator("..").locator("dd"),
+      currentCorrectionCard.getByText("Scope boundary", { exact: true }).locator("..").locator("dd"),
     ).toHaveText(`Only AC-1 for ${state.repo}#${state.prNumber} at ${state.headA}.`);
     await expect(
-      currentCorrections.getByText("Re-verification", { exact: true }).locator("..").locator("dd"),
+      currentCorrectionCard.getByText("Re-verification", { exact: true }).locator("..").locator("dd"),
     ).toHaveText("Rerun the persisted verification plan against the next exact head.");
     await expect(page.getByText("Current artifact receipts: 1")).toBeVisible();
     await expect(page.getByText(/Ask Jace to create the current correction issue/)).toBeVisible();

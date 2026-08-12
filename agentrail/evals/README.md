@@ -91,6 +91,38 @@ agentrail/evals/
 
 The CLI surface lives in `agentrail/cli/commands/evals.py`.
 
+## Acceptance Case report publication
+
+### Corpus admission
+
+`load_acceptance_case_corpus(root, require_independent_labels=True)` admits
+only a manifest-bound corpus: every `case.json` must match its recorded
+SHA-256, declared corpus version, and manifest inventory. The manifest records
+whether labels are `synthetic` or `independent` plus label-authority identity.
+Synthetic fixtures may exercise parser/unit paths, but are rejected at the
+held-out promotion boundary. This guard does not make labels independent by
+itself; the authority must be supplied and audited outside the evaluated flow.
+
+`agentrail evals acceptance-report --input PATH --output PATH` is a narrow,
+offline publication command for an already-produced `AcceptanceRunReport`. It
+reads exactly the caller-supplied JSON input, validates the versioned report
+shape, and writes exactly the requested deterministic Markdown output. The
+output is explicitly labelled:
+
+```
+OFFLINE EVIDENCE ONLY — no product-benefit claim
+```
+
+This command does not load or create a corpus, execute a builder or sandbox,
+run a scorer, inspect hidden truth, run a canary, calculate promotion, or
+produce market/adoption/product-benefit evidence. It does not call the legacy
+`run_spine` path; `agentrail evals run` remains unchanged and is still the
+legacy execution command. Missing or malformed JSON fails nonzero. An empty
+observation set renders `NO OFFLINE EVIDENCE` and cannot be represented as a
+pass, a zero rate, or a promotion in Markdown. The JSON preserves nullable
+claims, evidence class, arm/scorecard/segment, all provenance keys, supplied
+denominator aggregates, and any caller-supplied promotion object for audit.
+
 ## How to run one
 
 One command runs the spine. The default runs the `baseline` and `full` arms over

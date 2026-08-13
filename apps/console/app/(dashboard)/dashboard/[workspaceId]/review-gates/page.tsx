@@ -466,7 +466,7 @@ export default function ReviewGatesPage() {
           Review Gates
         </h1>
         <p className="mt-1 text-xs text-[var(--gray-09)]">
-          Historical gate evidence. Final decisions live on Acceptance Records.
+          Historical evidence only. Decisions live on Acceptance Records.
         </p>
       </div>
 

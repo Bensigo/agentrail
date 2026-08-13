@@ -45,8 +45,8 @@ describe("AcceptanceOutcomeMetricsSummary", () => {
     expect(text).toContain("Deployment observed0");
     expect(text).toContain("Incident observed1");
     expect(text).toContain("Reverted0");
-    expect(text).toContain("Not recorded means no valid decision receipt");
-    expect(text).toContain("Unknown / excluded is separate from zero");
-    expect(text).toContain("not human decisions");
+    expect(text).toContain("Not recorded = no valid receipt");
+    expect(text).toContain("Unknown / excluded ≠ zero");
+    expect(text).not.toContain("Human decision observations");
   });
 });

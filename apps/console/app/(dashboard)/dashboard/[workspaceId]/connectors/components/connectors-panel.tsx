@@ -22,8 +22,8 @@ import { OAUTH_ERROR_REASONS, type OauthErrorReason } from "../../../../../../li
  * tall expanded card beside short collapsed ones — height varied per row,
  * per section, per connected/disconnected state.
  *
- * Now every provider, in every section (issue sources / MCP /
- * observability), renders as the SAME fixed-height `ConnectorTile` — brand
+ * Now every customer-visible provider renders as the SAME fixed-height
+ * `ConnectorTile` — brand
  * icon, name, one-line description, status pill, nothing else. No inline
  * expansion means no tile can ever be taller than its neighbors; height
  * variance is impossible by construction, not by convention. Clicking a
@@ -58,16 +58,14 @@ const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
 // --------------------------------------------------------------------------- //
 
 const OAUTH_ERROR_MESSAGES: Record<OauthErrorReason, string> = {
-  state_invalid:
-    "That connect link expired, was already used, or didn't match your session — click Connect again to start a fresh one.",
+  state_invalid: "Connect link expired or no longer matches this session. Try again.",
   provider_unknown: "That connector isn't recognized on this deployment.",
-  provider_unconfigured:
-    "This connector's OAuth/MCP broker is not enabled on this deployment yet. Ask an administrator to enable it.",
-  denied: "The request was declined on the provider's own consent screen — nothing was connected.",
-  exchange_failed: "Couldn't complete the connection with the provider — try Connect again in a moment.",
-  store_failed: "The connection succeeded but couldn't be saved here — try Connect again.",
+  provider_unconfigured: "OAuth isn't enabled for this connector. Ask an administrator.",
+  denied: "Connection declined. Nothing was connected.",
+  exchange_failed: "Connection failed. Try again.",
+  store_failed: "Connected, but couldn't save the connection. Try again.",
   project_not_granted:
-    "The project(s) granted during authorization don't match what's configured here — click Connect again and select the matching project, or update the project ID field below.",
+    "Authorized project doesn't match this setup. Reconnect with the matching project or update the project ID.",
 };
 
 function capitalize(value: string): string {
@@ -192,7 +190,7 @@ export function ConnectorTile({
 }
 
 // --------------------------------------------------------------------------- //
-// One catalog-type section (Issue sources / MCP / Observability) of tiles —
+// One customer-visible connector section of tiles —
 // same heading + blurb as before the redesign, uniform tiles instead of
 // accordion cards.
 // --------------------------------------------------------------------------- //
@@ -220,15 +218,18 @@ function ConnectorSection({
           {connectedCount}/{connectors.length} connected
         </span>
       </div>
-      <p className="-mt-1 text-xs leading-relaxed text-[var(--gray-09)]">
-        {meta.description}
-      </p>
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {connectors.map((c) => (
           <ConnectorTile key={c.kind} connector={c} onOpen={onOpen} />
         ))}
       </div>
     </section>
+  );
+}
+
+export function customerVisibleConnectors(connectors: ConnectorView[]): ConnectorView[] {
+  return connectors.filter(
+    (connector) => connector.type !== "observability" || connector.status === "connected"
   );
 }
 
@@ -273,6 +274,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
   }, [fetchConnectors]);
 
   const openConnector = connectors.find((c) => c.kind === openKind) ?? null;
+  const visibleConnectors = customerVisibleConnectors(connectors);
 
   return (
     <div className="flex flex-col gap-4">
@@ -302,7 +304,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
         <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-3 py-8 text-center text-sm text-[var(--red-11)]">
           {error}
         </div>
-      ) : connectors.length === 0 ? (
+      ) : visibleConnectors.length === 0 ? (
         <div className="rounded border border-[var(--gray-05)] px-3 py-8 text-center text-sm text-[var(--gray-09)]">
           No connectors available.
         </div>
@@ -312,7 +314,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
             <ConnectorSection
               key={type}
               type={type}
-              connectors={connectors.filter((c) => c.type === type)}
+              connectors={visibleConnectors.filter((c) => c.type === type)}
               onOpen={setOpenKind}
             />
           ))}

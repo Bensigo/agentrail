@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { ConnectorTile } from "./connectors-panel";
+import { ConnectorTile, customerVisibleConnectors } from "./connectors-panel";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { projectConnectors } from "./connector-helpers";
 
@@ -77,5 +77,31 @@ describe("ConnectorsPanel — Trust Layer authority boundary", () => {
     expect(source).not.toContain("activeHeartbeatConnectors");
     expect(source).not.toContain("autonomous loop");
     expect(source).not.toContain("Issue Queue");
+  });
+
+  it("hides the disconnected observability catalog but keeps trust inputs", () => {
+    expect(customerVisibleConnectors(projectConnectors([])).map((connector) => connector.kind)).toEqual([
+      "github",
+      "linear",
+      "figma",
+      "context7",
+    ]);
+  });
+
+  it("keeps stored evidence connections visible for credential management", () => {
+    const visible = customerVisibleConnectors(projectConnectors([
+      { kind: "railway", hasSecret: true, oauthReady: false },
+      { kind: "sentry", hasSecret: true, oauthReady: false },
+      { kind: "vercel", hasSecret: false, target: "project-123", oauthReady: false },
+    ]));
+
+    expect(visible.map((connector) => connector.kind)).toEqual([
+      "github",
+      "linear",
+      "figma",
+      "context7",
+      "railway",
+      "sentry",
+    ]);
   });
 });

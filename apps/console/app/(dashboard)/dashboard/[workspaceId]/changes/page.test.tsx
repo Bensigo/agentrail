@@ -101,7 +101,7 @@ describe("ChangesPage", () => {
     const emptyStates = findByType(rendered, EmptyState);
     expect(emptyStates).toHaveLength(1);
     expect(emptyStates[0]?.props?.title).toBe("Invalid repository filter");
-    expect(emptyStates[0]?.props?.description).toContain("No Acceptance Records were read");
+    expect(emptyStates[0]?.props?.description).toContain("No records were read");
   });
 
   it("fails repeated repo filters closed without reading any Records", async () => {
@@ -126,6 +126,6 @@ describe("ChangesPage", () => {
     const rendered = await render();
     const emptyStates = findByType(rendered, EmptyState);
     expect(emptyStates).toHaveLength(1);
-    expect(emptyStates[0]?.props?.title).toBe("No change records yet");
+    expect(emptyStates[0]?.props?.title).toBe("No Acceptance Records");
   });
 });

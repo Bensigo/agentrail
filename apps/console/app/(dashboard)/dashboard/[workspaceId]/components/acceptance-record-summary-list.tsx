@@ -70,8 +70,8 @@ function formatDate(value: Date): string {
 
 function requestedWorkText(summary: AcceptanceRecordSummary): string {
   return summary.requestedWork.kind === "confirmed"
-    ? `${summary.requestedWork.originalRequest} Confirmed by Contract ${summary.requestedWork.acceptanceContract.id} v${summary.requestedWork.acceptanceContract.version} (${summary.requestedWork.acceptanceContract.sha256}).`
-    : "Unknown — no confirmed requested work is recorded.";
+    ? `${summary.requestedWork.originalRequest} · Contract ${summary.requestedWork.acceptanceContract.id} v${summary.requestedWork.acceptanceContract.version} · ${summary.requestedWork.acceptanceContract.sha256}`
+    : "Unknown · no confirmed request.";
 }
 
 function suppliedContextText(summary: AcceptanceRecordSummary): string {
@@ -79,20 +79,20 @@ function suppliedContextText(summary: AcceptanceRecordSummary): string {
   if (context.kind === "unknown") {
     return "Unknown — supplied context is not recorded.";
   }
-  const source = `source snapshot ${context.sourceSnapshot.id} at exact head ${context.sourceSnapshot.headSha}`;
+  const source = `snapshot ${context.sourceSnapshot.id} · head ${context.sourceSnapshot.headSha}`;
   if (context.kind === "compiled") {
-    return `Compiled Context Pack ${context.compiledPack.id} (${context.compiledPack.sha256}) from ${source}.`;
+    return `Pack ${context.compiledPack.id} · ${context.compiledPack.sha256} · ${source}.`;
   }
   if (context.kind === "admitted") {
-    return `Admitted ${source}; a compiled Context Pack is not recorded.`;
+    return `${source} · no compiled Pack.`;
   }
-  return `Not proven — ${source} was recorded, but its context custody was not admitted.`;
+  return `Not proven · ${source} · custody not admitted.`;
 }
 
 function pullRequestText(summary: AcceptanceRecordSummary): string {
   const pullRequest = summary.pullRequest;
   if (pullRequest.kind === "not_attached") {
-    return "Not attached — no pull request is recorded.";
+    return "Not attached.";
   }
   if (pullRequest.head.kind === "unknown") {
     return `PR #${pullRequest.prNumber} · exact head unknown.`;
@@ -103,7 +103,7 @@ function pullRequestText(summary: AcceptanceRecordSummary): string {
 function proofText(summary: AcceptanceRecordSummary): string {
   return summary.proof.kind === "recorded"
     ? `${verdictLabel(summary.proof.verdict)} · review job ${summary.proof.reviewJobId} · attestation event ${summary.proof.postedAttestationEventId}.`
-    : "Unknown — no canonical review proof is recorded.";
+    : "Unknown · no review proof.";
 }
 
 function unknownsText(summary: AcceptanceRecordSummary): string {
@@ -121,7 +121,7 @@ function neededDecisionText(summary: AcceptanceRecordSummary): string {
     return `Recorded — ${decisionLabel(needed.decision)} at ${formatDate(needed.decidedAt)}.`;
   }
   if (needed.kind === "unknown") {
-    return "Unknown — decision readiness could not be proven.";
+    return "Unknown · readiness not proven.";
   }
   switch (needed.reason) {
     case "pr_not_attached": return "Not required yet — no pull request is attached.";
@@ -133,14 +133,14 @@ function neededDecisionText(summary: AcceptanceRecordSummary): string {
 function outcomeText(summary: AcceptanceRecordSummary): string {
   const outcome = summary.outcome;
   if (outcome.kind === "unknown") {
-    return "Unknown — outcome custody could not be validated.";
+    return "Unknown · custody not validated.";
   }
   if (outcome.kind === "not_recorded") {
-    return "Not recorded — no canonical outcome receipt was observed; this is not a known negative.";
+    return "No outcome receipt · not a known negative.";
   }
   const postMerge = outcome.postMerge;
   const receiptLabel = (value: "recorded" | "not_recorded") => value === "recorded" ? "recorded" : "not recorded";
-  return `Signed merge ${outcome.mergeSha} at ${formatDate(outcome.mergedAt)} · decision alignment ${outcome.decisionAlignment} · post-merge receipts: deployment ${receiptLabel(postMerge.deployment)}, incident ${receiptLabel(postMerge.incident)}, revert ${receiptLabel(postMerge.revert)}. “Not recorded” means no canonical receipt was observed; it does not establish that an event did not happen.`;
+  return `Signed merge ${outcome.mergeSha} at ${formatDate(outcome.mergedAt)} · decision alignment ${outcome.decisionAlignment} · deployment ${receiptLabel(postMerge.deployment)} · incident ${receiptLabel(postMerge.incident)} · revert ${receiptLabel(postMerge.revert)}.`;
 }
 
 function SummaryDatum({ label, children }: { label: string; children: ReactNode }) {
@@ -170,7 +170,7 @@ export function AcceptanceRecordSummaryList({
             {compact ? "Acceptance summary" : "Acceptance Records"}
           </h2>
           <p className="mt-1 text-xs text-[var(--gray-09)]">
-            Contract, context, exact-head proof, decisions, and outcomes.
+            Not recorded means no canonical receipt; no receipt does not prove no event.
           </p>
         </div>
         {compact ? (
@@ -186,7 +186,7 @@ export function AcceptanceRecordSummaryList({
       {visibleRecords.length === 0 ? (
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
           <p className="text-sm text-[var(--gray-09)]">
-            No Acceptance Records are recorded for this view.
+            No Acceptance Records.
           </p>
         </div>
       ) : (

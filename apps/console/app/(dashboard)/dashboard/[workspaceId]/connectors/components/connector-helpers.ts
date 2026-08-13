@@ -446,7 +446,7 @@ export const CONNECTOR_TYPE_META: Record<
       "Bounded design and documentation context for external builders.",
   },
   observability: {
-    label: "Observability",
+    label: "Connected evidence",
     description:
       "Read-only investigation evidence, separate from exact-head proof.",
   },
@@ -465,8 +465,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "issue-source",
     connectMethod: "oauth",
     label: "GitHub",
-    description:
-      "Repository and pull-request provenance for exact-head evidence.",
+    description: "Repository and PR evidence.",
     availability: "available",
     capabilities: {
       ingest: true,
@@ -485,8 +484,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "issue-source",
     connectMethod: "secret",
     label: "Linear",
-    description:
-      "Task context and updates for human-defined work.",
+    description: "Task context and updates.",
     availability: "available",
     capabilities: { ingest: true, postResult: true, notify: false, tools: true },
     connect: {
@@ -507,7 +505,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "mcp",
     connectMethod: "secret",
     label: "Figma",
-    description: "Design context from Figma files and frames over MCP.",
+    description: "Design context.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -527,7 +525,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "mcp",
     connectMethod: "secret",
     label: "Context7",
-    description: "Current library documentation over MCP.",
+    description: "Library documentation.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -548,8 +546,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Railway",
-    description:
-      "Give the debugging investigator visibility into your Railway project's deployments and logs.",
+    description: "Deployments and logs.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -575,7 +572,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // own doc-comment. Wording echoes the disclosure toggle immediately
       // below it ("Use an API token instead") deliberately.
       oauthHint:
-        "Connecting via Railway grants read-only access to your project's deployments and logs — you can use an API token instead if you'd rather not.",
+        "Read-only access to deployments and logs. API token also available.",
       // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
       // doc-comment for the full citation trail (confirmed live
       // 2026-08-02).
@@ -601,8 +598,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Langfuse",
-    description:
-      "Give the debugging investigator visibility into your Langfuse traces and observation-level signals (error rate, latency).",
+    description: "Traces and performance signals.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -661,8 +657,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Sentry",
-    description:
-      "Give the debugging investigator visibility into your Sentry error events and RED-shaped signals (error rate, p95 duration).",
+    description: "Errors and performance signals.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -697,7 +692,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // no-apology tone and its "use a token instead" pointer to the
       // disclosure immediately below.
       oauthHint:
-        "Connecting via Sentry installs the integration with read-only access to your issues and events — you can use an API token instead if you'd rather not.",
+        "Read-only access to issues and events. API token also available.",
       // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
       // doc-comment for the full citation trail (confirmed live
       // 2026-08-02).
@@ -728,8 +723,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Datadog",
-    description:
-      "Give the debugging investigator visibility into your Datadog host signals (CPU, load, memory) and log search.",
+    description: "Host signals and logs.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -810,8 +804,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Prometheus",
-    description:
-      "Give the debugging investigator visibility into your Prometheus request rate, error rate, p95 latency, and target health (RED/USE-shaped signals).",
+    description: "Request and target health signals.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -865,8 +858,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Grafana",
-    description:
-      "Give the debugging investigator visibility into your Grafana alert state changes and annotations.",
+    description: "Alert changes and annotations.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -921,8 +913,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Vercel",
-    description:
-      "Give the debugging investigator visibility into your Vercel deployments and build/runtime events.",
+    description: "Deployments and runtime events.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -950,7 +941,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // calm, no-apology tone and "use a token instead" pointer to the
       // disclosure immediately below it.
       oauthHint:
-        "Connecting via Vercel grants read-only access to your project's deployments and build/runtime events — you can use an API token instead if you'd rather not.",
+        "Read-only access to deployments and runtime events. API token also available.",
       // W3-T9 — see ConnectorConnectMeta.oauthRegistrationUrl's own
       // doc-comment for the sourcing convention. Confirmed live 2026-08-02:
       // this is the exact "Integrations Console" link `create-integration.md`
@@ -998,8 +989,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "observability",
     connectMethod: "secret",
     label: "Cloudflare",
-    description:
-      "Give the debugging investigator visibility into your Cloudflare edge traffic signals and firewall/security events.",
+    description: "Traffic and security events.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -1027,7 +1017,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // no-apology tone and "use a token instead" pointer to the disclosure
       // immediately below it.
       oauthHint:
-        "Connecting via Cloudflare grants read-only access to your zone's analytics and firewall events — you can use an API token instead if you'd rather not.",
+        "Read-only access to analytics and firewall events. API token also available.",
       // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
       // doc-comment. Taken verbatim from lib/oauth/cloudflare.ts's own
       // "REGISTRATION" doc-comment, which cites this as a confirmed direct

@@ -43,14 +43,10 @@ export default async function BriefsPage({
   if (briefs.length === 0) {
     return (
       <div className="mx-auto max-w-[1440px]">
-        <PageHeader
-          title="Briefs"
-          subtitle="Jace's durable understanding of each product idea — and where a human has corrected it."
-        />
+        <PageHeader title="Briefs" />
         <EmptyState
           icon={FileText}
-          title="No briefs yet"
-          description="A brief starts from a grill-me conversation with Jace — it becomes the durable, editable record of what was understood about one idea."
+          title="No Briefs"
         />
       </div>
     );
@@ -58,10 +54,7 @@ export default async function BriefsPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <PageHeader
-        title="Briefs"
-        subtitle="Jace's durable understanding of each product idea — and where a human has corrected it."
-      />
+      <PageHeader title="Briefs" />
       <div className="flex flex-col gap-2">
         {briefs.map((brief, i) => {
           const ready = readiness[i]!;

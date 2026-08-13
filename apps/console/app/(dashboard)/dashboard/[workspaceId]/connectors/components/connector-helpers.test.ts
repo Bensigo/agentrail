@@ -24,7 +24,7 @@ describe("connector catalog — Trust Layer presentation", () => {
       ...CONNECTOR_CATALOG.flatMap((connector) => [connector.label, connector.description]),
     ].join(" ");
 
-    expect(visibleCopy).toContain("pull-request provenance");
+    expect(visibleCopy).toContain("Repository and PR evidence");
     expect(visibleCopy).toContain("exact-head");
     expect(visibleCopy).toContain("external builders");
     expect(visibleCopy).not.toContain("Issue Queue");
@@ -412,9 +412,9 @@ describe("validateConnectorCredential — composite secrets (generic secretParts
   });
 });
 
-describe("CONNECTOR_TYPE_META — observability section (Task 7)", () => {
-  it("has a label and description for the new observability section", () => {
-    expect(CONNECTOR_TYPE_META.observability.label).toBe("Observability");
+describe("CONNECTOR_TYPE_META — stored evidence section", () => {
+  it("labels connected legacy evidence without presenting an observability product", () => {
+    expect(CONNECTOR_TYPE_META.observability.label).toBe("Connected evidence");
     expect(CONNECTOR_TYPE_META.observability.description.length).toBeGreaterThan(0);
   });
 });

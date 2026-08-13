@@ -64,7 +64,7 @@ export function DeadLettersList({
   if (rows.length === 0) {
     return (
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
-        <EmptyState message="No dead-lettered messages." icon={<MailWarning size={20} />} />
+        <EmptyState message="No failed deliveries." icon={<MailWarning size={20} />} />
       </div>
     );
   }

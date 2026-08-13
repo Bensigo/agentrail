@@ -123,9 +123,7 @@ export function InviteStep({
   if (teammateCount === 0 && skipped && !showForm) {
     return (
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-[var(--gray-09)]">
-          Skipped for now. You can invite teammates any time from Members.
-        </p>
+        <p className="text-xs text-[var(--gray-09)]">Skipped.</p>
         <button
           type="button"
           onClick={() => setShowForm(true)}
@@ -139,11 +137,11 @@ export function InviteStep({
 
   return (
     <form onSubmit={handleSend} className="flex flex-col gap-2.5">
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        {teammateCount > 0
-          ? `${teammateCount} teammate${teammateCount === 1 ? "" : "s"} reached so far.`
-          : "Optional — add workspace members by email, or do this later from Members."}
-      </p>
+      {teammateCount > 0 ? (
+        <p className="text-xs text-[var(--gray-09)]">
+          {teammateCount} teammate{teammateCount === 1 ? "" : "s"} added.
+        </p>
+      ) : null}
 
       <div className="flex min-h-[52px] flex-wrap gap-1.5 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-2 focus-within:border-[var(--gray-08)] transition-colors">
         {chips.map((chip, idx) => (

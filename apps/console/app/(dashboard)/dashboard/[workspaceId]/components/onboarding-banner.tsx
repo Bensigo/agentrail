@@ -26,10 +26,10 @@ export async function OnboardingBanner({ workspaceId }: { workspaceId: string })
       className="flex items-center justify-between gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-2.5 transition-colors hover:border-[var(--gray-08)]"
     >
       <span className="text-sm text-[var(--gray-12)]">
-        Finish setting up — {progress.done} of {progress.total} steps done
+        Setup · {progress.done}/{progress.total}
       </span>
       <span className="flex shrink-0 items-center gap-0.5 text-xs text-[var(--blue-11)]">
-        Continue setup <ArrowUpRight className="h-3 w-3" />
+        Continue <ArrowUpRight className="h-3 w-3" />
       </span>
     </Link>
   );

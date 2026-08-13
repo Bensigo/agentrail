@@ -55,12 +55,12 @@ export function MergePermissionToggle({
         <div className="flex flex-col gap-1">
           {/* control's primary name/title, the only heading in this component → bold */}
           <span className="text-sm font-bold text-[var(--gray-12)]">
-            Legacy factory automatic merge
+            Automatic merge (legacy)
           </span>
           <span className="text-xs text-[var(--gray-09)]">
             {granted
-              ? "A historical grant is active. Revoke it to restore the human-only merge boundary."
-              : "Off. Final merge remains an explicit human action in the external repository."}
+              ? "Active legacy grant. Revoke to require human merge."
+              : "Off. Merge requires a human."}
           </span>
         </div>
         <button
@@ -90,7 +90,7 @@ export function MergePermissionToggle({
 
       {canManage && granted && (
         <p className="text-xs text-[var(--gray-09)]">
-          Turning this off is permanent in the Console; new automatic-merge grants are unavailable.
+          Revocation is permanent; new grants are unavailable.
         </p>
       )}
 

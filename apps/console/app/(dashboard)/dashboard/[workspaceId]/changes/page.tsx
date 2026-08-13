@@ -33,10 +33,7 @@ export default async function ChangesPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <PageHeader
-        title="Changes"
-        subtitle="One lifecycle record for each change, from requirement through outcome."
-      />
+      <PageHeader title="Acceptance Records" />
       <form method="get" className="mb-5 flex max-w-xl items-end gap-2">
         <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-[var(--gray-09)]">
           Repository
@@ -67,13 +64,13 @@ export default async function ChangesPage({
         <EmptyState
           icon={History}
           title="Invalid repository filter"
-          description="Use the canonical owner/repository form. No Acceptance Records were read."
+          description="Use owner/repository. No records were read."
         />
       ) : summaries?.records.length === 0 ? (
         <EmptyState
           icon={History}
-          title={repo ? "No changes for this repository" : "No change records yet"}
-          description="Change records appear when a requirement, issue, or pull request enters the lifecycle."
+          title="No Acceptance Records"
+          description={repo ? "No records for this repository." : "No records yet."}
         />
       ) : (
         <AcceptanceRecordSummaryList

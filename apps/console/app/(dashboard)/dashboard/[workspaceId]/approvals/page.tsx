@@ -87,10 +87,7 @@ export default async function ApprovalsPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <PageHeader
-        title="Approvals"
-        subtitle="Everything waiting on a human — approvals, parked work, and failed deliveries."
-      />
+      <PageHeader title="Approvals" />
 
       <div className="flex flex-col gap-6">
         {/* font-normal on all three section titles below: card-title label

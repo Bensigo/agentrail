@@ -5,10 +5,8 @@ import { PageHeader } from "../../../../components/page-header";
 import { MergePermissionToggle } from "./components/merge-permission-toggle";
 
 /**
- * Workspace Permissions page (#1278 PR ①) — the owner-only console surface
- * for granting/revoking merge permission: the trust ceiling between "green
- * gate -> PR opened, Jace waits for you" (default) and "green gate -> merges
- * itself".
+ * Workspace Permissions page. The old factory merge grant remains readable
+ * only so owners can revoke it; the Trust Layer cannot create merge authority.
  *
  * Server component reading the queries directly (Budget page precedent, see
  * `../budget/page.tsx`: no client fetch, no new API route for the READ). The
@@ -36,16 +34,15 @@ export default async function PermissionsPage({
 
   // Strictly owner-only for the mutation — deliberately narrower than the
   // repo's ADMIN_ROLES precedent (owner OR admin, e.g. the repos page):
-  // granting merge is the trust ceiling, the one setting that lets
-  // AgentRail push code to `main` unattended, so only the workspace owner
-  // grants it. Admin/member/viewer see the current state read-only.
+  // Only an owner may revoke a historical grant. Admin/member/viewer see the
+  // current state read-only.
   const canManage = membership.role === "owner";
 
   return (
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
         title="Permissions"
-        subtitle="What Jace is allowed to do on its own."
+        subtitle="Jace records evidence; implementation and merge remain outside Jace."
       />
       <MergePermissionToggle
         workspaceId={workspaceId}

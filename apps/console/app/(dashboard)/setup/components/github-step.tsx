@@ -177,9 +177,9 @@ export function GithubStep({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2 border-b border-[var(--gray-04)] pb-3">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Install the Jace GitHub App first — it lets Jace review, push, and
-          open PRs on the repos you pick, with every action showing as Jace,
-          not you. Then add the repositories below.
+          Install the Jace GitHub App for workspace-scoped repository and PR
+          events. External builders produce or attach PRs; Jace does not push
+          or merge.
         </p>
         {/* font-bold: primary CTA (colored fill) — same treatment as the
             webhook step's "Create webhook automatically" button. */}
@@ -197,8 +197,7 @@ export function GithubStep({
       </div>
 
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Link the repositories Jace should work in, then create the webhook that
-        lets labeled issues flow into the queue.
+        Choose repositories, then create the webhook.
       </p>
 
       <div className="flex flex-col gap-1.5">

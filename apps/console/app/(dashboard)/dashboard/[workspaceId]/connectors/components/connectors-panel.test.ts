@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { ConnectorTile } from "./connectors-panel";
 import { ConnectorStatusBadge } from "./connector-status-badge";
@@ -61,5 +63,19 @@ describe("ConnectorTile — one-click surface", () => {
     const rows = asElement(ConnectorTile({ connector, onOpen: NOOP_ON_OPEN })).props.children as ReactElementLike[];
     const bottomRow = asElement(rows[2]);
     expect(asElement(bottomRow.props.children).type).toBe(ConnectorStatusBadge);
+  });
+});
+
+describe("ConnectorsPanel — Trust Layer authority boundary", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("./connectors-panel.tsx", import.meta.url)),
+    "utf8"
+  );
+
+  it("does not present legacy Heartbeat controls or an autonomous issue loop", () => {
+    expect(source).not.toContain("HeartbeatStatusHeader");
+    expect(source).not.toContain("activeHeartbeatConnectors");
+    expect(source).not.toContain("autonomous loop");
+    expect(source).not.toContain("Issue Queue");
   });
 });

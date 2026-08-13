@@ -1,11 +1,13 @@
 # Jace trust-layer migration ledger
 
-Last reconciled in this proof checkout: 2026-08-12 against the exact main tree
-at commit `9d80b70f52d8a386b215e0811b2777a21ee715de` (PR #1725). The
-one-time PR #1638 salvage source head before this ledger-only commit is
-`cf94888dd7339e56565dc3a3bbd32a4abfb1a9b7`. The replacement PR description
-must bind this ledger to its final exact head and CI result; no later source
-state is claimed here. Canonical R10 completion and release proof remain open.
+Last reconciled in this proof checkout: 2026-08-13 against the exact main tree
+at commit `18d30306f45adbe419eb24dcc4d3c5a6fb106383` and the follow-on Console
+product-shell source changes described below. The pull-request description
+must bind this ledger to the branch's final exact head and CI result. This
+ledger claims only the bounded authenticated local browser exercise captured in
+`docs/screenshots/console-product-shell-*.png` for that follow-on slice; it does
+not claim deployed/live or customer proof. Canonical R10 completion and release
+proof remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -77,18 +79,32 @@ branch changes.
 
 | PR #1638 UI family | Disposition | Exact current surface |
 | --- | --- | --- |
-| Workspace Context Packs index, navigation, and breadcrumb (`181c372b`) | **Absorbed and adapted.** Main had no workspace index route. The replacement adds a bounded current-authoritative-custody list, a Context Packs item under the newer Engine room navigation section, and the matching breadcrumb without replaying old connector/channel labels. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/context-packs/page.tsx`; `apps/console/app/components/sidebar-nav.ts`; `apps/console/app/components/breadcrumb-label.ts` |
+| Workspace Context Packs index, navigation, and breadcrumb (`181c372b`) | **Absorbed and adapted.** Main had no workspace index route. The replacement adds a bounded current-authoritative-custody list, a Context Packs item under Evidence & context, and the matching breadcrumb. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/context-packs/page.tsx`; `apps/console/app/components/sidebar-nav.ts`; `apps/console/app/components/breadcrumb-label.ts` |
 | Brief-to-Acceptance transition (`38bff08a`, `5e89ebcb`) | **Absorbed and adapted.** The panel lists immutable Record links without claiming confirmation. It moved out of the Next.js page module so the current App Router type contract remains valid. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/acceptance-brief-transition-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/[slug]/page.tsx` |
 | Chat Acceptance Context strip (`316a90e0`, `9e9797b6`) | **Absorbed.** The authenticated chat route derives its Intake from the member's server-owned conversation identity and returns only bounded Intake/Record/Brief navigation. The client cannot select those identities. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/acceptance-context-strip.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/chat/components/chat-thread.tsx`; `apps/console/app/api/v1/workspaces/[workspaceId]/chat/route.ts` |
 | Wiki recompile terminology (`7f21c5ea`) | **Absorbed.** The queued state now names repository Wiki compilation instead of presenting Jace as a factory. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/wiki/components/recompile-button.tsx` |
-| Home Acceptance Evidence (`be45aea9`) | **Excluded as superseded in source.** Current main's summary list is tenant-scoped and preserves current Record state instead of replaying the old evidence panel. | Old: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-evidence-panel.tsx`; current: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-record-summary-list.tsx` |
-| Home outcome summary/ranges (`52d9e454`, `435c27fe`, `980e7118`) | **Excluded as superseded in source.** Current main separates Acceptance outcomes, review metrics, and human false-green evidence while preserving unknown and not-recorded samples. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/review-metrics-panel.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/human-false-green-panel.tsx` |
+| Home Acceptance Evidence (`be45aea9`) | **Presentation intent adapted; old component excluded as superseded.** Home now foregrounds the current tenant-scoped, occurrence-aware Acceptance Record summary rather than replaying the old evidence panel. | Old: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-evidence-panel.tsx`; current: `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-record-summary-list.tsx` |
+| Home outcome summary/ranges (`52d9e454`, `435c27fe`, `980e7118`) | **Presentation intent adapted; old components excluded as superseded.** Home retains the current outcome projection, including unknown and not-recorded states, while operational Digest, plan, Health, review-metric, and false-green panels leave the Home composition. Their source and data paths are not deleted by this UI slice. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel.tsx` |
 | Changes list/detail redesign (`ce0f1e80` through `6682109b`) | **Excluded as superseded in source.** Current main has the stricter tenant-scoped, occurrence-aware, artifact-proxy-safe R11 projections at the same routes. Replaying the old pages would weaken current custody. This is not a claim that production has deployed them. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.tsx` |
 | Review-Gates create-issue action (`0e396beb`, `63434b71`) | **Excluded as incompatible.** Current main quarantines the legacy Review-Gate issue route; Record detail uses the newer Jace-only, human-approved gated issue custody. | Old: `apps/console/app/(dashboard)/dashboard/[workspaceId]/review-gates/components/create-issue-button.tsx`; current boundary: `apps/console/app/api/v1/workspaces/[workspaceId]/review-gates/[gateId]/issue/route.ts` |
-| Connector redesign/catalog/copy (`181c372b`, `714ede9a`, `5f2c3d7f`, `7f21c5ea`) | **Excluded as obsolete or non-migration.** Current main has newer Connector UX and provider/security behavior; old heartbeat and projection changes do not improve Acceptance Record custody. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/components/` |
-| Gateway relabel and sidebar restructuring (`741cbde5`, `240ee81a`, `4c855efe`) | **Excluded except for Context Packs.** Old Channels, Trust layer, and Evidence & context groupings conflict with current main's Gateways and Engine room structure. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/gateways/page.tsx`; `apps/console/app/components/sidebar-nav.ts` |
+| Connector redesign/catalog/copy (`181c372b`, `714ede9a`, `5f2c3d7f`, `7f21c5ea`) | **Presentation intent adapted after the salvage; old implementation remains excluded.** Current main keeps the newer full provider catalog, OAuth/secret handling, tenant-derived rows, and fixed-height sheet UX. The authenticated surface removes the old Heartbeat/autonomous-loop controls and describes connectors as provenance, bounded context, and optional investigation evidence instead of Jace implementation authority. The old two-provider filtering and projection changes remain excluded. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/page.tsx`; `apps/console/app/(dashboard)/dashboard/[workspaceId]/connectors/components/` |
+| Gateway relabel and sidebar restructuring (`741cbde5`, `240ee81a`, `4c855efe`) | **Presentation intent adapted; route removal excluded.** The customer shell now uses Trust layer (Home, Briefs, Acceptance Records, Approvals), Evidence & context (Memory, Wiki, Context Packs), and the Channels label for the unchanged `/gateways` route. Work, Chat, Goals, and factory-operation pages remain code-live and deep-linkable but are absent from visible navigation. Memory is deliberately retained despite #1638 omitting it. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/gateways/page.tsx`; `apps/console/app/components/sidebar-nav.ts`; `apps/console/app/components/sidebar.tsx` |
 | Brief index copy (`6682109b`) | **Excluded as weaker.** Current main's durable-understanding and human-correction wording is more accurate. | `apps/console/app/(dashboard)/dashboard/[workspaceId]/briefs/page.tsx` |
 | Marketing/layout rewrite (`6eee9453` family) | **Excluded from this salvage.** It belongs to the still-open R12.1 lane and cannot be treated as implicit R12 completion. | `apps/console/app/layout.tsx`; `apps/console/app/(marketing)/` |
+
+The post-salvage authenticated-Console audit also found stale factory-authority
+presentation outside the safely replayable #1638 families. Current source now
+describes Review Gates as historical factory evidence, GitHub onboarding as
+workspace-scoped provenance and exact-head custody, and Permissions as the
+human-only merge boundary. The Console cannot create a new legacy automatic
+merge grant; an owner may only revoke a historical grant. These are R11
+authority corrections, not R10 implementation, R12 completion, deployment
+proof, or customer proof. The customer shell hides Work and factory-operation
+navigation without deleting those routes, APIs, historical data, or retained
+infrastructure. Home uses current tenant-scoped Record and outcome projections;
+the superseded #1638 Home and Changes components, Review-Gate issue creation,
+and narrowed connector catalog remain intentionally excluded for the custody
+and authority reasons above.
 
 ### Explicit exclusions
 

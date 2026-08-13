@@ -23,13 +23,8 @@ function granterLabel(lastGrant: MergePermissionLastGrant): string {
 }
 
 /**
- * The merge-permission switch (#1278). No optimistic flip: a security-
- * relevant toggle shows its REAL, server-confirmed state, never a state the
- * write hasn't landed for yet — the toggle stays disabled mid-flight and
- * only moves once `router.refresh()` re-renders the parent server component
- * with the freshly written row. Server-side re-checks the owner-only rule
- * on every call (`../actions.ts`); `canManage` here only decides whether
- * this control is interactive.
+ * Read-only legacy factory merge state, with an owner-only revocation path.
+ * New automatic-merge grants are unavailable.
  */
 export function MergePermissionToggle({
   workspaceId,
@@ -42,10 +37,10 @@ export function MergePermissionToggle({
   const [isPending, startTransition] = useTransition();
 
   function handleToggle() {
-    if (!canManage || isPending) return;
+    if (!canManage || isPending || !granted) return;
     setError(null);
     startTransition(async () => {
-      const result = await setMergePermissionAction(workspaceId, !granted);
+      const result = await setMergePermissionAction(workspaceId, false);
       if (result.ok) {
         router.refresh();
       } else {
@@ -60,20 +55,20 @@ export function MergePermissionToggle({
         <div className="flex flex-col gap-1">
           {/* control's primary name/title, the only heading in this component → bold */}
           <span className="text-sm font-bold text-[var(--gray-12)]">
-            Merge permission
+            Legacy factory automatic merge
           </span>
           <span className="text-xs text-[var(--gray-09)]">
             {granted
-              ? "ON: green-gated work merges itself."
-              : "OFF: Jace opens PRs and waits for you."}
+              ? "A historical grant is active. Revoke it to restore the human-only merge boundary."
+              : "Off. Final merge remains an explicit human action in the external repository."}
           </span>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={granted}
-          aria-label="Merge permission"
-          disabled={!canManage || isPending}
+          aria-label="Revoke legacy factory automatic merge"
+          disabled={!canManage || isPending || !granted}
           onClick={handleToggle}
           className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
             granted ? "bg-[var(--green-09)]" : "bg-[var(--gray-06)]"
@@ -90,6 +85,12 @@ export function MergePermissionToggle({
       {!canManage && (
         <p className="text-xs text-[var(--gray-09)]">
           Only the workspace owner can change this.
+        </p>
+      )}
+
+      {canManage && granted && (
+        <p className="text-xs text-[var(--gray-09)]">
+          Turning this off is permanent in the Console; new automatic-merge grants are unavailable.
         </p>
       )}
 

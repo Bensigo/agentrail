@@ -200,7 +200,7 @@ function GateSubRow({
       {gate.blockingReasons.length > 0 && (
         <div>
           <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
-            Why merge was blocked
+            Legacy gate blockers
           </p>
           <ul className="space-y-1">
             {gate.blockingReasons.map((reason, i) => {
@@ -466,8 +466,7 @@ export default function ReviewGatesPage() {
           Review Gates
         </h1>
         <p className="mt-1 text-xs text-[var(--gray-09)]">
-          The evidence that decided whether each of Jace&apos;s changes was
-          safe to merge.
+          Historical gate evidence. Final decisions live on Acceptance Records.
         </p>
       </div>
 

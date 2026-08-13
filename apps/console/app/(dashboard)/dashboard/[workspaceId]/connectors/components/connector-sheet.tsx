@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Radio,
   AlertCircle,
   CheckCircle2,
   ChevronDown,
@@ -18,140 +17,6 @@ import {
   type ConnectorConnectMeta,
   type ConnectorView,
 } from "./connector-helpers";
-
-// --------------------------------------------------------------------------- //
-// Trigger controls (#816) — the heartbeat toggle + poll config for a connected
-// ingest connector. Unchanged from the pre-sheet accordion body other than its
-// new home.
-// --------------------------------------------------------------------------- //
-function TriggerControls({
-  connector,
-  workspaceId,
-  canManage,
-  onChanged,
-}: {
-  connector: ConnectorView;
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
-}) {
-  const [label, setLabel] = useState(connector.triggerLabel);
-  const [interval, setIntervalValue] = useState(
-    String(connector.pollIntervalSeconds)
-  );
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const dirty =
-    label.trim() !== connector.triggerLabel ||
-    Number(interval) !== connector.pollIntervalSeconds;
-
-  const put = useCallback(
-    async (patch: {
-      enabled?: boolean;
-      triggerLabel?: string;
-      pollIntervalSeconds?: number;
-    }) => {
-      setSaving(true);
-      setErr(null);
-      try {
-        const res = await fetch(`/api/v1/workspaces/${workspaceId}/connectors`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: connector.kind, ...patch }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(
-            (body as { error?: string }).error ?? `HTTP ${res.status}`
-          );
-        }
-        onChanged();
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Failed to save");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [workspaceId, connector.kind, onChanged]
-  );
-
-  if (!connector.capabilities.ingest) return null;
-
-  return (
-    <div className="mt-3 flex flex-col gap-2.5 border-t border-[var(--gray-04)] pt-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Radio size={12} className="text-[var(--gray-09)]" />
-          <span className="text-xs font-medium text-[var(--gray-11)]">
-            Heartbeat trigger
-          </span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={connector.enabled}
-          aria-label="Toggle heartbeat for this connector"
-          disabled={!canManage || saving}
-          onClick={() => put({ enabled: !connector.enabled })}
-          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-            connector.enabled ? "bg-[var(--green-09)]" : "bg-[var(--gray-06)]"
-          }`}
-        >
-          <span
-            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-              connector.enabled ? "translate-x-4" : "translate-x-0"
-            }`}
-          />
-        </button>
-      </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          put({
-            triggerLabel: label.trim(),
-            pollIntervalSeconds: Number(interval),
-          });
-        }}
-        className="flex flex-col gap-2"
-      >
-        <div className="flex items-center gap-2">
-          <input
-            aria-label="Trigger label"
-            type="text"
-            maxLength={50}
-            value={label}
-            disabled={!canManage}
-            placeholder="ready-for-agent"
-            onChange={(e) => setLabel(e.target.value)}
-            className="h-7 flex-1 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-          <input
-            aria-label="Poll interval (seconds)"
-            type="number"
-            min={10}
-            max={86400}
-            step={1}
-            value={interval}
-            disabled={!canManage}
-            title="Poll interval (seconds, 10–86400)"
-            onChange={(e) => setIntervalValue(e.target.value)}
-            className="h-7 w-20 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={!canManage || saving || !dirty || !label.trim()}
-            className="h-7 shrink-0 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] transition-colors hover:border-[var(--gray-08)] disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      </form>
-    </div>
-  );
-}
 
 // --------------------------------------------------------------------------- //
 // Broker connect button for a `connectMethod: "secret"` provider — distinct
@@ -606,7 +471,7 @@ function OAuthManage({
   // `canManage` (Connectors UX v2 Track A: the pre-sheet version of this
   // button had no such gate — disclosed in the PR description as a small,
   // deliberate tightening to match the sheet's "non-admins see read-only"
-  // contract, which SecretManage/TriggerControls already honored).
+  // contract, which SecretManage already honored).
   const installButton = (
     <div className="flex flex-col gap-2">
       <button
@@ -624,11 +489,11 @@ function OAuthManage({
   if (connector.status === "connected" && connector.appInstalled) {
     return (
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Jace is installed on your GitHub. Issues labeled{" "}
+        Repository and PR updates supply exact-head evidence. The{" "}
         <code className="font-mono text-[var(--gray-11)]">
           {connector.ingestLabel}
         </code>{" "}
-        are ingested into the Issue Queue; run results post back on the issue.
+        label marks human-defined work. Jace does not implement or merge.
       </p>
     );
   }
@@ -637,9 +502,8 @@ function OAuthManage({
     return (
       <div className="flex flex-col gap-2">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Repos are linked from the legacy flow, but the Jace GitHub App
-          isn&apos;t installed yet — install it so Jace can review, push, and
-          open PRs as itself.
+          Install the Jace GitHub App for repository and PR updates. External
+          builders produce or attach PRs; Jace does not implement or merge.
         </p>
         {installButton}
       </div>
@@ -651,8 +515,8 @@ function OAuthManage({
 
 // --------------------------------------------------------------------------- //
 // The connect/manage overlay (Connectors UX v2, Track A) — the ONE surface
-// every provider's connect flow, live-verify errors, connected details, and
-// heartbeat controls render into. Replaces the old per-tile inline accordion
+// every provider's connect flow, live-verify errors, and connected details
+// render into. Replaces the old per-tile inline accordion
 // body, whose expand/collapse was the root cause of the ragged-height grid
 // (a connected card opened by default and grew inline, so a row could hold
 // one tall card beside short collapsed ones). Mounted ONCE by
@@ -669,7 +533,7 @@ function OAuthManage({
 // `connector.connectMethod` — `"oauth"` renders <OAuthManage>, `"secret"`
 // renders <SecretManage>. This is the one branch a follow-up OAuth provider
 // touches; everything else in this component (header, status badge,
-// description, heartbeat controls) is already provider-agnostic.
+// description and capability summary) is already provider-agnostic.
 // --------------------------------------------------------------------------- //
 export function ConnectorSheet({
   connector,
@@ -800,16 +664,6 @@ export function ConnectorSheet({
           ) : (
             <SecretManage
               key={shown.kind}
-              connector={shown}
-              workspaceId={workspaceId}
-              canManage={canManage}
-              onChanged={onChanged}
-            />
-          )}
-
-          {shown.status === "connected" && shown.capabilities.ingest && (
-            <TriggerControls
-              key={`${shown.kind}-trigger`}
               connector={shown}
               workspaceId={workspaceId}
               canManage={canManage}

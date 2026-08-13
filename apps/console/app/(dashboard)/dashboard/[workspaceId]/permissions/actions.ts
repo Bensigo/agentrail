@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { setMergePermission } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
 
@@ -9,12 +8,12 @@ export type SetMergePermissionActionResult =
   | { ok: false; error: string };
 
 /**
- * Owner-only server action backing the merge-permission toggle (#1278).
+ * Owner-only revocation path for the retained legacy factory merge setting.
  *
  * Deliberately narrower than this repo's existing `ADMIN_ROLES` precedent
- * (owner OR admin — see the repos page): granting merge is the trust
- * ceiling, the one setting that lets AgentRail push code to `main`
- * unattended, so only the workspace owner may flip it.
+ * The Trust Layer has no implementation or merge authority. New grants are
+ * therefore rejected. An owner can still revoke a historical grant so a
+ * previously enabled legacy factory setting is never stranded.
  *
  * Re-checks session + membership + role SERVER-side on every call — this is
  * the actual enforcement boundary. The page's `canManage` prop only decides
@@ -39,6 +38,13 @@ export async function setMergePermissionAction(
     return { ok: false, error: "granted must be a boolean." };
   }
 
+  if (granted) {
+    return {
+      ok: false,
+      error: "Automatic merge grants are unavailable. Final merge remains a human decision.",
+    };
+  }
+
   const session = await getSession();
   const userId = session?.user?.id;
   if (!userId) {
@@ -58,11 +64,6 @@ export async function setMergePermissionAction(
     granted,
     grantedByUserId: userId,
   });
-
-  // Re-render the page server-side on next navigation/refresh so the toggle
-  // and the "last granted by / when" line reflect the just-written row —
-  // the client component calls router.refresh() right after this resolves.
-  revalidatePath(`/dashboard/${workspaceId}/permissions`);
 
   return { ok: true, granted: result.mergePermission };
 }

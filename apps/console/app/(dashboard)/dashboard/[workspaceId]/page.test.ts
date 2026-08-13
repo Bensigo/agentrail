@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspace: vi.fn(),
@@ -10,38 +10,12 @@ vi.mock("../../../../lib/cached", () => ({
   getMembership: vi.fn(),
 }));
 
-// loadPlanCardData does its own degraded/no-account/error handling (no flag
-// gate anymore — 2026-07-31 owner ruling retired the early
-// subscriptionsEnforced() return) — page.tsx just awaits it and threads the
-// result through as a prop. Mocked here so this file's tests control the
-// resolved value directly rather than depending on real DB/policy
-// resolution to produce each case.
-vi.mock("../../../../lib/plan-card-data", () => ({
-  loadPlanCardData: vi.fn(),
-}));
-
-vi.mock("./components/digest-panel", () => ({
-  DigestPanel: () => null,
-}));
-
 vi.mock("./components/onboarding-banner", () => ({
   OnboardingBanner: () => null,
 }));
 
-vi.mock("./components/health-rates-panel", () => ({
-  HealthRatesPanel: () => null,
-}));
-
-vi.mock("./components/review-metrics-panel", () => ({
-  ReviewMetricsPanel: () => null,
-}));
-
 vi.mock("./components/acceptance-outcome-metrics-panel", () => ({
   AcceptanceOutcomeMetricsPanel: () => null,
-}));
-
-vi.mock("./components/human-false-green-panel", () => ({
-  HumanFalseGreenPanel: () => null,
 }));
 
 vi.mock("./components/acceptance-record-summary-list", () => ({
@@ -49,64 +23,24 @@ vi.mock("./components/acceptance-record-summary-list", () => ({
 }));
 
 import { getWorkspace, readAcceptanceRecordSummaries } from "@agentrail/db-postgres";
-import { getSession, getMembership } from "../../../../lib/cached";
-import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
-import WorkspaceDashboardPage from "./page";
-import { PageHeader } from "../../../components/page-header";
+import { getMembership, getSession } from "../../../../lib/cached";
 import { CopyId } from "../../../components/copy-id";
-import { DigestPanel } from "./components/digest-panel";
-import { HealthRatesPanel } from "./components/health-rates-panel";
-import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
+import { PageHeader } from "../../../components/page-header";
 import { AcceptanceOutcomeMetricsPanel } from "./components/acceptance-outcome-metrics-panel";
 import { AcceptanceRecordSummaryList } from "./components/acceptance-record-summary-list";
+import { OnboardingBanner } from "./components/onboarding-banner";
+import WorkspaceDashboardPage from "./page";
 
-// This repo's vitest config runs with `environment: "node"` — there is no
-// DOM/render harness (no @testing-library/react, no jsdom) anywhere in the
-// project. `WorkspaceDashboardPage` is an async SERVER component with no
-// hooks of its own, so it's safe to call directly: the returned value is a
-// plain React element tree (the JSX transform's output objects), which we
-// can walk via `.type`/`.props` without a renderer. This is the render
-// assertion this repo's test infra actually supports.
-
+// This repo's vitest config runs in Node. WorkspaceDashboardPage is an async
+// server component with no hooks, so its returned React element tree can be
+// inspected directly without a DOM renderer.
 interface ReactElementLike {
   type: unknown;
   props: Record<string, unknown>;
 }
 
-/** Narrows an opaque React element return value for `.type`/`.props` access,
- * without an `any` cast (forbidden by this repo's eslint config). */
 function asElement(node: unknown): ReactElementLike {
   return node as ReactElementLike;
-}
-
-/** Recursively walks a React element tree via `.props.children` (the only
- * composition path this file's server-component calls produce) collecting
- * every element whose `.type` matches. Used to prove HealthRatesPanel is
- * mounted nowhere in the tree — not merely absent from its one expected
- * slot — when planCard is undefined. */
-function findElementsByType(
-  node: unknown,
-  type: unknown,
-  found: ReactElementLike[] = []
-): ReactElementLike[] {
-  if (node === null || typeof node !== "object") {
-    return found;
-  }
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      findElementsByType(child, type, found);
-    }
-    return found;
-  }
-  const element = node as ReactElementLike;
-  if (element.type === type) {
-    found.push(element);
-  }
-  const children = (element.props as Record<string, unknown> | undefined)?.children;
-  if (children !== undefined) {
-    findElementsByType(children, type, found);
-  }
-  return found;
 }
 
 const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
@@ -127,38 +61,24 @@ function mockHappyPath() {
     name: "AgentRail",
     slug: "agentrail",
   } as Awaited<ReturnType<typeof getWorkspace>>);
-  // Explicit default (not just vi.fn()'s implicit undefined return) so this
-  // happy path's outcome doesn't depend on an unstated mock default —
-  // undefined is also the correct flag-off/degraded/error value from a real
-  // loadPlanCardData, so this keeps every pre-existing test in this
-  // describe block on the exact same "no plan card" rendering path.
-  vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
   vi.mocked(readAcceptanceRecordSummaries).mockResolvedValue({
     kind: "records",
     records: [],
   } as never);
 }
 
-async function renderHeader(): Promise<ReactElementLike> {
-  const element = asElement(
+async function renderPage(): Promise<ReactElementLike> {
+  return asElement(
     await WorkspaceDashboardPage({
       params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
     })
   );
-  const children = element.props.children as ReactElementLike[];
-  return children[0]; // the PageHeader element
 }
 
-/** Walks to the (mocked) DigestPanel element after the Acceptance summary. */
-async function renderDigestPanel(): Promise<ReactElementLike> {
-  const element = asElement(
-    await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    })
-  );
-  const [, wrapper] = element.props.children as ReactElementLike[];
-  const [, , digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
-  return asElement(digestPanel);
+async function renderHeader(): Promise<ReactElementLike> {
+  const page = await renderPage();
+  const children = page.props.children as ReactElementLike[];
+  return children[0];
 }
 
 describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
@@ -167,7 +87,7 @@ describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
     mockHappyPath();
   });
 
-  it("passes only the slug — never the raw workspace id — as PageHeader's subtitle", async () => {
+  it("passes only the slug, never the raw workspace id, as the subtitle", async () => {
     const header = await renderHeader();
 
     expect(header.type).toBe(PageHeader);
@@ -175,196 +95,64 @@ describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
     expect(header.props.subtitle).not.toContain(WORKSPACE_ID);
   });
 
-  it("moves the raw workspace id behind a CopyId affordance in actions, not literal text", async () => {
+  it("keeps the raw workspace id behind the CopyId affordance", async () => {
     const header = await renderHeader();
     const actionsRoot = asElement(header.props.actions);
-    const [copyIdEl, roleBadgeEl] = actionsRoot.props.children as ReactElementLike[];
+    const [copyId, roleBadge] = actionsRoot.props.children as ReactElementLike[];
 
-    expect(copyIdEl.type).toBe(CopyId);
-    // The full id is a prop feeding the copy affordance (clipboard + title
-    // tooltip inside CopyId) — that's the intended carrier, not visible text.
-    expect(copyIdEl.props.id).toBe(WORKSPACE_ID);
-    expect(copyIdEl.props.label).toBe("ID");
-
-    // The role badge alongside it still shows the plain role string, unrelated to ids.
-    expect(roleBadgeEl.props.children).toBe("owner");
-  });
-
-  it("does not modify the PageHeader primitive itself (Q13: fix the call site)", async () => {
-    const header = await renderHeader();
-    // subtitle is still a plain string prop — PageHeader's own contract
-    // (title/subtitle/actions) is untouched; only what page.tsx passes in changed.
-    expect(typeof header.props.title).toBe("string");
-    expect(typeof header.props.subtitle).toBe("string");
+    expect(copyId.type).toBe(CopyId);
+    expect(copyId.props).toMatchObject({ id: WORKSPACE_ID, label: "ID" });
+    expect(roleBadge.props.children).toBe("owner");
   });
 });
 
-describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 Task 3)", () => {
+describe("WorkspaceDashboardPage trust-layer composition", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHappyPath();
   });
 
-  it("awaits loadPlanCardData with this workspace's id", async () => {
-    await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-
-    expect(loadPlanCardData).toHaveBeenCalledExactlyOnceWith(WORKSPACE_ID);
-  });
-
-  it("threads an undefined loadPlanCardData result straight through as DigestPanel's planCard prop (degraded workspace / no billing account / a swallowed read error)", async () => {
-    vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
-
-    const digestPanel = await renderDigestPanel();
-
-    expect(digestPanel.props.workspaceId).toBe(WORKSPACE_ID);
-    expect(digestPanel.props.planCard).toBeUndefined();
-  });
-
-  it("threads a resolved PlanCardData object through as DigestPanel's planCard prop, unmodified", async () => {
-    const planCard: PlanCardData = {
-      hasPlan: true,
-      planLabel: "Growth",
-      seatsUsed: 3,
-      seatLimit: 10,
-      capacityUsed: 42,
-      capacityTotal: 200,
-      renewalText: "Renews Aug 30, 2026",
-      shippedAllTime: 128,
-    };
-    vi.mocked(loadPlanCardData).mockResolvedValue(planCard);
-
-    const digestPanel = await renderDigestPanel();
-
-    expect(digestPanel.props.planCard).toBe(planCard);
-  });
-
-  it("still returns PageHeader as children[0] when a plan card is present (no new sibling inserted above it)", async () => {
-    vi.mocked(loadPlanCardData).mockResolvedValue({
-      hasPlan: true,
-      planLabel: "Growth",
-      seatsUsed: 3,
-      seatLimit: 10,
-      capacityUsed: 42,
-      capacityTotal: 200,
-      renewalText: "Renews Aug 30, 2026",
-      shippedAllTime: 128,
-    });
-
-    const header = await renderHeader();
-
-    expect(header.type).toBe(PageHeader);
-  });
-});
-
-describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Task 6)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockHappyPath();
-  });
-
-  it("planCard undefined (degraded workspace / no billing account / a swallowed read error): mounts no HealthRatesPanel anywhere in the tree", async () => {
-    vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
-
-    const root = await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-
-    expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(0);
-  });
-
-  it("planCard present: mounts HealthRatesPanel in the dashboard stack with the workspaceId prop", async () => {
-    const planCard: PlanCardData = {
-      hasPlan: true,
-      planLabel: "Growth",
-      seatsUsed: 3,
-      seatLimit: 10,
-      capacityUsed: 42,
-      capacityTotal: 200,
-      renewalText: "Renews Aug 30, 2026",
-      shippedAllTime: 128,
-    };
-    vi.mocked(loadPlanCardData).mockResolvedValue(planCard);
-
-    const root = await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-    const element = asElement(root);
-    const [, wrapper] = element.props.children as ReactElementLike[];
-    const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, acceptanceSummary, digestPanel, acceptanceOutcomeMetricsPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
-
-    expect(asElement(acceptanceSummary).type).toBe(AcceptanceRecordSummaryList);
-    expect(asElement(digestPanel).type).toBe(DigestPanel);
-    expect(asElement(acceptanceOutcomeMetricsPanel).type).toBe(AcceptanceOutcomeMetricsPanel);
-    expect(asElement(acceptanceOutcomeMetricsPanel).props.workspaceId).toBe(WORKSPACE_ID);
-    expect(reviewMetricsPanel).toBeDefined();
-    expect(asElement(humanFalseGreenPanel).type).toBe(HumanFalseGreenPanel);
-    expect(asElement(healthRatesPanel).type).toBe(HealthRatesPanel);
-    expect(asElement(healthRatesPanel).props.workspaceId).toBe(WORKSPACE_ID);
-
-    // Cross-check via the same whole-tree search the "undefined" case uses
-    // above — exactly one mount, not merely "found at the expected index".
-    expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(1);
-  });
-});
-
-describe("WorkspaceDashboardPage Acceptance summary", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockHappyPath();
-  });
-
-  it("reads the bounded server projection and mounts it before Digest", async () => {
+  it("renders only onboarding, tenant-scoped Acceptance Records, and outcomes", async () => {
     const summaries = [{ recordId: "record-1" }];
     vi.mocked(readAcceptanceRecordSummaries).mockResolvedValue({
       kind: "records",
       records: summaries,
     } as never);
 
-    const root = await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-    const [, wrapper] = asElement(root).props.children as ReactElementLike[];
-    const [, acceptanceSummary, digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
+    const page = await renderPage();
+    const [, content] = page.props.children as ReactElementLike[];
+    const panels = asElement(content).props.children as ReactElementLike[];
 
     expect(readAcceptanceRecordSummaries).toHaveBeenCalledExactlyOnceWith({
       workspaceId: WORKSPACE_ID,
       limit: 5,
     });
-    expect(asElement(acceptanceSummary).type).toBe(AcceptanceRecordSummaryList);
-    expect(asElement(acceptanceSummary).props).toMatchObject({
+    expect(panels).toHaveLength(3);
+    expect(panels[0]?.type).toBe(OnboardingBanner);
+    expect(panels[0]?.props.workspaceId).toBe(WORKSPACE_ID);
+    expect(panels[1]?.type).toBe(AcceptanceRecordSummaryList);
+    expect(panels[1]?.props).toMatchObject({
       workspaceId: WORKSPACE_ID,
       records: summaries,
       compact: true,
     });
-    expect(asElement(digestPanel).type).toBe(DigestPanel);
+    expect(panels[2]?.type).toBe(AcceptanceOutcomeMetricsPanel);
+    expect(panels[2]?.props.workspaceId).toBe(WORKSPACE_ID);
   });
 
-  it("does not read summaries for a non-member workspace", async () => {
+  it("does not read Acceptance Records for a non-member workspace", async () => {
     vi.mocked(getMembership).mockResolvedValue(null as never);
 
-    await expect(WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    })).rejects.toBeDefined();
+    await expect(renderPage()).rejects.toBeDefined();
     expect(readAcceptanceRecordSummaries).not.toHaveBeenCalled();
   });
-});
 
-describe("WorkspaceDashboardPage production human false-green evidence", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockHappyPath();
-  });
+  it("does not resolve workspace data without an authenticated user", async () => {
+    vi.mocked(getSession).mockResolvedValue(null);
 
-  it("mounts the production evidence panel for every accessible workspace", async () => {
-    const root = await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-
-    const panels = findElementsByType(root, HumanFalseGreenPanel);
-    expect(panels).toHaveLength(1);
-    expect(panels[0]?.props.workspaceId).toBe(WORKSPACE_ID);
+    await expect(renderPage()).rejects.toBeDefined();
+    expect(getWorkspace).not.toHaveBeenCalled();
+    expect(getMembership).not.toHaveBeenCalled();
+    expect(readAcceptanceRecordSummaries).not.toHaveBeenCalled();
   });
 });

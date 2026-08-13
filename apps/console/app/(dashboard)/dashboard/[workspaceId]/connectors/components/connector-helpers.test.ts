@@ -17,6 +17,21 @@ import {
   type ConnectorView,
 } from "./connector-helpers";
 
+describe("connector catalog — Trust Layer presentation", () => {
+  it("describes provenance, bounded context, and exact-head evidence without factory authority", () => {
+    const visibleCopy = [
+      ...Object.values(CONNECTOR_TYPE_META).flatMap((meta) => [meta.label, meta.description]),
+      ...CONNECTOR_CATALOG.flatMap((connector) => [connector.label, connector.description]),
+    ].join(" ");
+
+    expect(visibleCopy).toContain("pull-request provenance");
+    expect(visibleCopy).toContain("exact-head");
+    expect(visibleCopy).toContain("external builders");
+    expect(visibleCopy).not.toContain("Issue Queue");
+    expect(visibleCopy).not.toContain("autonomous");
+  });
+});
+
 describe("projectConnectors", () => {
   it("returns one row per catalog entry, grouped issue-source → mcp → observability", () => {
     const rows = projectConnectors([]);
@@ -221,21 +236,21 @@ describe("connectorStatusLabel", () => {
 describe("capabilitySummary", () => {
   it("summarizes the GitHub adapter's two-way capabilities", () => {
     const github = CONNECTOR_CATALOG.find((c) => c.kind === "github")!;
-    expect(capabilitySummary(github.capabilities)).toBe("Ingest · Post result");
+    expect(capabilitySummary(github.capabilities)).toBe("Events · Updates");
   });
 
   it("summarizes the Linear adapter as ingest + post + tools (MCP)", () => {
     const linear = CONNECTOR_CATALOG.find((c) => c.kind === "linear")!;
     expect(linear.availability).toBe("available");
     expect(capabilitySummary(linear.capabilities)).toBe(
-      "Ingest · Post result · Tools"
+      "Events · Updates · Context tools"
     );
   });
 
   it("summarizes Figma / Context7 as tools-only (MCP)", () => {
     for (const kind of ["figma", "context7"] as const) {
       const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
-      expect(capabilitySummary(e.capabilities)).toBe("Tools");
+      expect(capabilitySummary(e.capabilities)).toBe("Context tools");
     }
   });
 

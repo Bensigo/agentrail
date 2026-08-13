@@ -53,7 +53,7 @@ export function AcceptanceOutcomeMetricsPanel({ workspaceId }: { workspaceId: st
           Acceptance outcomes
         </h2>
         <p className="mt-1 text-xs text-[var(--gray-09)]">
-          Canonical posted Acceptance reviews observed {formatAcceptanceOutcomeDateRange(cohort)}
+          Human decisions observed {formatAcceptanceOutcomeDateRange(cohort)}
         </p>
       </div>
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3">
@@ -110,8 +110,8 @@ export function AcceptanceOutcomeMetricsSummary({ data }: { data: AcceptanceOutc
         </dl>
       </div>
       <p className="mt-4 text-xs text-[var(--gray-09)]">
-        Observed through {new Date(data.cohort.observedUntil).toLocaleString("en-US", { timeZone: "UTC" })} UTC.
-        {' '}A zero is a recorded count. “Not recorded” means no valid human decision was observed by this cutoff for an eligible review; “Unknown / excluded” is kept separate and is not treated as zero. Observed lineage is factual merge, deployment, incident, and revert custody, not a human decision.
+        Cutoff {new Date(data.cohort.observedUntil).toLocaleString("en-US", { timeZone: "UTC" })} UTC.
+        {' '}Not recorded means no valid decision receipt; Unknown / excluded is separate from zero. Lineage records observed events, not human decisions.
       </p>
     </div>
   );

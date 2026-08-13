@@ -6,36 +6,23 @@ import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 import { EngineRoomGroup } from "./nav-group";
 import { NavLink } from "./nav-link";
 import {
-  CHAT_NAV_ITEM,
   ENGINE_ROOM_ZONE,
-  GOALS_NAV_ITEM,
   SETTINGS_ZONE,
   YOUR_ENGINEER_ZONE,
   type NavItem,
 } from "./sidebar-nav";
 
 /**
- * Costs/Budget/Wallet leave the customer-facing Engine room group
- * unconditionally (2026-07-31 owner ruling: the cost/budget UI is
- * redundant now that the product is subscription-based, so the
- * billing-swap flag that used to gate this filter is retired — see
- * subscription-platform spec §8 margin telemetry / staff-console seed).
- * Deliberately a nav-only demotion: the three pages stay code-live and
- * URL-reachable (direct links, breadcrumbs, staff access), only these
- * hrefs disappear from what gets rendered here.
+ * Resolve the primary customer navigation independently of legacy Chat and
+ * Goal-loop feature flags. The routes and flags remain live, but neither is a
+ * Trust Layer product-shell destination.
  */
-const BILLING_SWAP_HIDDEN_HREFS = new Set(["costs", "budget", "wallet"]);
-
-/**
- * Pure filter (data in, data out — no JSX, no hooks) so it's unit-testable
- * without a React render pass: `Sidebar` below calls `usePathname()`, which
- * makes the component itself uncallable directly in this repo's hookless
- * vitest environment (see `sidebar.test.tsx`'s header comment). Exported
- * solely to make this piece independently testable, same "extract the pure
- * part" move `digest-panel.tsx` makes with `PlanCardBlock`.
- */
-export function filterEngineRoomItems(items: NavItem[]): NavItem[] {
-  return items.filter((item) => !BILLING_SWAP_HIDDEN_HREFS.has(item.href));
+export function resolvePrimaryNavItems(options?: {
+  chatEnabled?: boolean;
+  goalsEnabled?: boolean;
+}): readonly NavItem[] {
+  void options;
+  return YOUR_ENGINEER_ZONE.items;
 }
 
 interface SidebarProps {
@@ -43,14 +30,9 @@ interface SidebarProps {
   workspaceId: string;
   user: { name?: string | null; email?: string | null; image?: string | null };
   signOutAction: () => Promise<void>;
-  /** Console chat (#1288), default OFF — computed server-side
-   * (`isConsoleChatEnabled`) by the layout that renders this. `undefined`
-   * (the Suspense fallback's render, before the real value is known) reads
-   * as off, so the item never flashes in then disappears. */
+  /** Legacy route flag retained for caller compatibility; not shown in nav. */
   chatEnabled?: boolean;
-  /** Goal loop (#1289 AC2), default OFF — computed server-side
-   * (`isGoalLoopEnabled`) by the layout that renders this, same "undefined
-   * reads as off" posture as `chatEnabled` above. */
+  /** Legacy route flag retained for caller compatibility; not shown in nav. */
   goalsEnabled?: boolean;
 }
 
@@ -64,12 +46,7 @@ export function Sidebar({
 }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
-  const engineerItems = [
-    ...YOUR_ENGINEER_ZONE.items,
-    ...(goalsEnabled ? [GOALS_NAV_ITEM] : []),
-    ...(chatEnabled ? [CHAT_NAV_ITEM] : []),
-  ];
-  const engineRoomItems = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
+  const primaryItems = resolvePrimaryNavItems({ chatEnabled, goalsEnabled });
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">
@@ -100,12 +77,17 @@ export function Sidebar({
         <p className="px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
           {YOUR_ENGINEER_ZONE.label}
         </p>
-        {engineerItems.map((item) => (
-          <NavLink key={item.href} item={item} basePath={basePath} pathname={pathname} />
+        {primaryItems.map((item) => (
+          <NavLink
+            key={item.href}
+            item={item}
+            basePath={basePath}
+            pathname={pathname}
+          />
         ))}
 
         <EngineRoomGroup
-          zone={{ ...ENGINE_ROOM_ZONE, items: engineRoomItems }}
+          zone={ENGINE_ROOM_ZONE}
           pathname={pathname}
           basePath={basePath}
         />
@@ -114,7 +96,12 @@ export function Sidebar({
           {SETTINGS_ZONE.label}
         </p>
         {SETTINGS_ZONE.items.map((item) => (
-          <NavLink key={item.href} item={item} basePath={basePath} pathname={pathname} />
+          <NavLink
+            key={item.href}
+            item={item}
+            basePath={basePath}
+            pathname={pathname}
+          />
         ))}
       </nav>
 

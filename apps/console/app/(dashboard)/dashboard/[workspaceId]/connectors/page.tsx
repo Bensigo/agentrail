@@ -13,9 +13,8 @@ export default async function ConnectorsPage({
         Connectors
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Connect the tools your team already uses. Issue sources feed the Issue
-        Queue (and configure the autonomous Heartbeat on their cards); MCP
-        servers give runs extra tools.
+        Connect repositories, task sources, optional context, and evidence.
+        Jace verifies the exact change; external builders implement it.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

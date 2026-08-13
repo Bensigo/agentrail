@@ -436,19 +436,19 @@ export const CONNECTOR_TYPE_META: Record<
   { label: string; description: string }
 > = {
   "issue-source": {
-    label: "Issue sources",
+    label: "Task and change provenance",
     description:
-      "Connect an issue tracker so its labeled issues flow into the Issue Queue and run results post back. GitHub delivers over its webhook; Linear over its own real-time webhook.",
+      "Repository and task references for each Acceptance Record.",
   },
   mcp: {
-    label: "MCP",
+    label: "Optional context",
     description:
-      "Model-Context-Protocol tool servers — codebase-level. Connect once and the coding agent can call the granted tools during a run.",
+      "Bounded design and documentation context for external builders.",
   },
   observability: {
     label: "Observability",
     description:
-      "Give the debugging investigator evidence about what shipped and what the logs say — deployments and log search, read-only, never used for ingest.",
+      "Read-only investigation evidence, separate from exact-head proof.",
   },
 };
 
@@ -466,7 +466,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "oauth",
     label: "GitHub",
     description:
-      "Ingest labeled issues into the Issue Queue and post run results back on the issue.",
+      "Repository and pull-request provenance for exact-head evidence.",
     availability: "available",
     capabilities: {
       ingest: true,
@@ -486,7 +486,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Linear",
     description:
-      "Ingest labeled Linear issues and let the agent read & update issues over Linear's MCP.",
+      "Task context and updates for human-defined work.",
     availability: "available",
     capabilities: { ingest: true, postResult: true, notify: false, tools: true },
     connect: {
@@ -507,8 +507,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "mcp",
     connectMethod: "secret",
     label: "Figma",
-    description:
-      "Give the agent read access to your Figma files and frames over the Figma MCP.",
+    description: "Design context from Figma files and frames over MCP.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -528,8 +527,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     type: "mcp",
     connectMethod: "secret",
     label: "Context7",
-    description:
-      "Up-to-date library docs on demand — the agent pulls current API docs over the Context7 MCP.",
+    description: "Current library documentation over MCP.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -1310,10 +1308,10 @@ export function connectorStatusLabel(status: ConnectorStatus): string {
 /** Summarize a connector's capabilities as a short, scannable string. */
 export function capabilitySummary(caps: ConnectorCapabilities): string {
   const parts: string[] = [];
-  if (caps.ingest) parts.push("Ingest");
-  if (caps.postResult) parts.push("Post result");
-  if (caps.notify) parts.push("Notify");
-  if (caps.tools) parts.push("Tools");
+  if (caps.ingest) parts.push("Events");
+  if (caps.postResult) parts.push("Updates");
+  if (caps.notify) parts.push("Notifications");
+  if (caps.tools) parts.push("Context tools");
   return parts.join(" · ") || "—";
 }
 

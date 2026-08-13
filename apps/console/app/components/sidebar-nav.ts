@@ -1,26 +1,16 @@
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
-  Play,
-  ListChecks,
   Inbox,
-  AlertTriangle,
-  ShieldCheck,
-  DollarSign,
-  Wallet,
   CreditCard,
   Brain,
   BookOpen,
   Users,
   Plug,
   GitMerge,
-  Cpu,
-  MessageCircle,
   MessageSquare,
-  Target,
   FileText,
   Layers3,
-  SearchCode,
   History,
 } from "lucide-react";
 
@@ -34,110 +24,37 @@ export interface NavItem {
 export interface NavZone {
   id: string;
   label: string;
-  /** Only the Engine room zone renders as a collapsible group; the others are plain sections. */
+  /** Only the Evidence & context zone renders as a collapsible group. */
   collapsible: boolean;
   items: NavItem[];
 }
 
-// Slice ① (#1229) was a pure sidebar regroup — no route/href changes. Slice ③
-// (#1231) renames Issue Queue to "Work" and moves its href from `queue` to
-// `work` (spec §3/§4): `/work` is the new task-list page and `/queue`
-// redirects to it, so old deep links keep working without staying in the nav.
-// "Approvals" (#1276) is an action surface, not evidence — it's where a
-// human resolves pending tool-call approvals, parked work, and dead-lettered
-// channel messages, so it belongs here rather than in the demoted Engine
-// room zone below (that zone is explicitly for "existing evidence" pages).
+// The customer shell foregrounds Jace's Trust Layer contract and human-decision
+// seam. Factory-era Work, Chat, and Goals routes remain code-live for direct
+// links and historical operation, but they are not presented as the product.
 export const YOUR_ENGINEER_ZONE: NavZone = {
   id: "your-engineer",
-  label: "Your engineer",
+  label: "Trust layer",
   collapsible: false,
   items: [
-    { label: "Changes", href: "changes", icon: History },
     { label: "Home", href: "", icon: LayoutDashboard },
-    { label: "Work", href: "work", icon: ListChecks },
+    { label: "Briefs", href: "briefs", icon: FileText },
+    { label: "Acceptance Records", href: "changes", icon: History },
     { label: "Approvals", href: "approvals", icon: Inbox },
   ],
 };
 
-/**
- * The console chat (#1288) nav item — deliberately NOT baked into
- * `YOUR_ENGINEER_ZONE.items` above (that array's exact shape is asserted by
- * `sidebar-nav.test.ts`, and this item must not appear at all for a
- * workspace `CONSOLE_CHAT_ENABLED` is off for). `sidebar.tsx` splices this
- * in only when its `chatEnabled` prop — computed server-side in
- * `dashboard/[workspaceId]/layout.tsx` via `isConsoleChatEnabled` — is true.
- */
-export const CHAT_NAV_ITEM: NavItem = { label: "Chat", href: "chat", icon: MessageCircle };
-
-/**
- * The Goals nav item (#1289 AC2) — same deliberately-not-baked-in posture as
- * `CHAT_NAV_ITEM` above, for the same reason: this must not appear at all
- * for a workspace `jaceGoalLoop` is off for (default OFF). `sidebar.tsx`
- * splices this in only when its `goalsEnabled` prop — computed server-side
- * in `dashboard/[workspaceId]/layout.tsx` via `isGoalLoopEnabled` — is true.
- */
-export const GOALS_NAV_ITEM: NavItem = { label: "Goals", href: "goals", icon: Target };
-
-// Demoted, existing evidence pages — collapsed by default, reached primarily
-// by drilling into a work item (spec §3).
-//
-// "Budget" (#1272 PR ②) is deliberately a separate item from "Costs", not a
-// tab folded into it: "Costs" is the ClickHouse-backed granular meter
-// (cost-per-issue-to-green, cache ratio, anomalies — ADR 0009), a real,
-// already-shipped, unrelated surface. "Budget" is the Postgres-backed
-// workspace-level view (this month's per-task costs, the trailing monthly
-// rollup, and the #1269 monthly $ ceiling's cap status) — same zone, same
-// "operational depth" category, different data source and question ("is
-// this workspace blocked right now" vs "where did the tokens go").
+// Useful customer-facing context stores remain visible. Factory operations
+// (runs, review gates, costs, budgets, model selection, investigations, and
+// failures) remain URL-reachable but are intentionally absent from this list.
 export const ENGINE_ROOM_ZONE: NavZone = {
   id: "engine-room",
-  label: "Engine room",
+  label: "Evidence & context",
   collapsible: true,
   items: [
-    { label: "Runs", href: "runs", icon: Play },
-    { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
-    { label: "Costs", href: "costs", icon: DollarSign },
-    { label: "Budget", href: "budget", icon: Wallet },
-    // "Wallet" (#1415, #1290's deferred PR ③) — the prepaid per-task balance
-    // + ledger, and where an owner/admin tops up via Stripe Checkout.
-    // Deliberately its own item, not folded into Budget: Budget is the
-    // monthly-ceiling spend view (Postgres-backed, per-task/monthly $ this
-    // workspace SPENT), Wallet is the prepaid balance that FUNDS spend in
-    // the first place — same "operational depth" category, different
-    // question ("what did this cost" vs "can this workspace afford the next
-    // task").
-    { label: "Wallet", href: "wallet", icon: CreditCard },
-    // #1338 PR③ observe view: per-task-type "which execute model is
-    // winning on real run data" breakdown — read-only evidence, same
-    // category as Costs/Budget (spend/model economics), so it lands here.
-    { label: "Model selection", href: "model-selection", icon: Cpu },
     { label: "Memory", href: "memory", icon: Brain },
-    // Briefs (spec PR #1487/#1489) — Jace's durable, editable understanding
-    // of ONE product idea; a third compiled/elicited store alongside Memory
-    // (interaction history) and Wiki (codebase knowledge) below, same
-    // "read+edit here, not via CLI/chat" category. Never flag-gated in the
-    // nav (no rollout flag exists for this feature — it ships with the v1
-    // pinned contract), same posture as Wiki's own "never flag-gated in the
-    // nav itself" comment just below.
-    { label: "Briefs", href: "briefs", icon: FileText },
-    // Investigations (debugging design spec, spec PR #1501) — Jace's
-    // durable, server-side record of ONE production incident; sibling of
-    // Briefs (both are compiled/elicited, human-editable console stores,
-    // not read-only evidence), placed directly next to it for that reason.
-    // This is also where the human confirmation/promotion gate lives
-    // (`confirmVerdictAsHuman`/lesson-candidate promotion, Task 13) — never
-    // flag-gated in the nav, same posture as Briefs/Wiki just above/below.
-    { label: "Investigations", href: "investigations", icon: SearchCode },
-    // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
-    // are compiled/advisory knowledge stores read-only from the console, the
-    // Wiki about the codebase, Memory about interaction history (CONTEXT.md's
-    // "Context Memory" vs "Repo Wiki" boundary). Never flag-gated in the nav
-    // itself — a workspace with the compiler flag OFF (or not yet compiled)
-    // still gets the page, showing the honest "no wiki compiled yet" empty
-    // state rather than disappearing (spec §4.5 empty state).
     { label: "Wiki", href: "wiki", icon: BookOpen },
     { label: "Context Packs", href: "context-packs", icon: Layers3 },
-    { label: "Failures", href: "failures", icon: AlertTriangle },
   ],
 };
 
@@ -146,13 +63,9 @@ export const SETTINGS_ZONE: NavZone = {
   label: "Settings",
   collapsible: false,
   items: [
-    // Gateways (gateways-page T3) sits ABOVE Connectors: a gateway is where a
-    // human talks to Jace (Telegram/Discord/Slack/iMessage/WhatsApp), as
-    // distinct from a connector (GitHub/Linear/Figma/Context7 — tools wired
-    // into the factory). Gateways used to be the connector catalog's
-    // `channel` group; the owner ruled them onto their own page instead (see
-    // `gateways/components/gateway-helpers.ts`'s module doc-comment).
-    { label: "Gateways", href: "gateways", icon: MessageSquare },
+    // Keep the established route while naming the customer-facing surface by
+    // what it connects: the channels where a human talks with Jace.
+    { label: "Channels", href: "gateways", icon: MessageSquare },
     { label: "Connectors", href: "connectors", icon: Plug },
     // No separate "Repos & Health" item: Repos & Health folded into the Wiki
     // view (owner ruling) — the wiki is now the per-repo evidence page (repo
@@ -168,26 +81,10 @@ export const SETTINGS_ZONE: NavZone = {
     // `agentrail login` (device flow, browser half at /activate) per the
     // docs' self-hosting page. The api_keys table and every /api/v1 route
     // that reads it are untouched; this is a nav-only removal.
-    // "Permissions" (#1278): the owner-only grantable-trust-setting surface —
-    // today just merge permission (green gate -> merges itself vs. PR-only).
-    // No prior "workspace settings" page existed to fold this into; this is
-    // the seed of one, sized to what's real today (v1 = one setting).
+    // Permissions preserves the route for the explicit Trust Layer authority
+    // boundary and owner-only revocation of any historical factory merge grant.
     { label: "Permissions", href: "permissions", icon: GitMerge },
-    // "Plan & billing" (subscription-platform spec, slice-3 plan Task 5) —
-    // the customer-facing plan card (plan name, subscription status,
-    // renewal date, seats used) plus Starter/Growth checkout and the Stripe
-    // customer-portal "Manage billing" link. Deliberately its own Settings-
-    // zone item, not folded into the Engine-room "Wallet" item above:
-    // Wallet is the prepaid PER-TASK balance that funds what Jace runs;
-    // this is the SUBSCRIPTION (seats, plan tier) that entitles the
-    // workspace to run Jace at all — same "billing" umbrella, different
-    // question, same split rationale as Wallet's own Budget-vs-Wallet
-    // doc-comment above. Reuses the `CreditCard` icon already on the
-    // Engine-room "Wallet" item above (line 105) — a deliberate, temporary
-    // duplicate across zones, not an oversight: slice 6 is where Wallet's
-    // own icon/placement gets revisited (this task's brief is explicit that
-    // touching existing items is out of scope here), so this item is sized
-    // for what's true today rather than pre-empting that later call.
+    // Subscription plan and customer-portal management stay in Settings.
     { label: "Plan & billing", href: "billing", icon: CreditCard },
   ],
 };
@@ -217,9 +114,9 @@ export function isNavItemActive(
 }
 
 /**
- * True when `pathname` is inside any Engine room item, including nested
- * routes such as `/runs/[runId]`. Pure — no DOM/localStorage access — so the
- * "should the group auto-expand" decision is unit-testable on its own.
+ * True when `pathname` is inside any Evidence & context item, including nested
+ * routes such as `/context-packs/[packId]`. Pure — no DOM/localStorage access
+ * — so the "should the group auto-expand" decision is unit-testable.
  */
 export function isEngineRoomRoute(pathname: string, basePath: string): boolean {
   return ENGINE_ROOM_ZONE.items.some((item) =>
@@ -228,9 +125,9 @@ export function isEngineRoomRoute(pathname: string, basePath: string): boolean {
 }
 
 /**
- * Resolves whether the Engine room group should render open, given the
+ * Resolves whether the Evidence & context group should render open, given the
  * current route and the last value persisted to localStorage (or `null` if
- * unavailable, e.g. during SSR). A direct deep link into an engine-room route
+ * unavailable, e.g. during SSR). A direct link into a visible context route
  * always wins over the persisted preference; otherwise the persisted value is
  * used, defaulting to collapsed.
  */

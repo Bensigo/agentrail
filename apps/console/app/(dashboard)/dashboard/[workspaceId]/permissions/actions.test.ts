@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("next/cache", () => ({
-  revalidatePath: vi.fn(),
-}));
-
 vi.mock("@agentrail/db-postgres", () => ({
   setMergePermission: vi.fn(),
 }));
@@ -13,7 +9,6 @@ vi.mock("../../../../../lib/cached", () => ({
   getMembership: vi.fn(),
 }));
 
-import { revalidatePath } from "next/cache";
 import { setMergePermission } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../../lib/cached";
 import { setMergePermissionAction } from "./actions";
@@ -80,7 +75,7 @@ describe("setMergePermissionAction", () => {
   it("rejects when not signed in, and never calls setMergePermission", async () => {
     mockSession(null);
 
-    const result = await setMergePermissionAction(WORKSPACE_ID, true);
+    const result = await setMergePermissionAction(WORKSPACE_ID, false);
 
     expect(result).toEqual({ ok: false, error: "Not signed in." });
     expect(setMergePermission).not.toHaveBeenCalled();
@@ -90,7 +85,7 @@ describe("setMergePermissionAction", () => {
     mockSession(OWNER_USER_ID);
     mockMembership(null);
 
-    const result = await setMergePermissionAction(WORKSPACE_ID, true);
+    const result = await setMergePermissionAction(WORKSPACE_ID, false);
 
     expect(result.ok).toBe(false);
     expect(setMergePermission).not.toHaveBeenCalled();
@@ -102,7 +97,7 @@ describe("setMergePermissionAction", () => {
       mockSession(OWNER_USER_ID);
       mockMembership(role);
 
-      const result = await setMergePermissionAction(WORKSPACE_ID, true);
+      const result = await setMergePermissionAction(WORKSPACE_ID, false);
 
       expect(result).toEqual({
         ok: false,
@@ -112,24 +107,21 @@ describe("setMergePermissionAction", () => {
     }
   );
 
-  it("grants for an owner: calls setMergePermission with the server-derived actor id, revalidates, returns ok", async () => {
+  it("rejects a new automatic-merge grant even for an owner", async () => {
     mockSession(OWNER_USER_ID);
     mockMembership("owner");
 
     const result = await setMergePermissionAction(WORKSPACE_ID, true);
 
-    expect(setMergePermission).toHaveBeenCalledWith({
-      workspaceId: WORKSPACE_ID,
-      granted: true,
-      grantedByUserId: OWNER_USER_ID,
+    expect(result).toEqual({
+      ok: false,
+      error: "Automatic merge grants are unavailable. Final merge remains a human decision.",
     });
-    expect(revalidatePath).toHaveBeenCalledWith(
-      `/dashboard/${WORKSPACE_ID}/permissions`
-    );
-    expect(result).toEqual({ ok: true, granted: true });
+    expect(setMergePermission).not.toHaveBeenCalled();
+    expect(getSession).not.toHaveBeenCalled();
   });
 
-  it("revokes for an owner identically to a grant", async () => {
+  it("lets an owner revoke a historical grant", async () => {
     mockSession(OWNER_USER_ID);
     mockMembership("owner");
     vi.mocked(setMergePermission).mockResolvedValue({

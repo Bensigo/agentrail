@@ -29,4 +29,15 @@ describe("connector sheet connection-path contract", () => {
     expect(source).toContain('save(null)');
     expect(source).toContain('Disconnecting…');
   });
+
+  it("keeps implementation and merge authority outside Jace", () => {
+    expect(source).not.toContain("TriggerControls");
+    expect(source).not.toContain("Heartbeat trigger");
+    expect(source).not.toContain("review, push");
+    expect(source).not.toContain("open PRs");
+    expect(source).not.toContain("Issue Queue");
+    expect(source).toContain("exact-head evidence");
+    expect(source).toContain("Jace does not implement or merge");
+    expect(source).toContain("builders produce or attach PRs");
+  });
 });

@@ -170,7 +170,7 @@ export function AcceptanceRecordSummaryList({
             {compact ? "Acceptance summary" : "Acceptance Records"}
           </h2>
           <p className="mt-1 text-xs text-[var(--gray-09)]">
-            Requested work, supplied context, exact-head proof, unknowns, decisions, and outcomes from server-custodied Records.
+            Contract, context, exact-head proof, decisions, and outcomes.
           </p>
         </div>
         {compact ? (
@@ -178,7 +178,7 @@ export function AcceptanceRecordSummaryList({
             href={`/dashboard/${workspaceId}/changes`}
             className="text-xs text-[var(--blue-11)] hover:underline"
           >
-            View all Changes
+            View all Acceptance Records
           </Link>
         ) : null}
       </div>

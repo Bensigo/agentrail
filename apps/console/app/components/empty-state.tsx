@@ -7,7 +7,7 @@ export function EmptyState({
 }: {
   icon: LucideIcon;
   title: string;
-  description: string;
+  description?: string;
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -15,7 +15,9 @@ export function EmptyState({
       <h3 className="mt-4 text-sm font-medium text-[var(--gray-12)]">
         {title}
       </h3>
-      <p className="mt-1 text-xs text-[var(--gray-09)]">{description}</p>
+      {description ? (
+        <p className="mt-1 text-xs text-[var(--gray-09)]">{description}</p>
+      ) : null}
     </div>
   );
 }

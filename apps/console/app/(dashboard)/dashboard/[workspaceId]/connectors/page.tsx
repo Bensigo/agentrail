@@ -13,8 +13,7 @@ export default async function ConnectorsPage({
         Connectors
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Connect repositories, task sources, optional context, and evidence.
-        Jace verifies the exact change; external builders implement it.
+        Connect repositories, context, and evidence.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

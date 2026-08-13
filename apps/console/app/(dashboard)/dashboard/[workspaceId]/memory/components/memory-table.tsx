@@ -125,7 +125,7 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
                 colSpan={COLS + 1}
                 className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
               >
-                No memory items found
+                No memories yet.
               </td>
             </tr>
           ) : (

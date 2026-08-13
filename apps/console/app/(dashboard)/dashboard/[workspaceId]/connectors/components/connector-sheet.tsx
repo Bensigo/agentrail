@@ -92,10 +92,10 @@ function ConnectionPathSummary({ connector }: { connector: ConnectorView }) {
   if (connection.mode === "direct-oauth") {
     title = connector.oauthReady ? "Hosted OAuth" : "Hosted OAuth not enabled";
     detail = connector.oauthReady
-      ? "Connect opens the provider's consent screen and returns you here."
+      ? "Provider consent required."
       : connection.manualFallback
-        ? "This deployment will use the provider credential path instead."
-        : "A workspace administrator must configure this provider first.";
+        ? "Provider credentials required."
+        : "Administrator setup required.";
   } else if (connection.mode === "remote-mcp-oauth") {
     title = connector.oauthReady
       ? "Hosted MCP · OAuth"
@@ -103,15 +103,15 @@ function ConnectionPathSummary({ connector }: { connector: ConnectorView }) {
         ? "Hosted MCP · credential fallback"
         : "Hosted MCP · OAuth not enabled";
     detail = connector.oauthReady
-      ? "Jace connects to the provider's hosted MCP server after consent."
+      ? "Provider consent required."
       : connection.manualFallback
-        ? "This deployment does not have MCP OAuth enabled, so the provider credential is required."
-        : "A workspace administrator must enable the MCP authorization broker.";
+        ? "Provider credentials required."
+        : "Administrator setup required.";
   } else {
     title = isSelfHosted ? "Self-hosted endpoint" : "Provider credential";
     detail = isSelfHosted
-      ? "After Connect, provide the reachable endpoint and its credential."
-      : "After Connect, provide the provider credential; it is encrypted and verified before saving.";
+      ? "Endpoint and credential required."
+      : "Credential is encrypted and verified.";
   }
 
   return (
@@ -168,8 +168,7 @@ function OauthUnavailableNotice({ connector }: { connector: ConnectorView }) {
         OAuth is not enabled on this deployment
       </p>
       <p className="mt-0.5 text-xs leading-relaxed text-[var(--gray-09)]">
-        An administrator must configure the provider OAuth app. You can use the
-        credential path below when this provider supports it.
+        Configure the provider OAuth app, or use credentials below.
       </p>
       {setup.missingEnv.length > 0 && (
         <p className="mt-1.5 text-xs text-[var(--gray-09)]">
@@ -326,7 +325,6 @@ function SecretManage({
       }}
       className="flex flex-col gap-2"
     >
-      {meta?.tokenStandardNote && <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.tokenStandardNote}</p>}
       {isComposite ? secretParts.map((part, index) => (
         <input
           key={part.name}
@@ -415,7 +413,7 @@ function SecretManage({
     <div className="flex flex-col gap-2">
       <OauthUnavailableNotice connector={connector} />
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        This connector is not enabled for this deployment. Ask a workspace administrator to configure it.
+        Not enabled. Ask a workspace administrator.
       </p>
     </div>
   );
@@ -489,11 +487,7 @@ function OAuthManage({
   if (connector.status === "connected" && connector.appInstalled) {
     return (
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Repository and PR updates supply exact-head evidence. The{" "}
-        <code className="font-mono text-[var(--gray-11)]">
-          {connector.ingestLabel}
-        </code>{" "}
-        label marks human-defined work. Jace does not implement or merge.
+        Repository and PR evidence connected.
       </p>
     );
   }
@@ -502,8 +496,7 @@ function OAuthManage({
     return (
       <div className="flex flex-col gap-2">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Install the Jace GitHub App for repository and PR updates. External
-          builders produce or attach PRs; Jace does not implement or merge.
+          Install the GitHub App for repository and PR updates.
         </p>
         {installButton}
       </div>
@@ -674,8 +667,7 @@ export function ConnectorSheet({
           {!canManage && (
             <p className="flex items-start gap-1.5 border-t border-[var(--gray-04)] pt-3 text-xs leading-relaxed text-[var(--gray-08)]">
               <AlertCircle size={12} className="mt-0.5 shrink-0" />
-              You have read-only access to connectors. Ask a workspace admin
-              to make changes here.
+              Read-only. Ask a workspace admin to make changes.
             </p>
           )}
         </div>

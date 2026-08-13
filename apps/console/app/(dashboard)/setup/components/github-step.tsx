@@ -159,9 +159,7 @@ export function GithubStep({
   if (skipped && !showConnect && !complete) {
     return (
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-[var(--gray-09)]">
-          Skipped for now. You can connect GitHub any time from this page.
-        </p>
+        <p className="text-xs text-[var(--gray-09)]">Skipped.</p>
         <button
           type="button"
           onClick={() => setShowConnect(true)}
@@ -177,9 +175,7 @@ export function GithubStep({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2 border-b border-[var(--gray-04)] pb-3">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Install the Jace GitHub App for workspace-scoped repository and PR
-          events. External builders produce or attach PRs; Jace does not push
-          or merge.
+          Connect GitHub for repository and PR evidence. Jace does not push or merge.
         </p>
         {/* font-bold: primary CTA (colored fill) — same treatment as the
             webhook step's "Create webhook automatically" button. */}
@@ -195,10 +191,6 @@ export function GithubStep({
           <p className="text-xs text-[var(--red-11)]">{installError}</p>
         )}
       </div>
-
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Choose repositories, then create the webhook.
-      </p>
 
       <div className="flex flex-col gap-1.5">
         {/* font-normal: microlabel idiom (matches StatHeader's clean
@@ -272,10 +264,7 @@ export function GithubStep({
       </div>
 
       {!complete && (
-        <div className="flex items-center justify-between gap-2 border-t border-[var(--gray-04)] pt-3">
-          <p className="text-xs text-[var(--gray-09)]">
-            Optional — connect GitHub any time from this page.
-          </p>
+        <div className="flex justify-end border-t border-[var(--gray-04)] pt-3">
           {/* font-normal: secondary button, matches the Deny/Refresh/Requeue
               plain-weight convention used across the scope. */}
           <button

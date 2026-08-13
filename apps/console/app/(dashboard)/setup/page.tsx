@@ -99,10 +99,6 @@ function SetupPageContent() {
           <h1 className="text-2xl font-bold tracking-tight text-[var(--gray-12)]">
             Set up your workspace
           </h1>
-          <p className="mt-2 text-sm text-[var(--gray-09)]">
-            Every step below is optional. Connect now, or skip and finish
-            later from GitHub, Gateways, or Members.
-          </p>
           <div className="mt-8">
             <OnboardingWizard workspaceId={workspaceId} />
           </div>
@@ -118,10 +114,6 @@ function SetupPageContent() {
         <h1 className="text-2xl font-bold tracking-tight text-[var(--gray-12)]">
           Create a workspace
         </h1>
-        <p className="mt-2 text-sm text-[var(--gray-09)]">
-          Create your first workspace to get started.
-        </p>
-
         <form onSubmit={handleSubmit} className="mt-8 space-y-5">
           <div>
             {/* font-normal on both field labels below: microlabel idiom

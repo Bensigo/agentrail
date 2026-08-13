@@ -76,9 +76,7 @@ export function MessageJaceStep({
   if (skipped && !showConnect) {
     return (
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-[var(--gray-09)]">
-          Skipped for now. You can message Jace any time from Gateways.
-        </p>
+        <p className="text-xs text-[var(--gray-09)]">Skipped.</p>
         <button
           type="button"
           onClick={() => setShowConnect(true)}
@@ -93,10 +91,6 @@ export function MessageJaceStep({
   if (hostedBotUsername) {
     return (
       <div className="flex flex-col gap-2.5">
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Message Jace on Telegram — that chat becomes your channel, no token
-          to paste, and Jace replies right there.
-        </p>
         {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
         <a
           href={telegramDeepLink(hostedBotUsername)}

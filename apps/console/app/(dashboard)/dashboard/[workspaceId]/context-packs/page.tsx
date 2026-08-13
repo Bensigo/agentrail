@@ -25,8 +25,7 @@ export default async function ContextPacksPage({
       {packs.length === 0 ? (
         <EmptyState
           icon={Layers3}
-          title="No Context Packs yet"
-          description="Packs appear here when they are prepared for a change."
+          title="No Context Packs"
         />
       ) : (
         <div className="flex flex-col gap-2">

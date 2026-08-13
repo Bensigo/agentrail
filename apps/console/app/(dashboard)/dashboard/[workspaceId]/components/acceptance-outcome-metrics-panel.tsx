@@ -53,7 +53,7 @@ export function AcceptanceOutcomeMetricsPanel({ workspaceId }: { workspaceId: st
           Acceptance outcomes
         </h2>
         <p className="mt-1 text-xs text-[var(--gray-09)]">
-          Human decisions observed {formatAcceptanceOutcomeDateRange(cohort)}
+          Decisions · {formatAcceptanceOutcomeDateRange(cohort)}
         </p>
       </div>
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3">
@@ -87,8 +87,7 @@ export function AcceptanceOutcomeMetricsSummary({ data }: { data: AcceptanceOutc
   ];
   return (
     <div>
-      <p className="text-xs font-medium text-[var(--gray-11)]">Human decision observations</p>
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4 lg:grid-cols-7">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4 lg:grid-cols-7">
         {decisionCounts.map((count) => (
           <div key={count.label}>
             <dt className="text-xs text-[var(--gray-09)]">{count.label}</dt>
@@ -110,8 +109,8 @@ export function AcceptanceOutcomeMetricsSummary({ data }: { data: AcceptanceOutc
         </dl>
       </div>
       <p className="mt-4 text-xs text-[var(--gray-09)]">
-        Cutoff {new Date(data.cohort.observedUntil).toLocaleString("en-US", { timeZone: "UTC" })} UTC.
-        {' '}Not recorded means no valid decision receipt; Unknown / excluded is separate from zero. Lineage records observed events, not human decisions.
+        Cutoff {new Date(data.cohort.observedUntil).toLocaleString("en-US", { timeZone: "UTC" })} UTC ·
+        {' '}Not recorded = no valid receipt · Unknown / excluded ≠ zero.
       </p>
     </div>
   );

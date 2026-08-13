@@ -36,8 +36,7 @@ describe("connector sheet connection-path contract", () => {
     expect(source).not.toContain("review, push");
     expect(source).not.toContain("open PRs");
     expect(source).not.toContain("Issue Queue");
-    expect(source).toContain("exact-head evidence");
-    expect(source).toContain("Jace does not implement or merge");
-    expect(source).toContain("builders produce or attach PRs");
+    expect(source).toContain("Repository and PR evidence connected");
+    expect(source).toContain("Install the GitHub App for repository and PR updates");
   });
 });

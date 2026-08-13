@@ -72,7 +72,7 @@ export function ParkedWorkList({
   if (rows.length === 0) {
     return (
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
-        <EmptyState message="No parked work right now." icon={<PauseCircle size={20} />} />
+        <EmptyState message="No parked work." icon={<PauseCircle size={20} />} />
       </div>
     );
   }
@@ -124,14 +124,19 @@ export function ParkedWorkList({
                       // for a server-enforced refusal (review C1's locked
                       // design). No onClick: this can never fire the 409 the
                       // route would return anyway.
-                      <button
-                        type="button"
-                        disabled
-                        title="Held by the alignment gate — resolve it via Approve/Deny on its brief, not Requeue."
-                        className="h-7 px-2.5 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-xs text-[var(--gray-08)] opacity-50 cursor-not-allowed"
-                      >
-                        Requeue
-                      </button>
+                      <span className="inline-flex flex-col items-end gap-1">
+                        <button
+                          type="button"
+                          disabled
+                          aria-describedby={`alignment-help-${row.id}`}
+                          className="h-7 px-2.5 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-xs text-[var(--gray-08)] opacity-50 cursor-not-allowed"
+                        >
+                          Requeue
+                        </button>
+                        <span id={`alignment-help-${row.id}`} className="text-xs text-[var(--gray-09)]">
+                          Resolve in Pending approvals.
+                        </span>
+                      </span>
                     ) : (
                       <button
                         type="button"

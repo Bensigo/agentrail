@@ -40,10 +40,7 @@ export default async function PermissionsPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <PageHeader
-        title="Permissions"
-        subtitle="Jace records evidence; implementation and merge remain outside Jace."
-      />
+      <PageHeader title="Permissions" />
       <MergePermissionToggle
         workspaceId={workspaceId}
         granted={granted}

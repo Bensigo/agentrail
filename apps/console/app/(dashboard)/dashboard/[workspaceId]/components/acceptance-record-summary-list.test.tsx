@@ -131,8 +131,8 @@ describe("AcceptanceRecordSummaryList", () => {
     }
     expect(text).toContain(record.requestedWork.kind === "confirmed" ? record.requestedWork.originalRequest : "");
     expect(text).toContain(`Contract ${record.requestedWork.kind === "confirmed" ? record.requestedWork.acceptanceContract.id : ""} v3`);
-    expect(text).toContain(`Compiled Context Pack ${record.suppliedContext.kind === "compiled" ? record.suppliedContext.compiledPack.id : ""}`);
-    expect(text).toContain(`current exact head ${"f".repeat(40)}`);
+    expect(text).toContain(`Pack ${record.suppliedContext.kind === "compiled" ? record.suppliedContext.compiledPack.id : ""}`);
+    expect(text).toContain(`head ${"f".repeat(40)}`);
     expect(text).toContain("Proven");
     expect(text).toContain(`attestation event ${record.proof.kind === "recorded" ? record.proof.postedAttestationEventId : ""}`);
     expect(text).toContain("Approve, Request changes, Reject, Approve with exception");
@@ -147,7 +147,7 @@ describe("AcceptanceRecordSummaryList", () => {
     const text = textContent(AcceptanceRecordSummaryList({ workspaceId, records: [record] }));
 
     expect(text).toContain("incident not recorded");
-    expect(text).toContain("does not establish that an event did not happen");
+    expect(text).toContain("no receipt does not prove no event");
     expect(text).not.toMatch(/no incident|without incident|incident[- ]free/i);
   });
 
@@ -170,12 +170,14 @@ describe("AcceptanceRecordSummaryList", () => {
     };
     const text = textContent(AcceptanceRecordSummaryList({ workspaceId, records: [incomplete] }));
 
-    expect(text).toContain("Unknown — no confirmed requested work is recorded");
+    expect(text).toContain("Unknown · no confirmed request");
     expect(text).toContain("Unknown — supplied context is not recorded");
-    expect(text).toContain("Not attached — no pull request is recorded");
-    expect(text).toContain("Unknown — no canonical review proof is recorded");
-    expect(text).toContain("Unknown — decision readiness could not be proven");
-    expect(text).toContain("Not recorded — no canonical outcome receipt was observed");
+    expect(text).toContain("Not attached");
+    expect(text).toContain("Unknown · no review proof");
+    expect(text).toContain("Unknown · readiness not proven");
+    expect(text).toContain("No outcome receipt · not a known negative");
+    expect(text).toContain("Not recorded means no canonical receipt");
+    expect(text).toContain("no receipt does not prove no event");
   });
 
   it("bounds the workspace-root compact view and links to the complete Changes surface", () => {

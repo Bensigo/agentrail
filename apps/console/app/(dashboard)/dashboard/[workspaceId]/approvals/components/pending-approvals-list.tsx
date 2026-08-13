@@ -81,7 +81,7 @@ export function PendingApprovalsList({
     return (
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
         <EmptyState
-          message="Nothing waiting on your approval right now."
+          message="No pending approvals."
           icon={<Inbox size={20} />}
         />
       </div>

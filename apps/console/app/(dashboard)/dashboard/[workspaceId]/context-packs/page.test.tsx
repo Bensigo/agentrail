@@ -65,7 +65,8 @@ describe("ContextPacksPage", () => {
     expect(listAcceptanceContextPacksForWorkspace).toHaveBeenCalledExactlyOnceWith({ workspaceId });
     const emptyStates = findByType(rendered, EmptyState);
     expect(emptyStates).toHaveLength(1);
-    expect(emptyStates[0]?.props?.title).toBe("No Context Packs yet");
+    expect(emptyStates[0]?.props?.title).toBe("No Context Packs");
+    expect(emptyStates[0]?.props?.description).toBeUndefined();
   });
 
   it("lists Pack metadata and links to the canonical Acceptance Record detail", async () => {

@@ -3609,6 +3609,329 @@ function criterionStateLabel(state: AcceptanceCriterionOutcome["state"]): string
       : state === "not_proven" ? "Not proven" : "Not testable";
 }
 
+type ReviewerEvidenceMilestone = {
+  id: string;
+  at: string;
+  rank: number;
+  title: string;
+  status: string;
+  proves: string;
+  unproven: string;
+  evidence?: ReactNode;
+};
+
+function reviewerEvidenceStatusClass(status: string): string {
+  return status === "Proven" || status === "Recorded" || status === "Bound"
+    ? "border-[var(--green-06)] bg-[var(--green-03)] text-[var(--green-11)]"
+    : status === "Failed" || status === "Refused"
+      ? "border-[var(--red-06)] bg-[var(--red-03)] text-[var(--red-11)]"
+      : "border-[var(--amber-06)] bg-[var(--amber-03)] text-[var(--amber-11)]";
+}
+
+function reviewMilestoneCopy(
+  verdict: "proven" | "failed" | "not_proven" | "not_testable",
+  criterionBundleAvailable: boolean,
+): Pick<ReviewerEvidenceMilestone, "status" | "proves" | "unproven"> {
+  if (!criterionBundleAvailable) return {
+    status: "Recorded",
+    proves: `Jace posted an exact-head review that attested an aggregate ${criterionStateLabel(verdict)} verdict for this head cycle.`,
+    unproven: "Criterion-level outcome custody is unavailable, so this timeline does not claim which required criteria were proven, failed, unproven, or not testable.",
+  };
+  if (verdict === "proven") return {
+    status: "Proven",
+    proves: "Jace posted an exact-head review whose immutable criterion bundle records every required criterion as proven.",
+    unproven: "This does not record the human decision, merge, deployment, or customer outcome.",
+  };
+  if (verdict === "failed") return {
+    status: "Failed",
+    proves: "Jace posted an exact-head review with at least one evidence-bound failed criterion.",
+    unproven: "A correction, repair head, successful re-verification, and human decision remain unproven.",
+  };
+  if (verdict === "not_proven") return {
+    status: "Not proven",
+    proves: "Jace posted the review and preserved which required criterion lacked sufficient exact-head evidence.",
+    unproven: "The missing criterion proof, any repair, and the human decision remain unproven.",
+  };
+  return {
+    status: "Not testable",
+    proves: "Jace posted the review and preserved that at least one required criterion had no safe bounded exercise.",
+    unproven: "That criterion is not proven, and no human decision, merge, or deployment is implied.",
+  };
+}
+
+function dependencyMilestoneCopy(
+  observation: AcceptanceDependencyObservation,
+): Pick<ReviewerEvidenceMilestone, "status" | "proves" | "unproven"> {
+  if (observation.status === "observed") return {
+    status: "Recorded",
+    proves: `Bounded runtime, ${observation.packageManager.name}, manifest, lockfile, baseline, and security evidence was admitted for ${observation.candidate.package} ${observation.candidate.targetVersion}.`,
+    unproven: "This does not prove installation, implementation, builder delivery, or a passing exact-head review.",
+  };
+  if (observation.status === "not_proven") return {
+    status: "Not proven",
+    proves: "Jace preserved the dependency evidence gaps instead of admitting an unsafe proposal.",
+    unproven: `Dependency readiness remains unproven: ${observation.reasons.join(", ").replaceAll("_", " ") || "required evidence is unavailable"}.`,
+  };
+  return {
+    status: "Refused",
+    proves: "Jace evaluated the bounded dependency evidence and refused it at the trust boundary.",
+    unproven: `The dependency change is not authorized or proven safe: ${observation.reasons.join(", ").replaceAll("_", " ")}.`,
+  };
+}
+
+function reviewerContractMatches(
+  candidate: { id: string; version: number; sha256: string },
+  expected: { id: string; version: number; sha256: string },
+): boolean {
+  return candidate.id === expected.id && candidate.version === expected.version
+    && candidate.sha256 === expected.sha256;
+}
+
+export function ReviewerEvidenceTimeline({
+  acceptanceDetail,
+  criterionOutcomes,
+  dependencyObservations,
+  finalDecision,
+  workspaceId,
+  recordId,
+}: {
+  acceptanceDetail: AcceptanceRecordDetailEnvelope;
+  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
+  dependencyObservations: AcceptanceDependencyObservationsEnvelope;
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+  workspaceId: string;
+  recordId: string;
+}) {
+  if (acceptanceDetail.kind !== "record") {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Reviewer evidence timeline
+        </h2>
+        <p className="mt-3 text-sm font-medium text-[var(--gray-12)]">Evidence unavailable</p>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          Canonical Record detail could not be revalidated. No milestone or proof is inferred from raw lifecycle events.
+        </p>
+      </section>
+    );
+  }
+
+  const { detail } = acceptanceDetail;
+  const milestones: ReviewerEvidenceMilestone[] = [{
+    id: `contract:${detail.contract.identity.id}:${detail.contract.identity.version}`,
+    at: detail.contract.confirmedAt,
+    rank: 0,
+    title: "Acceptance Contract confirmed",
+    status: "Recorded",
+    proves: `A human confirmed Contract v${detail.contract.identity.version} before this evidence cycle.`,
+    unproven: "Confirmation does not prove implementation, pull-request custody, or any criterion outcome.",
+    evidence: <a href="#acceptance-contract-evidence" className="underline underline-offset-2">Inspect confirmed Contract</a>,
+  }];
+
+  const currentOccurrence = detail.pullRequest.kind === "attached"
+    ? detail.pullRequest.current ?? detail.pullRequest.merged
+    : null;
+  if (currentOccurrence?.reviewJob.kind === "recorded") {
+    milestones.push({
+      id: `pr:${currentOccurrence.headCycleId}`,
+      at: currentOccurrence.reviewJob.createdAt,
+      rank: 1,
+      title: `Pull request #${currentOccurrence.prNumber} bound for review`,
+      status: "Bound",
+      proves: `Jace bound ${currentOccurrence.repo}#${currentOccurrence.prNumber} at exact head ${currentOccurrence.headSha.slice(0, 12)} and distinct head cycle ${currentOccurrence.headCycleId}.`,
+      unproven: "This does not prove who created the pull request, that the code is correct, or that a merge occurred.",
+      evidence: (
+        <a
+          href={`https://github.com/${currentOccurrence.repo}/pull/${currentOccurrence.prNumber}`}
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          Open pull request
+        </a>
+      ),
+    });
+  } else if (detail.pullRequest.kind === "not_attached") {
+    milestones.push({
+      id: "pr:not-attached",
+      at: detail.contract.confirmedAt,
+      rank: 1,
+      title: "Pull-request evidence unavailable",
+      status: "Not proven",
+      proves: "No pull request is claimed for this Acceptance Record.",
+      unproven: "Pull-request attachment, exact-head custody, review, and implementation remain unproven.",
+    });
+  }
+
+  if (dependencyObservations.kind === "current" && currentOccurrence
+    && dependencyObservations.binding.workspaceId === detail.summary.workspaceId
+    && dependencyObservations.binding.recordId === detail.summary.recordId
+    && dependencyObservations.binding.repo === currentOccurrence.repo
+    && dependencyObservations.binding.prNumber === currentOccurrence.prNumber
+    && dependencyObservations.binding.headSha === currentOccurrence.headSha
+    && dependencyObservations.binding.headCycleId === currentOccurrence.headCycleId
+    && reviewerContractMatches(
+      dependencyObservations.binding.acceptanceContract,
+      detail.contract.identity,
+    )) {
+    for (const item of dependencyObservations.observations) {
+      milestones.push({
+        id: `dependency:${item.observation.eventId}`,
+        at: item.observation.observedAt,
+        rank: 2,
+        title: `Dependency evidence: ${item.observation.candidate.package}`,
+        ...dependencyMilestoneCopy(item.observation),
+        evidence: <a href="#dependency-observations" className="underline underline-offset-2">Inspect dependency receipt</a>,
+      });
+    }
+  }
+
+  const proofCycle = currentOccurrence
+    ? detail.proofMatrix.find((cycle) => cycle.occurrence.headCycleId === currentOccurrence.headCycleId)
+    : null;
+  const bundleMatchesCurrent = criterionOutcomes.kind === "current" && currentOccurrence
+    && criterionOutcomes.bundle.binding.workspaceId === detail.summary.workspaceId
+    && criterionOutcomes.bundle.binding.recordId === detail.summary.recordId
+    && criterionOutcomes.bundle.binding.repo === currentOccurrence.repo
+    && criterionOutcomes.bundle.binding.prNumber === currentOccurrence.prNumber
+    && criterionOutcomes.bundle.binding.headSha === currentOccurrence.headSha
+    && criterionOutcomes.bundle.binding.headCycleId === currentOccurrence.headCycleId
+    && reviewerContractMatches(
+      criterionOutcomes.bundle.binding.acceptanceContract,
+      detail.contract.identity,
+    );
+  if (proofCycle?.review.kind === "posted") {
+    milestones.push({
+      id: `review:${proofCycle.review.postedAttestationEventId}`,
+      at: proofCycle.review.reviewedAt,
+      rank: 3,
+      title: "Exact-head review posted",
+      ...reviewMilestoneCopy(proofCycle.review.verdict, Boolean(bundleMatchesCurrent)),
+      evidence: (
+        <a
+          href={proofCycle.review.postedReviewUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          Open posted review
+        </a>
+      ),
+    });
+  } else if (currentOccurrence) {
+    milestones.push({
+      id: `review:${currentOccurrence.headCycleId}:unavailable`,
+      at: currentOccurrence.reviewJob.kind === "recorded"
+        ? currentOccurrence.reviewJob.updatedAt : detail.contract.confirmedAt,
+      rank: 3,
+      title: "Exact-head review not posted",
+      status: "Not proven",
+      proves: "No posted review receipt is claimed for the authoritative head cycle.",
+      unproven: "Criterion outcomes and review delivery remain unproven.",
+    });
+  }
+
+  if (bundleMatchesCurrent && criterionOutcomes.kind === "current") {
+    for (const outcome of criterionOutcomes.bundle.outcomes) {
+      const artifact = outcome.evidence.kind === "execution_receipt"
+        && outcome.evidence.modality === "ui"
+        && outcome.evidence.artifact !== null
+        && (outcome.evidence.artifact.contentType === "image/png"
+          || outcome.evidence.artifact.contentType === "image/jpeg")
+        ? outcome.evidence.artifact : null;
+      if (!artifact) continue;
+      milestones.push({
+        id: `screenshot:${artifact.artifactId}`,
+        at: criterionOutcomes.bundle.recordedAt,
+        rank: 4,
+        title: `Screenshot attached: ${outcome.criterionId}`,
+        status: criterionStateLabel(outcome.state),
+        proves: `The exact UI execution receipt for “${outcome.criterionText}” includes a server-verified image artifact bound to this head cycle.`,
+        unproven: outcome.state === "proven"
+          ? "The screenshot does not prove other criteria, a human decision, merge, or deployment."
+          : `The screenshot does not upgrade this ${criterionStateLabel(outcome.state).toLowerCase()} criterion or prove a repair.`,
+        evidence: (
+          <a
+            href={criterionArtifactApiPath(workspaceId, recordId, artifact.artifactId)}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            Open screenshot ({artifact.contentType})
+          </a>
+        ),
+      });
+    }
+  }
+
+  if (finalDecision.kind === "current" && finalDecision.decision !== null && currentOccurrence
+    && finalDecision.binding.workspaceId === detail.summary.workspaceId
+    && finalDecision.binding.recordId === detail.summary.recordId
+    && finalDecision.binding.repo === currentOccurrence.repo
+    && finalDecision.binding.prNumber === currentOccurrence.prNumber
+    && finalDecision.binding.headSha === currentOccurrence.headSha
+    && finalDecision.binding.headCycleId === currentOccurrence.headCycleId
+    && reviewerContractMatches(finalDecision.binding.acceptanceContract, detail.contract.identity)) {
+    milestones.push({
+      id: `decision:${finalDecision.decision.eventId}`,
+      at: finalDecision.decision.decidedAt,
+      rank: 5,
+      title: "Human review decision recorded",
+      status: "Recorded",
+      proves: `A workspace ${finalDecision.decision.decidedRole} recorded “${finalDecisionLabel(finalDecision.decision.decision)}” for this exact review cycle.`,
+      unproven: "The decision does not grant Jace merge authority or prove that GitHub merged or deployed the change.",
+      evidence: <a href="#final-human-decision" className="underline underline-offset-2">Inspect human decision receipt</a>,
+    });
+  }
+
+  milestones.sort((left, right) => left.at.localeCompare(right.at)
+    || left.rank - right.rank || left.id.localeCompare(right.id));
+
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Reviewer evidence timeline
+        </h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          Decision-relevant milestones from canonical Contract, exact-head review, and artifact custody. Raw lifecycle events are not used as proof.
+        </p>
+      </div>
+      <ol className="divide-y divide-[var(--gray-05)]">
+        {milestones.map((milestone, index) => (
+          <li key={milestone.id} className="grid gap-3 px-4 py-4 sm:grid-cols-[7rem_1fr]">
+            <div>
+              <p className="font-mono text-xs text-[var(--gray-09)]">{index + 1}</p>
+              <time dateTime={milestone.at} className="mt-1 block text-xs text-[var(--gray-09)]">
+                {formatChangeRecordDate(milestone.at)}
+              </time>
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-[var(--gray-12)]">{milestone.title}</h3>
+                <span className={`rounded border px-1.5 py-0.5 text-xs font-medium ${reviewerEvidenceStatusClass(milestone.status)}`}>
+                  {milestone.status}
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-[var(--gray-11)]">
+                <span className="font-semibold text-[var(--gray-12)]">What this proves: </span>
+                {milestone.proves}
+              </p>
+              <p className="mt-1 text-xs text-[var(--gray-09)]">
+                <span className="font-semibold">Still unproven: </span>
+                {milestone.unproven}
+              </p>
+              {milestone.evidence ? (
+                <p className="mt-2 text-xs text-[var(--blue-11)]">{milestone.evidence}</p>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function CriterionOutcomeReceipt({
   outcome,
   workspaceId,
@@ -3702,7 +4025,7 @@ export function AcceptanceRecordDetailPanel({
       </div>
 
       <div className="space-y-6 p-4">
-        <article>
+        <article id="acceptance-contract-evidence" className="scroll-mt-4">
           <h3 className="text-sm font-semibold text-[var(--gray-12)]">Confirmed Acceptance Contract</h3>
           <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
             <CorrectionDatum label="Contract identity" mono>
@@ -4181,7 +4504,7 @@ export function FinalDecisionPanel({
         ? "This Change Record is unavailable."
         : "The current exact-head review is not ready for a human decision.";
     return (
-      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
         </h2>
@@ -4193,7 +4516,7 @@ export function FinalDecisionPanel({
   const { binding, decision } = finalDecision;
   const proven = binding.reviewVerdict === "proven";
   return (
-    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
@@ -4582,7 +4905,7 @@ export function DependencyObservationsPanel({
         ? "Current dependency evidence is unavailable because the authoritative PR head changed."
         : "Current dependency evidence could not be validated.";
     return (
-      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="dependency-observations" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Dependency observations
         </h2>
@@ -4593,7 +4916,7 @@ export function DependencyObservationsPanel({
 
   const { binding, observations } = dependencyObservations;
   return (
-    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="dependency-observations" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Dependency observations ({observations.length})
@@ -4982,6 +5305,14 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         </p>
       </div>
       <ChangeRecordAnchors record={data.record} />
+      <ReviewerEvidenceTimeline
+        acceptanceDetail={data.acceptanceDetail}
+        criterionOutcomes={data.criterionOutcomes}
+        dependencyObservations={data.dependencyObservations}
+        finalDecision={data.finalDecision}
+        workspaceId={workspaceId}
+        recordId={recordId}
+      />
       <AcceptanceRecordDetailPanel
         acceptanceDetail={data.acceptanceDetail}
         criterionOutcomes={data.criterionOutcomes}

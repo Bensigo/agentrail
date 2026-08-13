@@ -294,6 +294,21 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
 
     await expect(page.getByText(state.repo, { exact: true }).first()).toBeVisible();
     await expect(page.locator(`code[title="${state.headA}"]`)).toBeVisible();
+    const reviewerTimeline = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Reviewer evidence timeline", exact: true }),
+    });
+    await expect(reviewerTimeline.getByText(
+      `Pull request #${state.prNumber} bound for review`,
+      { exact: true },
+    )).toBeVisible();
+    await expect(reviewerTimeline.getByText("Exact-head review posted", { exact: true })).toBeVisible();
+    await expect(reviewerTimeline.getByText("Screenshot attached: AC-1", { exact: true })).toBeVisible();
+    await expect(reviewerTimeline.getByRole("link", {
+      name: "Open screenshot (image/png)",
+      exact: true,
+    })).toHaveAttribute("href", artifactPath(state));
+    await expect(reviewerTimeline.getByText("What this proves:", { exact: false }).first()).toBeVisible();
+    await expect(reviewerTimeline.getByText("Still unproven:", { exact: false }).first()).toBeVisible();
     await expect(page.getByText("Confirmed Acceptance Contract")).toBeVisible();
     await expect(page.getByText(CRITERION_TEXT).first()).toBeVisible();
     await expect(page.getByText(SECOND_CRITERION_TEXT).first()).toBeVisible();

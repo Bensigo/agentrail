@@ -25,7 +25,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm run start:r11-browser",
+    command: "node_modules/.bin/next start --hostname 127.0.0.1 --port 3100",
     cwd: new URL(".", import.meta.url).pathname,
     url: baseURL,
     reuseExistingServer: false,

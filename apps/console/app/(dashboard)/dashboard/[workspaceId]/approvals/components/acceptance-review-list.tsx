@@ -88,7 +88,7 @@ export function AcceptanceReviewList({
                   </p>
                 </div>
                 <Link
-                  href={`/dashboard/${workspaceId}/changes/${record.recordId}`}
+                  href={`/dashboard/${workspaceId}/changes/${record.recordId}#reviewer-journey`}
                   aria-label={`Review ${record.repo} ${pr}`}
                   className="shrink-0 rounded bg-[var(--accent-fill)] px-3 py-2 text-xs font-medium text-[var(--accent-fill-text)] hover:bg-[var(--accent-fill-hover)]"
                 >

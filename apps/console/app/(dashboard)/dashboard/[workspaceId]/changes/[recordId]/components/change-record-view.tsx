@@ -3465,7 +3465,14 @@ export function resolveContextPackFragmentTarget(
 ): ContextPackFragmentTarget | null {
   const id = hash.startsWith("#") ? hash.slice(1) : "";
   const packId = id.startsWith("context-pack-") ? id.slice("context-pack-".length) : "";
-  return UUID.test(packId) ? getElementById(id) : null;
+  const reviewerTargets = new Set([
+    "reviewer-journey",
+    "reviewer-evidence",
+    "acceptance-contract-evidence",
+    "current-context-packs",
+    "final-human-decision",
+  ]);
+  return reviewerTargets.has(id) || UUID.test(packId) ? getElementById(id) : null;
 }
 
 export function ChangeRecordBackLink({ workspaceId }: { workspaceId: string }) {
@@ -3561,6 +3568,144 @@ export function ChangeRecordAnchors({ record }: { record: ChangeRecord }) {
           </dd>
         </div>
       </dl>
+    </section>
+  );
+}
+
+type ReviewerJourneyBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  contract: { id: string; version: number; sha256: string };
+  currentPackCount: number;
+};
+
+export function resolveReviewerJourneyBinding(
+  acceptanceDetail: AcceptanceRecordDetailEnvelope,
+  finalDecision: AcceptanceFinalDecisionEnvelope,
+): ReviewerJourneyBinding | null {
+  if (acceptanceDetail.kind !== "record" || finalDecision.kind !== "current") return null;
+  const { detail } = acceptanceDetail;
+  if (detail.pullRequest.kind !== "attached" || detail.pullRequest.current === null) return null;
+  const occurrence = detail.pullRequest.current;
+  const binding = finalDecision.binding;
+  if (binding.workspaceId !== detail.summary.workspaceId
+    || binding.recordId !== detail.summary.recordId
+    || binding.repo !== occurrence.repo
+    || binding.prNumber !== occurrence.prNumber
+    || binding.headSha !== occurrence.headSha
+    || binding.headCycleId !== occurrence.headCycleId
+    || !reviewerContractMatches(binding.acceptanceContract, detail.contract.identity)) return null;
+
+  const currentPackCount = detail.contextPacks.reduce((count, contextPack) => {
+    if (contextPack.occurrence.kind !== "current"
+      || contextPack.occurrence.headSha !== occurrence.headSha
+      || contextPack.occurrence.headCycleId !== occurrence.headCycleId
+      || !reviewerContractMatches(
+        contextPack.sourceSnapshot.binding.acceptanceContract,
+        detail.contract.identity,
+      )) return count;
+    return count + contextPack.compiledPacks.length;
+  }, 0);
+
+  return {
+    workspaceId: binding.workspaceId,
+    recordId: binding.recordId,
+    repo: binding.repo,
+    prNumber: binding.prNumber,
+    headSha: binding.headSha,
+    headCycleId: binding.headCycleId,
+    contract: binding.acceptanceContract,
+    currentPackCount,
+  };
+}
+
+export function ReviewerJourney({
+  acceptanceDetail,
+  finalDecision,
+}: {
+  acceptanceDetail: AcceptanceRecordDetailEnvelope;
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+}) {
+  const binding = resolveReviewerJourneyBinding(acceptanceDetail, finalDecision);
+  if (!binding) {
+    return (
+      <section
+        id="reviewer-journey"
+        tabIndex={-1}
+        className="scroll-mt-4 rounded border border-[var(--amber-06)] bg-[var(--amber-03)] p-4"
+      >
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--amber-11)]">
+          Reviewer path unavailable
+        </h2>
+        <p className="mt-2 text-xs text-[var(--gray-11)]">
+          The current Record, Contract, exact head, and human-decision binding do not form one authoritative review cycle. No cross-record path is inferred.
+        </p>
+      </section>
+    );
+  }
+
+  const steps = [
+    { href: "#acceptance-contract-evidence", label: "1. Confirm scope" },
+    { href: "#reviewer-evidence", label: "2. Inspect exact-head evidence" },
+    { href: "#current-context-packs", label: "3. Inspect Context Pack" },
+    { href: "#final-human-decision", label: "4. Record human decision" },
+  ];
+  return (
+    <section
+      id="reviewer-journey"
+      tabIndex={-1}
+      aria-labelledby="reviewer-journey-title"
+      className="scroll-mt-4 rounded border border-[var(--blue-06)] bg-[var(--blue-02)]"
+    >
+      <div className="border-b border-[var(--blue-06)] px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 id="reviewer-journey-title" className="text-xs font-bold uppercase tracking-wide text-[var(--blue-11)]">
+              Decision review path
+            </h2>
+            <p className="mt-1 text-xs text-[var(--gray-11)]">
+              One Acceptance Record, one confirmed Contract, and one exact-head review cycle.
+            </p>
+          </div>
+          <a
+            href={`/dashboard/${binding.workspaceId}/approvals`}
+            className="inline-flex items-center gap-1 text-xs text-[var(--blue-11)] hover:underline"
+          >
+            <ArrowLeft size={14} /> Back to Approvals
+          </a>
+        </div>
+      </div>
+      <dl className="grid gap-x-6 gap-y-3 px-4 py-4 text-xs sm:grid-cols-2">
+        <CorrectionDatum label="Acceptance Record" mono>{binding.recordId}</CorrectionDatum>
+        <CorrectionDatum label="Acceptance Contract" mono>
+          {binding.contract.id} v{binding.contract.version}
+        </CorrectionDatum>
+        <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
+        <CorrectionDatum label="Exact head / cycle" mono>
+          {binding.headSha} · {binding.headCycleId}
+        </CorrectionDatum>
+        <CorrectionDatum label="Current Context Packs">
+          {binding.currentPackCount === 0 ? "Not recorded" : binding.currentPackCount}
+        </CorrectionDatum>
+      </dl>
+      <nav aria-label="Decision review steps" className="border-t border-[var(--blue-06)] px-4 py-3">
+        <ol className="flex flex-wrap gap-2">
+          {steps.map((step) => (
+            <li key={step.href}>
+              <a
+                href={step.href}
+                className="inline-flex rounded border border-[var(--blue-07)] bg-[var(--gray-01)] px-2.5 py-1.5 text-xs font-medium text-[var(--blue-11)] hover:bg-[var(--blue-03)]"
+              >
+                {step.label}
+              </a>
+            </li>
+          ))}
+        </ol>
+      </nav>
     </section>
   );
 }
@@ -3802,7 +3947,7 @@ export function ReviewerEvidenceTimeline({
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
-      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="reviewer-evidence" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Reviewer evidence timeline
         </h2>
@@ -3986,7 +4131,7 @@ export function ReviewerEvidenceTimeline({
     || left.rank - right.rank || left.id.localeCompare(right.id));
 
   return (
-    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="reviewer-evidence" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Reviewer evidence timeline
@@ -4026,6 +4171,11 @@ export function ReviewerEvidenceTimeline({
           </li>
         ))}
       </ol>
+      <div className="border-t border-[var(--gray-05)] px-4 py-3 text-right">
+        <a href="#current-context-packs" className="text-xs text-[var(--blue-11)] hover:underline">
+          Continue to the bound Context Pack
+        </a>
+      </div>
     </section>
   );
 }
@@ -4236,7 +4386,7 @@ export function AcceptanceRecordDetailPanel({
           )}
         </article>
 
-        <article className="border-t border-[var(--gray-05)] pt-5">
+        <article id="current-context-packs" tabIndex={-1} className="scroll-mt-4 border-t border-[var(--gray-05)] pt-5">
           <h3 className="text-sm font-semibold text-[var(--gray-12)]">Context Packs</h3>
           <p className="mt-1 text-xs text-[var(--gray-09)]">
             Inspect the exact-head manifest, provenance, and bounds supplied for this reviewable change.
@@ -4423,6 +4573,11 @@ export function AcceptanceRecordDetailPanel({
           {regenerationRequestError ? (
             <p className="mt-3 text-xs text-[var(--red-11)]">{regenerationRequestError}</p>
           ) : null}
+          <p className="mt-4 text-right">
+            <a href="#final-human-decision" className="text-xs text-[var(--blue-11)] hover:underline">
+              Continue to the human decision
+            </a>
+          </p>
         </article>
 
         <article className="border-t border-[var(--gray-05)] pt-5">
@@ -4718,7 +4873,7 @@ export function FinalDecisionPanel({
         ? "This Change Record is unavailable."
         : "The current exact-head review is not ready for a human decision.";
     return (
-      <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="final-human-decision" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
         </h2>
@@ -4730,7 +4885,7 @@ export function FinalDecisionPanel({
   const { binding, decision } = finalDecision;
   const proven = binding.reviewVerdict === "proven";
   return (
-    <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="final-human-decision" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
@@ -4841,6 +4996,14 @@ export function FinalDecisionPanel({
           </div>
         )}
         {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
+        <p className="border-t border-[var(--gray-05)] pt-3 text-right">
+          <a
+            href={`/dashboard/${binding.workspaceId}/approvals`}
+            className="text-xs text-[var(--blue-11)] hover:underline"
+          >
+            Back to Approvals
+          </a>
+        </p>
       </div>
     </section>
   );
@@ -5572,6 +5735,10 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
         </p>
       </div>
+      <ReviewerJourney
+        acceptanceDetail={data.acceptanceDetail}
+        finalDecision={data.finalDecision}
+      />
       <ChangeRecordAnchors record={data.record} />
       <ReviewerEvidenceTimeline
         acceptanceDetail={data.acceptanceDetail}

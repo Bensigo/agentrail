@@ -10,6 +10,7 @@ import {
   FinalDecisionPanel,
   LifecycleTimeline,
   ReviewMetricsPanel,
+  ReviewerJourney,
   ReviewerEvidenceTimeline,
   changeRecordApiPath,
   dependencyObservationApprovalPatchBody,
@@ -25,6 +26,7 @@ import {
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
   resolveContextPackFragmentTarget,
+  resolveReviewerJourneyBinding,
   criterionArtifactApiPath,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceRecordDetailEnvelope,
@@ -1374,7 +1376,7 @@ const criterionOutcomesNotReady: AcceptanceCriterionOutcomesEnvelope = {
 };
 
 describe("Change Record detail view", () => {
-  it("resolves only a specific Context Pack fragment after client data renders", () => {
+  it("resolves only reviewer-journey and specific Context Pack fragments after client data renders", () => {
     const target = { focus: vi.fn(), scrollIntoView: vi.fn() };
     const getElementById = vi.fn((id: string) =>
       id === `context-pack-${DETAIL_PACK_ID}` ? target : null
@@ -1387,6 +1389,40 @@ describe("Change Record detail view", () => {
     expect(getElementById).toHaveBeenCalledWith(`context-pack-${DETAIL_PACK_ID}`);
     expect(resolveContextPackFragmentTarget("#context-pack-not-a-uuid", getElementById)).toBeNull();
     expect(resolveContextPackFragmentTarget("#acceptance-record", getElementById)).toBeNull();
+    resolveContextPackFragmentTarget("#reviewer-journey", getElementById);
+    expect(getElementById).toHaveBeenCalledWith("reviewer-journey");
+  });
+
+  it("builds one reviewer path only from an exact Record, Contract, head-cycle, and decision binding", () => {
+    const binding = resolveReviewerJourneyBinding(currentAcceptanceDetail, currentFinalDecision);
+    expect(binding).toMatchObject({
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: record.prNumber,
+      headSha: currentFinalDecision.binding.headSha,
+      contract: currentFinalDecision.binding.acceptanceContract,
+    });
+
+    const rendered = ReviewerJourney({
+      acceptanceDetail: currentAcceptanceDetail,
+      finalDecision: currentFinalDecision,
+    });
+    expect(textContent(rendered)).toContain("Decision review path");
+    expect(textContent(rendered)).toContain("Inspect exact-head evidence");
+    expect(textContent(rendered)).toContain("Inspect Context Pack");
+    expect(links(rendered)).toContain(`/dashboard/${record.workspaceId}/approvals`);
+    expect(links(rendered)).toContain("#final-human-decision");
+
+    const mismatched = {
+      ...currentFinalDecision,
+      binding: { ...currentFinalDecision.binding, recordId: "00000000-0000-4000-8000-000000000077" },
+    } as AcceptanceFinalDecisionEnvelope;
+    expect(resolveReviewerJourneyBinding(currentAcceptanceDetail, mismatched)).toBeNull();
+    expect(textContent(ReviewerJourney({
+      acceptanceDetail: currentAcceptanceDetail,
+      finalDecision: mismatched,
+    }))).toContain("No cross-record path is inferred");
   });
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
@@ -1457,6 +1493,7 @@ describe("Change Record detail view", () => {
       currentFinalDecision.binding.postedReviewUrl,
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
       "#dependency-observations",
+      "#current-context-packs",
     ]);
     expect(content).not.toContain(CURRENT_DATA_ARTIFACT_ID);
     expect(content).not.toContain("payloadRef");
@@ -2830,7 +2867,7 @@ describe("Change Record detail view", () => {
     expect(content).toContain("Gated issue custody: Unknown");
     expect(elementTypes(rendered)).not.toContain("button");
     expect(elementTypes(rendered)).not.toContain("form");
-    expect(links(rendered)).toEqual([]);
+    expect(links(rendered)).toEqual(["#final-human-decision"]);
     expect(content).not.toContain("artifacts/ui/protected.png");
     expect(content).not.toContain("review-evidence/");
     expect(content).not.toContain("Artifact key");
@@ -3148,6 +3185,7 @@ describe("Change Record detail view", () => {
     expect(content).toContain("Current artifact receipts: 2");
     expect(content).toContain("2 receipt-bound artifacts in the current bundle");
     expect(links(rendered)).toEqual([
+      "#final-human-decision",
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_DATA_ARTIFACT_ID),
     ]);
@@ -3182,7 +3220,7 @@ describe("Change Record detail view", () => {
 
     expect(content).toContain("Current artifact receipts: 0");
     expect(content).not.toContain("Current artifact receipts: Recorded");
-    expect(links(rendered)).toEqual([]);
+    expect(links(rendered)).toEqual(["#final-human-decision"]);
   });
 
   it("renders closed unavailable detail without falling back to timeline inference", () => {

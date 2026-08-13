@@ -32,7 +32,7 @@ export default async function ContextPacksPage({
           {packs.map((pack) => (
             <Link
               key={pack.id}
-              href={`/dashboard/${workspaceId}/changes/${pack.recordId}`}
+              href={`/dashboard/${workspaceId}/changes/${pack.recordId}#context-pack-${pack.id}`}
               className="flex items-center justify-between gap-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3 transition-colors hover:border-[var(--gray-08)]"
             >
               <div className="min-w-0">

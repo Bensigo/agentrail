@@ -12,17 +12,28 @@ import {
 import { jaceApprovals } from "../src/schema/jace_sessions.js";
 import { previewBoots } from "../src/schema/preview_boots.js";
 import { reviewJobs } from "../src/schema/review_jobs.js";
+import { repositories } from "../src/schema/repositories.js";
 import { workspaceMemberships } from "../src/schema/workspace_memberships.js";
 import { workspaces } from "../src/schema/workspaces.js";
 import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
   appendChangeRecordEvent,
   appendCurrentReviewJobEventsAtomically,
+  acceptanceContextOverlayHeadRangeCoordinateSha256,
+  acceptanceContextOverlayManifestSha256,
+  acceptanceContextPackCanonicalSha256,
+  acceptanceContextPackCustodyBaseIndexRevisionSha256,
+  acceptanceContextPackCustodyOverlayManifestSha256,
+  acceptanceContextPacketSetSha256,
+  acceptanceContractSha256,
+  acceptanceCorrectionPacketPayloadSetSha256,
   createDraftAcceptanceRecord,
   readCurrentAcceptanceCorrectionPackets,
   readCurrentAcceptanceCriterionOutcomeBundle,
   readCurrentAcceptanceGatedGithubIssue,
   recordPostedAcceptanceCriterionOutcomeBundle,
+  recordAcceptanceCompiledContextPack,
+  recordAcceptanceContextPackSnapshot,
   reviewJobCorrectionPacketId,
 } from "../src/queries/change_records.js";
 import { previewBootId } from "../src/queries/preview_boots.js";
@@ -63,6 +74,7 @@ type ProofState = {
   executionId: string;
   previewBootId: string;
   observedFailure: string;
+  contextPackId: string;
 };
 
 function sha(value: unknown): string {
@@ -128,7 +140,8 @@ function isProofState(value: unknown): value is ProofState {
     && typeof state["previewBootId"] === "string" && UUID.test(state["previewBootId"])
     && typeof state["observedFailure"] === "string"
     && state["observedFailure"].length > 0
-    && state["observedFailure"].length <= 2_000;
+    && state["observedFailure"].length <= 2_000
+    && typeof state["contextPackId"] === "string" && UUID.test(state["contextPackId"]);
 }
 
 async function readInput(): Promise<unknown> {
@@ -181,6 +194,11 @@ async function seed(): Promise<ProofState> {
       { workspaceId, userId: ownerUserId, role: "owner" },
       { workspaceId, userId: memberUserId, role: "member" },
     ]);
+    await db.insert(repositories).values({
+      workspaceId,
+      name: REPO,
+      url: `https://github.com/${REPO}`,
+    });
     const expires = new Date(Date.now() + 2 * 60 * 60 * 1_000);
     await db.insert(sessions).values([
       { sessionToken: ownerSessionToken, userId: ownerUserId, expires },
@@ -416,45 +434,277 @@ async function seed(): Promise<ProofState> {
       acceptanceContractId: draft.contract.id,
       acceptanceContractVersion: draft.contract.version,
     });
+    const correctionPacket = {
+      kind: "review_job_correction_packet" as const,
+      version: 1 as const,
+      packetId,
+      workspaceId,
+      repo: REPO,
+      prNumber,
+      headSha: headA,
+      recordId: draft.record.id,
+      jobId: advanced.jobId,
+      acceptanceContract: { id: draft.contract.id, version: draft.contract.version },
+      criterion: { id: CRITERION_ID, snapshot: CRITERION_TEXT },
+      basis: "acceptance_contract" as const,
+      state: "failed" as const,
+      expected: CRITERION_TEXT,
+      observed: observedFailure,
+      affectedContext: {
+        modality: "ui" as const,
+        environmentKind: "isolated_preview" as const,
+        flow: plan.flow,
+        reproduction: { modality: "ui" as const, steps: plan.uiSteps },
+      },
+      evidence: {
+        evidenceRef: result.evidenceRef,
+        artifactKey,
+        executionId,
+        previewBootId: bootId,
+      },
+      scopeBoundary: `Only ${CRITERION_ID} for ${REPO}#${prNumber} at ${headA}.`,
+      impact: "The server-attested receipt does not prove the confirmed criterion on the exact head.",
+      requiredCorrection: "Keep the saved filter visible after reload and retain new exact-head evidence.",
+      reverification: "Rerun the persisted verification plan against the next exact head.",
+    };
     await appendChangeRecordEvent({
       recordId: draft.record.id,
       eventKey: `review:correction:${advanced.jobId}:${CRITERION_ID}`,
       stage: "review",
       actor: "reviewer-of-record",
       at: new Date(chronologyBase + 4),
-      payloadRef: {
-        kind: "review_job_correction_packet",
-        version: 1,
-        packetId,
-        workspaceId,
-        repo: REPO,
-        prNumber,
-        headSha: headA,
-        recordId: draft.record.id,
-        jobId: advanced.jobId,
-        acceptanceContract: { id: draft.contract.id, version: draft.contract.version },
-        criterion: { id: CRITERION_ID, snapshot: CRITERION_TEXT },
-        basis: "acceptance_contract",
-        state: "failed",
-        expected: CRITERION_TEXT,
-        observed: observedFailure,
-        affectedContext: {
-          modality: "ui",
-          environmentKind: "isolated_preview",
-          flow: plan.flow,
-          reproduction: { modality: "ui", steps: plan.uiSteps },
-        },
-        evidence: {
-          evidenceRef: result.evidenceRef,
-          artifactKey,
-          executionId,
-          previewBootId: bootId,
-        },
-        scopeBoundary: `Only ${CRITERION_ID} for ${REPO}#${prNumber} at ${headA}.`,
-        impact: "The server-attested receipt does not prove the confirmed criterion on the exact head.",
-        requiredCorrection: "Keep the saved filter visible after reload and retain new exact-head evidence.",
-        reverification: "Rerun the persisted verification plan against the next exact head.",
+      payloadRef: correctionPacket,
+    });
+
+    const sourcePath = "apps/console/saved-filter.ts";
+    const sourceContent = "export const savedFilterPersists = true;";
+    const sourceBytes = Buffer.from(sourceContent, "utf8");
+    const sourceBlobSha = createHash("sha1")
+      .update(`blob ${sourceBytes.length}\0`, "utf8").update(sourceBytes).digest("hex");
+    const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+    const patchSha256 = createHash("sha256").update(`patch:${sourcePath}`, "utf8").digest("hex");
+    const baseSha = "b".repeat(40);
+    const mergeBaseSha = "8".repeat(40);
+    const headTreeSha = "c".repeat(40);
+    const range = {
+      startLine: 1,
+      endLine: 1,
+      coordinateSha256: acceptanceContextOverlayHeadRangeCoordinateSha256({
+        path: sourcePath,
+        patchSha256,
+        startLine: 1,
+        endLine: 1,
+      }),
+    };
+    const baseIndexCore = {
+      schemaVersion: 2 as const,
+      backgroundOnly: true as const,
+      pages: [],
+      gaps: ["base_index_gap"],
+    };
+    const overlayCore = {
+      schemaVersion: 2 as const,
+      baseSha,
+      mergeBaseSha,
+      headSha: headA,
+      files: [{
+        path: sourcePath,
+        status: "modified" as const,
+        blobSha: sourceBlobSha,
+        previousPath: null,
+        patchSha256,
+        patchByteCount: sourceBytes.length,
+        headRanges: [range],
+      }],
+    };
+    const packetIds = [packetId];
+    const packetSetSha256 = acceptanceContextPacketSetSha256({ packetIds });
+    const correctionPacketPayloadSetSha256 = acceptanceCorrectionPacketPayloadSetSha256({
+      packets: [correctionPacket],
+    });
+    const contractSha256 = acceptanceContractSha256({
+      acceptanceContractId: draft.contract.id,
+      acceptanceContractVersion: draft.contract.version,
+      contract: draft.contract.contract,
+    });
+    const baseIndex = {
+      ...baseIndexCore,
+      revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore),
+    };
+    const overlay = {
+      ...overlayCore,
+      manifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore),
+    };
+    const snapshot = await recordAcceptanceContextPackSnapshot({
+      workspaceId,
+      recordId: draft.record.id,
+      reviewJobId: advanced.jobId,
+      acceptanceContractId: draft.contract.id,
+      acceptanceContractVersion: draft.contract.version,
+      acceptanceContractSha256: contractSha256,
+      repo: REPO,
+      prNumber,
+      expectedHeadSha: headA,
+      baseSha,
+      mergeBaseSha,
+      headTreeSha,
+      packetIds,
+      packetSetSha256,
+      correctionPacketPayloadSetSha256,
+      compilerVersion: "r112-reviewer-source-v1",
+      baseIndex,
+      overlay,
+      provenance: {
+        schemaVersion: 1,
+        included: [{ path: sourcePath, source: "overlay", reason: "Exact saved-filter implementation context" }],
+        excluded: [{ path: null, source: "base_index", reason: "base_index_gap" }],
       },
+      status: "admitted",
+      reason: null,
+    });
+    const source = {
+      kind: "exact_head_overlay" as const,
+      path: sourcePath,
+      blobSha: sourceBlobSha,
+      fullContentSha256: sourceSha256,
+      startLine: 1,
+      endLine: 1,
+      rangeSha256: sourceSha256,
+      byteCount: sourceBytes.length,
+      reason: "exact_patch_head_range",
+      citation: `${sourcePath}@${sourceBlobSha}#L1-L1`,
+    };
+    const receiptCore = {
+      kind: "exact_head_source_custody" as const,
+      schemaVersion: 2 as const,
+      repo: REPO,
+      prNumber,
+      baseSha,
+      mergeBaseSha,
+      headSha: headA,
+      headTreeSha,
+      manifestSha256: acceptanceContextOverlayManifestSha256({
+        schemaVersion: 1,
+        baseSha,
+        mergeBaseSha,
+        headSha: headA,
+        files: [{ path: sourcePath, status: "modified" as const, blobSha: sourceBlobSha, previousPath: null }],
+      }),
+      changedManifest: [{
+        path: sourcePath,
+        status: "modified",
+        blobSha: sourceBlobSha,
+        previousPath: null,
+        headRanges: [{ startLine: 1, endLine: 1 }],
+        patchSha256,
+        patchByteCount: sourceBytes.length,
+      }],
+      records: [{
+        path: sourcePath,
+        blobSha: sourceBlobSha,
+        previousPath: null,
+        contentSha256: sourceSha256,
+        byteCount: sourceBytes.length,
+        lineCount: 1,
+        source: "exact_head_overlay",
+        reason: "exact_base_to_head_compare",
+      }],
+      exclusions: [],
+      directReadReceipts: [],
+      selectedExactRanges: [{
+        kind: source.kind,
+        path: source.path,
+        blobSha: source.blobSha,
+        fullContentSha256: source.fullContentSha256,
+        startLine: source.startLine,
+        endLine: source.endLine,
+        rangeSha256: source.rangeSha256,
+        byteCount: source.byteCount,
+      }],
+    };
+    const sourceCustodyReceipt = {
+      ...receiptCore,
+      identitySha256: acceptanceContextPackCanonicalSha256(receiptCore),
+    };
+    const binding = {
+      sourceSnapshotId: snapshot.snapshot.id,
+      workspaceId,
+      recordId: draft.record.id,
+      reviewJobId: advanced.jobId,
+      acceptanceContractId: draft.contract.id,
+      acceptanceContractVersion: draft.contract.version,
+      acceptanceContractSha256: contractSha256,
+      repo: REPO,
+      prNumber,
+      baseSha,
+      mergeBaseSha,
+      headSha: headA,
+      headTreeSha,
+      packetSetSha256,
+      correctionPacketPayloadSetSha256,
+      sourceSnapshotCompilerVersion: "r112-reviewer-source-v1",
+      baseIndexRevisionSha256: baseIndex.revisionSha256,
+      overlayManifestSha256: overlay.manifestSha256,
+    };
+    const manifest = {
+      version: 1,
+      acceptanceCriterionIds: [CRITERION_ID, SECOND_CRITERION_ID],
+      unresolvedQuestionIds: [],
+      packetIds,
+      sources: [source],
+      architectureBoundaries: [],
+      tests: [],
+      decisions: [],
+      exclusions: [{
+        source: "base_index_background",
+        path: null,
+        reason: "base_index_gap",
+        identitySha256: createHash("sha256").update("base_index_gap", "utf8").digest("hex"),
+      }],
+      sourceCustody: {
+        kind: "exact_head_source_custody",
+        schemaVersion: 2,
+        identitySha256: sourceCustodyReceipt.identitySha256,
+      },
+      budget: { counter: "utf8_byte_upper_bound_v1", limitBytes: 65_536 },
+      custody: { fullSourceUploadAllowed: false, rawSourcePersisted: false, snippetsPersisted: false },
+    };
+    const compiler = {
+      version: "r112-reviewer-pack-v1",
+      policyVersion: "r112-reviewer-policy-v1",
+      byteCounter: "utf8_byte_upper_bound_v1",
+      byteBudget: 65_536,
+    };
+    const representations = {
+      jsonSha256: createHash("sha256").update("reviewer-json", "utf8").digest("hex"),
+      markdownSha256: createHash("sha256").update("reviewer-markdown", "utf8").digest("hex"),
+    };
+    const compiledCore = {
+      kind: "compiled_acceptance_context_pack" as const,
+      version: 1 as const,
+      binding,
+      compiler,
+      manifest,
+      sourceCustodyReceipt: {
+        kind: sourceCustodyReceipt.kind,
+        schemaVersion: sourceCustodyReceipt.schemaVersion,
+        identitySha256: sourceCustodyReceipt.identitySha256,
+      },
+      exactHeadDependencyTreeProofs: [],
+      representations,
+      renderedByteCount: sourceBytes.length,
+    };
+    const compiled = {
+      ...compiledCore,
+      sourceCustodyReceipt,
+      packSha256: acceptanceContextPackCanonicalSha256(compiledCore),
+    };
+    const persistedPack = await recordAcceptanceCompiledContextPack({
+      workspaceId,
+      sourceSnapshotId: snapshot.snapshot.id,
+      compiled,
+      exactSourceProofs: [{ kind: "exact_head_overlay", path: sourcePath, content: sourceContent }],
+      exactGitTreeInclusionProofs: [],
     });
     const recorded = await recordPostedAcceptanceCriterionOutcomeBundle({
       workspaceId,
@@ -509,6 +759,7 @@ async function seed(): Promise<ProofState> {
       executionId,
       previewBootId: bootId,
       observedFailure,
+      contextPackId: persistedPack.pack.id,
     };
   } catch (error) {
     if (createdWorkspace) await db.delete(workspaces).where(eq(workspaces.id, workspaceId));

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ClipboardCheck } from "lucide-react";
+import { buttonVariants } from "@agentrail/ui";
 import type { AcceptanceRecordSummary } from "@agentrail/db-postgres";
 import { EmptyState } from "../../../../components/empty-state";
 
@@ -80,7 +81,7 @@ export function AcceptanceReviewList({
             <article className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium text-[var(--gray-12)]">
+                  <h3 className="text-sm font-bold text-[var(--gray-12)]">
                     {reviewRequestLabel(record)}
                   </h3>
                   <p className="mt-1 font-mono text-xs text-[var(--gray-09)]">
@@ -88,9 +89,9 @@ export function AcceptanceReviewList({
                   </p>
                 </div>
                 <Link
-                  href={`/dashboard/${workspaceId}/changes/${record.recordId}`}
+                  href={`/dashboard/${workspaceId}/changes/${record.recordId}#reviewer-journey`}
                   aria-label={`Review ${record.repo} ${pr}`}
-                  className="shrink-0 rounded bg-[var(--accent-fill)] px-3 py-2 text-xs font-medium text-[var(--accent-fill-text)] hover:bg-[var(--accent-fill-hover)]"
+                  className={buttonVariants({ size: "sm", className: "shrink-0" })}
                 >
                   Review
                 </Link>

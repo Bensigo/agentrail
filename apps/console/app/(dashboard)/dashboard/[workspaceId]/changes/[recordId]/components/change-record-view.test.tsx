@@ -10,6 +10,7 @@ import {
   FinalDecisionPanel,
   LifecycleTimeline,
   ReviewMetricsPanel,
+  ReviewerEvidenceTimeline,
   changeRecordApiPath,
   dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
@@ -1403,6 +1404,193 @@ describe("Change Record detail view", () => {
     expect(content).toContain('"postedReviewUrl"');
     expect(content).toContain("Lifecycle events(2)");
   });
+
+  it("renders a concise exact-head reviewer timeline with honest proof boundaries", () => {
+    const rendered = ReviewerEvidenceTimeline({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      dependencyObservations: currentDependencyObservations,
+      finalDecision: currentFinalDecision,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Reviewer evidence timeline");
+    expect(content).toContain("Acceptance Contract confirmed");
+    expect(content).toContain("Pull request#98 bound for review");
+    expect(content).toContain(`exact head ${DETAIL_CURRENT_HEAD.slice(0, 12)}`);
+    expect(content).toContain("Exact-head review posted");
+    expect(content).toContain("Screenshot attached: criterion-login Failed");
+    expect(content).toContain("Dependency evidence: @acme/widget Recorded");
+    expect(content).toContain("What this proves:");
+    expect(content).toContain("Still unproven:");
+    expect(content).toContain("does not prove who created the pull request");
+    expect(content).toContain("does not upgrade this failed criterion or prove a repair");
+    expect(content.indexOf("Acceptance Contract confirmed"))
+      .toBeLessThan(content.indexOf("Pull request#98 bound for review"));
+    expect(content.indexOf("Pull request#98 bound for review"))
+      .toBeLessThan(content.indexOf("Exact-head review posted"));
+    expect(links(rendered)).toEqual([
+      "#acceptance-contract-evidence",
+      "https://github.com/ada/widgets/pull/98",
+      currentFinalDecision.binding.postedReviewUrl,
+      criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
+      "#dependency-observations",
+    ]);
+    expect(content).not.toContain(CURRENT_DATA_ARTIFACT_ID);
+    expect(content).not.toContain("payloadRef");
+    expect(content).not.toContain("artifactKey");
+    expect(content).not.toContain("Merge pull request");
+    expect(buttonLabels(rendered)).toEqual([]);
+  });
+
+  it("keeps unavailable and refused reviewer evidence fail closed", () => {
+    const refused = structuredClone(currentDependencyObservations) as Extract<
+      AcceptanceDependencyObservationsEnvelope,
+      { kind: "current" }
+    >;
+    refused.observations[0]!.observation.status = "refused_security";
+    refused.observations[0]!.observation.reasons = ["security_affected"];
+    const rendered = ReviewerEvidenceTimeline({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: { kind: "not_ready", reason: "criterion_evidence_unavailable" },
+      dependencyObservations: refused,
+      finalDecision: { kind: "not_current" },
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Dependency evidence: @acme/widget Refused");
+    expect(content).toContain("security affected");
+    expect(content).not.toContain("Screenshot attached");
+    expect(content).not.toContain("Human review decision recorded");
+
+    const unavailable = ReviewerEvidenceTimeline({
+      acceptanceDetail: { kind: "unavailable", reason: "invalid_record_custody" },
+      criterionOutcomes: currentCriterionOutcomes,
+      dependencyObservations: currentDependencyObservations,
+      finalDecision: currentFinalDecision,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    expect(textContent(unavailable)).toContain(
+      "No milestone or proof is inferred from raw lifecycle events."
+    );
+    expect(links(unavailable)).toEqual([]);
+  });
+
+  it("shows a human decision only for the exact current head cycle", () => {
+    const decided = structuredClone(currentFinalDecision) as Extract<
+      AcceptanceFinalDecisionEnvelope,
+      { kind: "current" }
+    >;
+    decided.decision = {
+      eventId: "00000000-0000-4000-8000-000000000035",
+      eventKey: `acceptance-pr-decision:${decided.binding.reviewJobId}`,
+      decision: "changes_requested",
+      rationale: null,
+      decidedBy: "user:00000000-0000-4000-8000-000000000002",
+      decidedRole: "owner",
+      decidedAt: "2026-08-11T09:20:00.000Z",
+    };
+    const exact = ReviewerEvidenceTimeline({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      dependencyObservations: { kind: "not_current" },
+      finalDecision: decided,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    expect(textContent(exact)).toContain(
+      "Human review decision recorded Recorded What this proves: A workspace owner recorded “Changes requested”"
+    );
+    expect(textContent(exact)).toContain("does not grant Jace merge authority");
+
+    decided.binding.headCycleId = HISTORICAL_CYCLE;
+    const staleCycle = ReviewerEvidenceTimeline({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      dependencyObservations: { kind: "not_current" },
+      finalDecision: decided,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    expect(textContent(staleCycle)).not.toContain("Human review decision recorded");
+  });
+
+  it("does not promote a posted aggregate verdict into criterion proof without the bundle", () => {
+    const aggregateOnly = structuredClone(currentAcceptanceDetail) as Extract<
+      AcceptanceRecordDetailEnvelope,
+      { kind: "record" }
+    >;
+    if (aggregateOnly.detail.summary.proof.kind !== "recorded") {
+      throw new Error("expected recorded summary proof fixture");
+    }
+    aggregateOnly.detail.summary.proof.verdict = "proven";
+    const currentProof = aggregateOnly.detail.proofMatrix[0]!;
+    if (currentProof.review.kind !== "posted") throw new Error("expected posted fixture");
+    currentProof.review.verdict = "proven";
+    currentProof.criteria = currentProof.criteria.map(({ criterion }) => ({
+      criterion,
+      proof: {
+        kind: "unknown" as const,
+        reason: "criterion_result_not_durably_rederivable" as const,
+      },
+    }));
+
+    const rendered = ReviewerEvidenceTimeline({
+      acceptanceDetail: aggregateOnly,
+      criterionOutcomes: { kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" },
+      dependencyObservations: { kind: "not_current" },
+      finalDecision: { kind: "not_current" },
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Exact-head review posted Recorded");
+    expect(content).toContain("attested an aggregate Proven verdict");
+    expect(content).toContain(
+      "does not claim which required criteria were proven, failed, unproven, or not testable"
+    );
+    expect(content).not.toContain(
+      "immutable criterion bundle records every required criterion as proven"
+    );
+  });
+
+  it.each(["failed", "not_proven", "not_testable"] as const)(
+    "keeps an aggregate %s verdict criterion-agnostic without the outcome bundle",
+    (verdict) => {
+      const aggregateOnly = structuredClone(currentAcceptanceDetail) as Extract<
+        AcceptanceRecordDetailEnvelope,
+        { kind: "record" }
+      >;
+      const currentProof = aggregateOnly.detail.proofMatrix[0]!;
+      if (currentProof.review.kind !== "posted") throw new Error("expected posted fixture");
+      currentProof.review.verdict = verdict;
+      const rendered = ReviewerEvidenceTimeline({
+        acceptanceDetail: aggregateOnly,
+        criterionOutcomes: { kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" },
+        dependencyObservations: { kind: "not_current" },
+        finalDecision: { kind: "not_current" },
+        workspaceId: record.workspaceId,
+        recordId: record.id,
+      });
+      const content = textContent(rendered);
+
+      const label = verdict === "failed" ? "Failed"
+        : verdict === "not_proven" ? "Not proven" : "Not testable";
+      expect(content).toContain(`attested an aggregate ${label} verdict`);
+      expect(content).toContain(
+        "does not claim which required criteria were proven, failed, unproven, or not testable"
+      );
+      expect(content).not.toContain("at least one evidence-bound failed criterion");
+      expect(content).not.toContain("which required criterion lacked");
+      expect(content).not.toContain("at least one required criterion had no safe bounded exercise");
+    },
+  );
 
   it("renders a separate read-only draft dependency proposal without commands or delivery controls", () => {
     expect(isDependencyDraftProposal(draftDependencyProposal)).toBe(true);

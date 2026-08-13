@@ -2842,6 +2842,68 @@ export async function recordAcceptanceInboundIntake(
   });
 }
 
+export async function readAcceptanceIntakeMessage(input: {
+  workspaceId: string;
+  intakeId: string;
+  sourceKey: string;
+}): Promise<AcceptanceIntakeMessageRow | null> {
+  const rows = await db
+    .select({ message: acceptanceIntakeMessages })
+    .from(acceptanceIntakeMessages)
+    .innerJoin(acceptanceIntakes, and(
+      eq(acceptanceIntakes.id, acceptanceIntakeMessages.intakeId),
+      eq(acceptanceIntakes.workspaceId, input.workspaceId),
+    ))
+    .where(and(
+      eq(acceptanceIntakeMessages.intakeId, input.intakeId),
+      eq(acceptanceIntakeMessages.sourceKey, input.sourceKey),
+    ))
+    .limit(1);
+  return rows[0]?.message ?? null;
+}
+
+/** Append the reply that constitutes delivery for the virtual MCP channel. */
+export async function appendAcceptanceOutboundReply(input: {
+  workspaceId: string;
+  intakeId: string;
+  sourceKey: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+}): Promise<{ message: AcceptanceIntakeMessageRow; inserted: boolean } | null> {
+  const sourceKey = input.sourceKey.trim();
+  const text = input.text.trim();
+  if (!sourceKey || !text) throw new Error("Acceptance Intake reply requires source key and text");
+  return db.transaction(async (tx) => {
+    const intake = (await tx.select({ id: acceptanceIntakes.id })
+      .from(acceptanceIntakes)
+      .where(and(
+        eq(acceptanceIntakes.id, input.intakeId),
+        eq(acceptanceIntakes.workspaceId, input.workspaceId),
+      ))
+      .limit(1))[0];
+    if (!intake) return null;
+    const messageId = acceptanceIntakeMessageId({ intakeId: input.intakeId, sourceKey });
+    const insertedRows = await tx.insert(acceptanceIntakeMessages).values({
+      id: messageId,
+      intakeId: input.intakeId,
+      sourceKey,
+      direction: "outbound",
+      text,
+      metadata: input.metadata ?? {},
+    }).onConflictDoNothing().returning();
+    const message = insertedRows[0] ?? (await tx.select()
+      .from(acceptanceIntakeMessages)
+      .where(eq(acceptanceIntakeMessages.id, messageId))
+      .limit(1))[0];
+    if (!message || message.direction !== "outbound" || message.text !== text) {
+      throw new Error("Acceptance Intake reply source key is already bound to different content");
+    }
+    await tx.update(acceptanceIntakes).set({ updatedAt: new Date() })
+      .where(eq(acceptanceIntakes.id, input.intakeId));
+    return { message, inserted: insertedRows.length === 1 };
+  });
+}
+
 export type AcceptanceContractValidation =
   | { ok: true }
   | { ok: false; errors: string[] };

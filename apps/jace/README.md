@@ -65,6 +65,15 @@ inbound + outbound + threading + credentials.
   The console sends only the built message and the NON-SECRET destination
   (`target`) — the bot credentials stay in Jace's env.
 
+- `agent/channels/mcp.ts` — a virtual hosted channel for direct Codex/Jace
+  planning and intake. The public AgentRail API authenticates a workspace key,
+  derives `mcp:<credential>:<task>` identity, records the canonical Acceptance
+  Intake, and hands the turn through `/eve/v1/hosted-inbound`. The channel's
+  own `/eve/v1/mcp-handoff` route is a 404 registration fingerprint, not a
+  public ingress. Replies are delivered only after durable outbound Intake
+  custody succeeds. MCP text cannot confirm a Contract and grants no builder,
+  implementation, merge, or deployment authority.
+
 - `agent/channels/imessage.ts` — a hand-rolled `defineChannel` (#1100). Eve ships
   no iMessage/LoopMessage channel, so this is a first-party bridge over the
   [LoopMessage](https://docs.loopmessage.com) Send + Inbound API. Inbound at

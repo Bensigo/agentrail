@@ -3372,6 +3372,8 @@ export {
   createDraftAcceptanceRecord,
   createDraftAcceptanceRecordFromIntake,
   recordAcceptanceInboundIntake,
+  readAcceptanceIntakeMessage,
+  appendAcceptanceOutboundReply,
   readAcceptanceIntakeReadback,
   ACCEPTANCE_INTAKE_READBACK_LIMITS,
   createDraftAcceptanceContract,

@@ -92,6 +92,8 @@ import {
   recordSignedAcceptanceRecordMerge,
   SignedAcceptanceRecordMergeConflictError,
   recordAcceptanceInboundIntake,
+  readAcceptanceIntakeMessage,
+  appendAcceptanceOutboundReply,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
   readAcceptanceContracts,
@@ -11063,6 +11065,52 @@ describe.skipIf(!DB_AVAILABLE)(
           .from(acceptanceIntakeMessages)
           .where(eq(acceptanceIntakeMessages.intakeId, first.intake.id))
       ).toHaveLength(1);
+
+      await expect(readAcceptanceIntakeMessage({
+        workspaceId: wsId,
+        intakeId: first.intake.id,
+        sourceKey: "event-1",
+      })).resolves.toMatchObject({ direction: "inbound", text: "Add saved filters" });
+
+      const reply = await appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: first.intake.id,
+        sourceKey: "jace-reply-1",
+        text: "Which repository should this target?",
+      });
+      expect(reply).toMatchObject({
+        inserted: true,
+        message: { direction: "outbound", text: "Which repository should this target?" },
+      });
+      await expect(appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: first.intake.id,
+        sourceKey: "jace-reply-1",
+        text: "Which repository should this target?",
+      })).resolves.toMatchObject({ inserted: false, message: { id: reply!.message.id } });
+      await expect(appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: first.intake.id,
+        sourceKey: "jace-reply-1",
+        text: "Changed reply",
+      })).rejects.toThrow("source key is already bound to different content");
+
+      const foreignWorkspace = (await db.insert(workspaces).values({
+        name: "foreign intake reader",
+        slug: `foreign-intake-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      await expect(readAcceptanceIntakeMessage({
+        workspaceId: foreignWorkspace.id,
+        intakeId: first.intake.id,
+        sourceKey: "event-1",
+      })).resolves.toBeNull();
+      await expect(appendAcceptanceOutboundReply({
+        workspaceId: foreignWorkspace.id,
+        intakeId: first.intake.id,
+        sourceKey: "foreign-reply",
+        text: "Cross-tenant write",
+      })).resolves.toBeNull();
+      await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
     });
 
     it("binds an Intake to one provenance-preserving draft and refuses changed re-drafts", async () => {

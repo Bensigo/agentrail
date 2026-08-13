@@ -277,6 +277,56 @@ test("HOSTED_INBOUND_CHANNELS includes console alongside telegram/discord/slack"
   assert.ok(HOSTED_INBOUND_CHANNELS.includes("telegram"));
 });
 
+test("MCP inbound preserves only its workspace and task-context target", () => {
+  const auth = {
+    authenticator: "agentrail",
+    principalType: "agent_mcp",
+    principalId: "agent-mcp:credential-1",
+    attributes: {
+      workspaceId: "ws-1",
+      channel: "mcp",
+      conversationKey: "mcp:credential-1:codex-task-1",
+      mcpCredentialId: "credential-1",
+    },
+  };
+  const out = normalizeHostedInbound({
+    channel: "mcp",
+    message: "Plan this task",
+    sourceKey: "mcp-message-1",
+    target: {
+      workspaceId: "ws-1",
+      taskContextKey: "codex-task-1",
+      recordId: "caller-selected-record",
+    },
+    auth,
+  });
+  assert.deepEqual(out.target, {
+    workspaceId: "ws-1",
+    taskContextKey: "codex-task-1",
+  });
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("mcp"));
+});
+
+test("MCP inbound fails closed when target identity disagrees with authenticated attributes", () => {
+  assert.throws(() => normalizeHostedInbound({
+    channel: "mcp",
+    message: "Plan this task",
+    sourceKey: "mcp-message-1",
+    target: { workspaceId: "foreign-workspace", taskContextKey: "codex-task-1" },
+    auth: {
+      authenticator: "agentrail",
+      principalType: "agent_mcp",
+      principalId: "agent-mcp:credential-1",
+      attributes: {
+        workspaceId: "ws-1",
+        channel: "mcp",
+        conversationKey: "mcp:credential-1:codex-task-1",
+        mcpCredentialId: "credential-1",
+      },
+    },
+  }), /MCP workspace binding mismatch/);
+});
+
 test("console rejects a target missing workspaceId", () => {
   assert.throws(
     () =>

@@ -53,6 +53,7 @@ import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
 import console_ from "./console.js";
+import mcp from "./mcp.js";
 
 /**
  * Channel id -> Eve channel module — the SAME set `normalizeHostedInbound`
@@ -66,7 +67,7 @@ import console_ from "./console.js";
  * in-house channel — see `./console.ts`'s header comment for why it rides
  * this SAME door rather than forking a second dispatch mechanism.
  */
-const CHANNELS: Record<string, unknown> = { telegram, discord, slack, console: console_ };
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack, console: console_, mcp };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {

@@ -194,6 +194,28 @@ a source regression.
 4. **R12.1 remains open but outside this salvage execution.** Do not silently
    absorb it into UI or marketing work.
 
+## Direct Jace MCP planning/control continuation
+
+This branch advances the source/test portion of R2.1 and R3 for a coding
+agent that needs to talk to Jace directly, rather than only query repository
+context or correction packets. It extends the existing stdio MCP server with:
+
+- `jace_turn`, an idempotent planning, brainstorming, intake, and control turn
+  bound to `mcp:<credential>:<task>` identity; and
+- `jace_task_get`, a bounded read of the same task's Jace reply, Intake,
+  server-linked Acceptance Record, Contract, exact-head Context Pack identities,
+  and status.
+
+The MCP credential derives the workspace; neither tool accepts a workspace or
+Record locator. Jace can draft through the existing bound-Intake tool, but MCP
+task text is not authenticated human confirmation. The surface exposes no
+builder dispatch, implementation, merge, deploy, shell, filesystem, raw source,
+or opaque artifact read. Jace reply delivery is the durable outbound Intake
+write itself, so missing custody fails the virtual channel instead of claiming
+delivery. Source/tests are proven by the focused Console, MCP, database-build,
+and Jace suites on this branch. No deployed/live or customer MCP conversation is
+claimed.
+
 ## R8 exit reconciliation
 
 R8.1 and the canonical R8.2 source/test implementation are closed. There is

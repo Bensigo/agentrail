@@ -2,6 +2,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const registerTool = vi.hoisted(() => vi.fn());
 const fetchAcceptanceCorrectionPackets = vi.hoisted(() => vi.fn());
+const sendJaceTurn = vi.hoisted(() => vi.fn());
+const fetchJaceTask = vi.hoisted(() => vi.fn());
 let indexModule: typeof import("./index.js");
 
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
@@ -17,6 +19,7 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: class {},
 }));
 vi.mock("./correction-client.js", () => ({ fetchAcceptanceCorrectionPackets }));
+vi.mock("./jace-client.js", () => ({ sendJaceTurn, fetchJaceTask }));
 
 beforeAll(async () => {
   indexModule = await import("./index.js");
@@ -24,6 +27,37 @@ beforeAll(async () => {
 
 beforeEach(() => {
   fetchAcceptanceCorrectionPackets.mockReset();
+  sendJaceTurn.mockReset();
+  fetchJaceTask.mockReset();
+});
+
+describe("direct Jace tools", () => {
+  it("registers only task-context input and preserves the no-authority boundary", () => {
+    const turn = registerTool.mock.calls.find(([name]) => name === "jace_turn");
+    const read = registerTool.mock.calls.find(([name]) => name === "jace_task_get");
+    expect(turn).toBeTruthy();
+    expect(read).toBeTruthy();
+    expect(Object.keys(turn![1].inputSchema)).toEqual(["taskContextKey", "messageKey", "message"]);
+    expect(Object.keys(read![1].inputSchema)).toEqual(["taskContextKey"]);
+    expect(turn![1].description).toContain("cannot confirm a Contract");
+    expect(turn![1].description).toContain("merge");
+    expect(read![1].annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+  });
+
+  it("forwards one exact turn and returns server-derived task state", async () => {
+    sendJaceTurn.mockResolvedValue({ ok: true, payload: { accepted: true, task: { intakeId: "intake-1" } } });
+    fetchJaceTask.mockResolvedValue({ ok: true, payload: { acceptance: { record: null } } });
+    const turn = registerTool.mock.calls.find(([name]) => name === "jace_turn")!;
+    const read = registerTool.mock.calls.find(([name]) => name === "jace_task_get")!;
+
+    await expect(turn[2]({ taskContextKey: "task-1", messageKey: "turn-1", message: "Plan this." }))
+      .resolves.toMatchObject({ structuredContent: { accepted: true } });
+    expect(sendJaceTurn).toHaveBeenCalledWith({
+      taskContextKey: "task-1", messageKey: "turn-1", message: "Plan this.",
+    });
+    await expect(read[2]({ taskContextKey: "task-1" }))
+      .resolves.toMatchObject({ structuredContent: { acceptance: { record: null } } });
+  });
 });
 
 function correctionToolRegistration() {
@@ -40,6 +74,7 @@ describe("acceptance_correction_packets_get", () => {
       AGENTRAIL_SERVER_BASE_URL: "https://console.example.com",
       AGENTRAIL_SERVER_API_KEY: "workspace-secret",
       AGENTRAIL_MCP_CORRECTION_API_KEY: "correction-secret",
+      AGENTRAIL_MCP_JACE_API_KEY: "jace-secret",
     });
 
     expect(options.env).toEqual({
@@ -50,6 +85,7 @@ describe("acceptance_correction_packets_get", () => {
     });
     expect(options.env.AGENTRAIL_SERVER_API_KEY).toBe("workspace-secret");
     expect(options.env.AGENTRAIL_MCP_CORRECTION_API_KEY).toBeUndefined();
+    expect(options.env.AGENTRAIL_MCP_JACE_API_KEY).toBeUndefined();
     expect(options.maxBuffer).toBe(16 * 1024 * 1024);
   });
 

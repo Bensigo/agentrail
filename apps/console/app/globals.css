@@ -5,6 +5,8 @@
 /* Scan Fumadocs UI classes so Tailwind v4 emits them. Path is relative to this
    file; verified to resolve to the installed fumadocs-ui dist. */
 @source "../node_modules/fumadocs-ui/dist/**/*.js";
+/* Scan the shared AgentRail component source used by the Console. */
+@source "../../../packages/ui/src/**/*.tsx";
 
 :root {
   --gray-00: #ffffff;

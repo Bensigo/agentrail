@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
+import { Button } from "@agentrail/ui";
 import { CopyId } from "../../../../../../components/copy-id";
 import { PageHeader } from "../../../../../../components/page-header";
 import type {
@@ -3457,7 +3458,16 @@ export function formatChangeRecordDate(value: string): string {
 type ContextPackFragmentTarget = {
   focus(options?: FocusOptions): void;
   scrollIntoView(options?: ScrollIntoViewOptions): void;
+  closest?(selector: string): HTMLDetailsElement | null;
 };
+
+const REVIEWER_FRAGMENT_TARGETS = new Set([
+  "reviewer-journey",
+  "reviewer-evidence",
+  "acceptance-contract-evidence",
+  "current-context-packs",
+  "final-human-decision",
+]);
 
 export function resolveContextPackFragmentTarget(
   hash: string,
@@ -3465,7 +3475,14 @@ export function resolveContextPackFragmentTarget(
 ): ContextPackFragmentTarget | null {
   const id = hash.startsWith("#") ? hash.slice(1) : "";
   const packId = id.startsWith("context-pack-") ? id.slice("context-pack-".length) : "";
-  return UUID.test(packId) ? getElementById(id) : null;
+  return REVIEWER_FRAGMENT_TARGETS.has(id) || UUID.test(packId) ? getElementById(id) : null;
+}
+
+export function revealContextPackFragmentTarget(target: ContextPackFragmentTarget): void {
+  const disclosure = target.closest?.("details");
+  if (disclosure) disclosure.open = true;
+  target.scrollIntoView({ block: "start" });
+  target.focus({ preventScroll: true });
 }
 
 export function ChangeRecordBackLink({ workspaceId }: { workspaceId: string }) {
@@ -3476,6 +3493,221 @@ export function ChangeRecordBackLink({ workspaceId }: { workspaceId: string }) {
     >
       <ArrowLeft size={14} /> Back to Changes
     </a>
+  );
+}
+
+function sentenceCase(value: string): string {
+  const words = value.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function decisionChoicesCopy(choices: AcceptancePrDecision[]): string {
+  return choices.map(finalDecisionLabel).join(", ");
+}
+
+export type ReviewerJourneyBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  contract: { id: string; version: number; sha256: string };
+  currentPackCount: number;
+};
+
+export function resolveReviewerJourneyBinding(
+  acceptanceDetail: AcceptanceRecordDetailEnvelope,
+  finalDecision: AcceptanceFinalDecisionEnvelope,
+): ReviewerJourneyBinding | null {
+  if (acceptanceDetail.kind !== "record" || finalDecision.kind !== "current") return null;
+  const { detail } = acceptanceDetail;
+  if (detail.pullRequest.kind !== "attached" || detail.pullRequest.current === null) return null;
+  const occurrence = detail.pullRequest.current;
+  const binding = finalDecision.binding;
+  if (binding.workspaceId !== detail.summary.workspaceId
+    || binding.recordId !== detail.summary.recordId
+    || binding.repo !== occurrence.repo
+    || binding.prNumber !== occurrence.prNumber
+    || binding.headSha !== occurrence.headSha
+    || binding.headCycleId !== occurrence.headCycleId
+    || !reviewerContractMatches(binding.acceptanceContract, detail.contract.identity)) return null;
+
+  const currentPackCount = detail.contextPacks.reduce((count, contextPack) => {
+    if (contextPack.occurrence.kind !== "current"
+      || contextPack.occurrence.headSha !== occurrence.headSha
+      || contextPack.occurrence.headCycleId !== occurrence.headCycleId
+      || !reviewerContractMatches(
+        contextPack.sourceSnapshot.binding.acceptanceContract,
+        detail.contract.identity,
+      )) return count;
+    return count + contextPack.compiledPacks.length;
+  }, 0);
+
+  return {
+    workspaceId: binding.workspaceId,
+    recordId: binding.recordId,
+    repo: binding.repo,
+    prNumber: binding.prNumber,
+    headSha: binding.headSha,
+    headCycleId: binding.headCycleId,
+    contract: binding.acceptanceContract,
+    currentPackCount,
+  };
+}
+
+export function AcceptanceDecisionOverview({
+  record,
+  acceptanceDetail,
+  criterionOutcomes,
+  finalDecision,
+  canRecordFinalDecision,
+}: {
+  record: ChangeRecord;
+  acceptanceDetail: AcceptanceRecordDetailEnvelope;
+  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+  canRecordFinalDecision: boolean;
+}) {
+  if (acceptanceDetail.kind !== "record") {
+    return (
+      <section id="reviewer-journey" tabIndex={-1} aria-labelledby="decision-overview-title" className="scroll-mt-4 border-y border-[var(--gray-05)] py-5">
+        <h2 id="decision-overview-title" className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Decision overview
+        </h2>
+        <div className="mt-4 grid gap-5 sm:grid-cols-3">
+          <div>
+            <p className="text-xs text-[var(--gray-09)]">Decision state</p>
+            <p className="mt-1 text-sm font-bold text-[var(--gray-12)]">Unavailable</p>
+          </div>
+          <div>
+            <p className="text-xs text-[var(--gray-09)]">Proof and unknowns</p>
+            <p className="mt-1 text-sm font-bold text-[var(--gray-12)]">Unknown</p>
+            <p className="mt-1 text-xs text-[var(--gray-09)]">
+              Canonical Record custody could not be revalidated. No proof is inferred.
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-[var(--gray-09)]">Next human action</p>
+            <p className="mt-1 text-sm font-bold text-[var(--gray-12)]">
+              Revalidate the Acceptance Record before deciding.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const { summary, contract } = acceptanceDetail.detail;
+  const exactCriterionBundle = criterionOutcomes.kind === "current"
+    && criterionOutcomesMatchDetail(criterionOutcomes, acceptanceDetail)
+    ? criterionOutcomes.bundle : null;
+  const criterionCounts = exactCriterionBundle?.outcomes.reduce(
+    (counts, outcome) => ({ ...counts, [outcome.state]: counts[outcome.state] + 1 }),
+    { proven: 0, failed: 0, not_proven: 0, not_testable: 0 },
+  ) ?? null;
+  const proofState = summary.proof.kind === "recorded"
+    ? criterionStateLabel(summary.proof.verdict) : "Unknown";
+  const criterionCopy = criterionCounts
+    ? `${criterionCounts.proven} proven · ${criterionCounts.failed} failed · ${criterionCounts.not_proven} not proven · ${criterionCounts.not_testable} not testable`
+    : "Criterion-level outcomes are unavailable.";
+  const unknownCopy = summary.unknownReasons.length === 0
+    ? "No summary unknowns recorded."
+    : `${summary.unknownReasons.length} unknown${summary.unknownReasons.length === 1 ? "" : "s"} · ${summary.unknownReasons.map(sentenceCase).join(" · ")}`;
+  const reviewerJourney = resolveReviewerJourneyBinding(acceptanceDetail, finalDecision);
+  const finalDecisionMatchesSummary = reviewerJourney !== null;
+
+  let decisionState = "Decision unavailable";
+  let nextAction = "Revalidate exact-head review custody before deciding.";
+  let decisionLinkLabel: string | null = null;
+  if (summary.neededDecision.kind === "required" && finalDecisionMatchesSummary) {
+    decisionState = "Decision required";
+    nextAction = canRecordFinalDecision
+      ? `Choose: ${decisionChoicesCopy(summary.neededDecision.choices)}.`
+      : `A workspace owner or admin must choose: ${decisionChoicesCopy(summary.neededDecision.choices)}.`;
+    decisionLinkLabel = "Go to decision";
+  } else if (summary.neededDecision.kind === "recorded" && finalDecisionMatchesSummary) {
+    decisionState = finalDecisionLabel(summary.neededDecision.decision);
+    nextAction = "No further Console decision is needed. Jace has not merged this change.";
+    decisionLinkLabel = "View decision receipt";
+  } else if (summary.neededDecision.kind === "not_required") {
+    decisionState = "No decision required";
+    nextAction = summary.neededDecision.reason === "merged"
+      ? "Check post-merge receipts before treating deployment or customer outcome as known."
+      : "No human decision is available for the current Record state.";
+  }
+
+  const pullRequestCopy = summary.pullRequest.kind === "attached"
+    ? summary.pullRequest.head.kind === "unknown"
+      ? `PR #${summary.pullRequest.prNumber} · exact head unknown`
+      : `PR #${summary.pullRequest.prNumber} · ${summary.pullRequest.head.sha.slice(0, 12)} · ${summary.pullRequest.head.kind}`
+    : "Pull request not attached";
+
+  return (
+    <section id="reviewer-journey" tabIndex={-1} aria-labelledby="decision-overview-title" className="scroll-mt-4 border-y border-[var(--gray-05)] py-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="decision-overview-title" className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Decision overview
+        </h2>
+        <p className="font-mono text-xs text-[var(--gray-09)]">
+          {record.repo} · {pullRequestCopy} · Contract v{contract.identity.version}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-5 sm:grid-cols-3 sm:divide-x sm:divide-[var(--gray-05)]">
+        <div className="sm:pr-5">
+          <p className="text-xs text-[var(--gray-09)]">Decision state</p>
+          <p className="mt-1 text-lg font-bold text-[var(--gray-12)]">{decisionState}</p>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">Record state: {record.state}</p>
+        </div>
+        <div className="sm:px-5">
+          <p className="text-xs text-[var(--gray-09)]">Proof and unknowns</p>
+          <p className="mt-1 text-lg font-bold text-[var(--gray-12)]">{proofState}</p>
+          <p className="mt-1 text-xs text-[var(--gray-11)]">{criterionCopy}</p>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">{unknownCopy}</p>
+          {reviewerJourney ? (
+            <p className="mt-1 text-xs text-[var(--gray-09)]">
+              {reviewerJourney.currentPackCount} current exact-head Context Pack{reviewerJourney.currentPackCount === 1 ? "" : "s"}
+            </p>
+          ) : null}
+        </div>
+        <div className="sm:pl-5">
+          <p className="text-xs text-[var(--gray-09)]">Next human action</p>
+          <p className="mt-1 text-sm font-bold text-[var(--gray-12)]">{nextAction}</p>
+          {decisionLinkLabel ? (
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+              {reviewerJourney && summary.neededDecision.kind === "required" ? (
+                <a href="#reviewer-evidence" className="text-xs font-medium text-[var(--blue-11)] hover:underline">
+                  Review evidence and custody
+                </a>
+              ) : null}
+              <a href="#final-human-decision" className="text-xs font-medium text-[var(--blue-11)] hover:underline">
+                {decisionLinkLabel}
+              </a>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function RecordDetailDisclosure({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group border-y border-[var(--gray-05)] py-1">
+      <summary className="cursor-pointer list-none px-1 py-3 marker:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--blue-09)]">
+        <span className="block text-sm font-bold text-[var(--gray-12)]">{title}</span>
+        <span className="mt-1 block text-xs text-[var(--gray-09)]">{description}</span>
+      </summary>
+      <div className="space-y-6 pb-5 pt-2">{children}</div>
+    </details>
   );
 }
 
@@ -3802,7 +4034,7 @@ export function ReviewerEvidenceTimeline({
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
-      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="reviewer-evidence" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Reviewer evidence timeline
         </h2>
@@ -3986,7 +4218,7 @@ export function ReviewerEvidenceTimeline({
     || left.rank - right.rank || left.id.localeCompare(right.id));
 
   return (
-    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="reviewer-evidence" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Reviewer evidence timeline
@@ -4026,6 +4258,11 @@ export function ReviewerEvidenceTimeline({
           </li>
         ))}
       </ol>
+      <div className="border-t border-[var(--gray-05)] px-4 py-3 text-right">
+        <a href="#current-context-packs" className="text-xs text-[var(--blue-11)] hover:underline">
+          Continue to Context Pack
+        </a>
+      </div>
     </section>
   );
 }
@@ -4201,7 +4438,7 @@ export function AcceptanceRecordDetailPanel({
           </div>
         </article>
 
-        <article className="border-t border-[var(--gray-05)] pt-5">
+        <article id="current-context-packs" tabIndex={-1} className="scroll-mt-4 border-t border-[var(--gray-05)] pt-5">
           <h3 className="text-sm font-semibold text-[var(--gray-12)]">Exact PR head occurrences</h3>
           {occurrences.length === 0 ? (
             <p className="mt-2 text-xs text-[var(--gray-09)]">No PR head occurrence is attached.</p>
@@ -4391,22 +4628,24 @@ export function AcceptanceRecordDetailPanel({
                               <p className="mt-2 text-xs text-[var(--gray-09)]">Historical Packs cannot be regenerated against an old head.</p>
                             ) : canRequestRegeneration && onRequestRegeneration ? (
                               <div className="mt-3 flex flex-wrap gap-2">
-                                <button
+                                <Button
                                   type="button"
+                                  size="sm"
+                                  variant="secondary"
                                   disabled={requesting || requests.some((request) => request.reason === "stale")}
                                   onClick={() => onRequestRegeneration(pack.id, "stale")}
-                                  className="rounded border border-[var(--gray-07)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-50"
                                 >
                                   {requesting ? "Recording…" : "Report stale"}
-                                </button>
-                                <button
+                                </Button>
+                                <Button
                                   type="button"
+                                  size="sm"
+                                  variant="secondary"
                                   disabled={requesting || requests.some((request) => request.reason === "inadequate")}
                                   onClick={() => onRequestRegeneration(pack.id, "inadequate")}
-                                  className="rounded border border-[var(--gray-07)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-50"
                                 >
                                   {requesting ? "Recording…" : "Report inadequate"}
-                                </button>
+                                </Button>
                               </div>
                             ) : (
                               <p className="mt-2 text-xs text-[var(--gray-09)]">A workspace owner or admin can record this request.</p>
@@ -4423,6 +4662,11 @@ export function AcceptanceRecordDetailPanel({
           {regenerationRequestError ? (
             <p className="mt-3 text-xs text-[var(--red-11)]">{regenerationRequestError}</p>
           ) : null}
+          <p className="mt-4 text-right">
+            <a href="#final-human-decision" className="text-xs text-[var(--blue-11)] hover:underline">
+              Continue to decision
+            </a>
+          </p>
         </article>
 
         <article className="border-t border-[var(--gray-05)] pt-5">
@@ -4718,7 +4962,7 @@ export function FinalDecisionPanel({
         ? "This Change Record is unavailable."
         : "The current exact-head review is not ready for a human decision.";
     return (
-      <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+      <section id="final-human-decision" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
         </h2>
@@ -4730,7 +4974,7 @@ export function FinalDecisionPanel({
   const { binding, decision } = finalDecision;
   const proven = binding.reviewVerdict === "proven";
   return (
-    <section id="final-human-decision" className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+    <section id="final-human-decision" tabIndex={-1} className="scroll-mt-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Final human decision
@@ -4740,24 +4984,19 @@ export function FinalDecisionPanel({
         </p>
       </div>
       <div className="space-y-4 px-4 py-4">
-        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
-          <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
-          <CorrectionDatum label="Exact head" mono>{binding.headSha}</CorrectionDatum>
-          <CorrectionDatum label="Head cycle" mono>{binding.headCycleId}</CorrectionDatum>
-          <CorrectionDatum label="Review verdict" mono>{binding.reviewVerdict}</CorrectionDatum>
-          <CorrectionDatum label="Authority generation" mono>{binding.authorityGeneration}</CorrectionDatum>
-          <CorrectionDatum label="Acceptance Contract" mono>
-            {binding.acceptanceContract.id} v{binding.acceptanceContract.version}
-          </CorrectionDatum>
-        </dl>
-        <a
-          href={binding.postedReviewUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex text-xs text-[var(--blue-11)] hover:underline"
-        >
-          Open the attested GitHub review
-        </a>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <p className="font-medium text-[var(--gray-12)]">
+            Review verdict: {criterionStateLabel(binding.reviewVerdict)}
+          </p>
+          <a
+            href={binding.postedReviewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[var(--blue-11)] hover:underline"
+          >
+            Open the attested GitHub review
+          </a>
+        </div>
 
         {decision ? (
           <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs">
@@ -4784,63 +5023,95 @@ export function FinalDecisionPanel({
               <>
                 <div className="flex flex-wrap gap-2">
                   {proven ? (
-                    <button
+                    <Button
                       type="button"
+                      size="sm"
                       disabled={deciding}
                       onClick={() => onDecide("approved")}
-                      className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
                     >
                       {deciding ? "Recording…" : "Approve PR"}
-                    </button>
+                    </Button>
                   ) : null}
-                  <button
+                  <Button
                     type="button"
+                    size="sm"
+                    variant={proven ? "secondary" : "default"}
                     disabled={deciding}
                     onClick={() => onDecide("changes_requested")}
-                    className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
                   >
                     Request changes
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    size="sm"
+                    variant="secondary"
                     disabled={deciding}
                     onClick={() => onDecide("rejected")}
-                    className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60"
                   >
                     Reject PR
-                  </button>
+                  </Button>
                 </div>
                 {!proven ? (
-                  <div className="rounded border border-[var(--yellow-06)] bg-[var(--yellow-03)] p-3">
-                    <label
-                      className="block text-xs font-medium text-[var(--gray-12)]"
-                      htmlFor={`decision-exception-${binding.reviewJobId}`}
-                    >
-                      Explicit exception rationale
-                    </label>
-                    <textarea
-                      id={`decision-exception-${binding.reviewJobId}`}
-                      value={exceptionRationale}
-                      onChange={(event) => onExceptionRationaleChange(event.target.value)}
-                      maxLength={4_000}
-                      rows={3}
-                      className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]"
-                    />
-                    <button
-                      type="button"
-                      disabled={deciding || !exceptionRationale.trim()}
-                      onClick={() => onDecide("approved_with_exception", exceptionRationale)}
-                      className="mt-2 rounded border border-[var(--yellow-08)] px-2.5 py-1.5 text-xs font-medium text-[var(--yellow-11)] disabled:opacity-60"
-                    >
-                      Record approval with exception
-                    </button>
-                  </div>
+                  <details className="rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-3">
+                    <summary className="cursor-pointer text-xs font-bold text-[var(--gray-12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--blue-09)]">
+                      Approve with exception
+                    </summary>
+                    <div className="mt-3">
+                      <label
+                        className="block text-xs text-[var(--gray-12)]"
+                        htmlFor={`decision-exception-${binding.reviewJobId}`}
+                      >
+                        Explicit exception rationale
+                      </label>
+                      <textarea
+                        id={`decision-exception-${binding.reviewJobId}`}
+                        value={exceptionRationale}
+                        onChange={(event) => onExceptionRationaleChange(event.target.value)}
+                        maxLength={4_000}
+                        rows={3}
+                        className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={deciding || !exceptionRationale.trim()}
+                        onClick={() => onDecide("approved_with_exception", exceptionRationale)}
+                        className="mt-2"
+                      >
+                        Record approval with exception
+                      </Button>
+                    </div>
+                  </details>
                 ) : null}
               </>
             )}
           </div>
         )}
         {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
+        <p className="border-t border-[var(--gray-05)] pt-3 text-right">
+          <a
+            href={`/dashboard/${binding.workspaceId}/approvals`}
+            className="text-xs text-[var(--blue-11)] hover:underline"
+          >
+            Back to Approvals
+          </a>
+        </p>
+        <details className="border-t border-[var(--gray-05)] pt-3">
+          <summary className="cursor-pointer text-xs font-medium text-[var(--blue-11)] hover:underline">
+            Exact-head decision binding
+          </summary>
+          <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+            <CorrectionDatum label="Repository / PR" mono>{binding.repo}#{binding.prNumber}</CorrectionDatum>
+            <CorrectionDatum label="Exact head" mono>{binding.headSha}</CorrectionDatum>
+            <CorrectionDatum label="Head cycle" mono>{binding.headCycleId}</CorrectionDatum>
+            <CorrectionDatum label="Review verdict" mono>{binding.reviewVerdict}</CorrectionDatum>
+            <CorrectionDatum label="Authority generation" mono>{binding.authorityGeneration}</CorrectionDatum>
+            <CorrectionDatum label="Acceptance Contract" mono>
+              {binding.acceptanceContract.id} v{binding.acceptanceContract.version}
+            </CorrectionDatum>
+          </dl>
+        </details>
       </div>
     </section>
   );
@@ -5001,14 +5272,14 @@ export function ReviewMetricsPanel({
                 onChange={(event) => onEffortMinutesChange(event.target.value)}
                 className="w-32 rounded border border-[var(--gray-06)] bg-[var(--gray-01)] px-2 py-1.5 text-xs text-[var(--gray-12)]"
               />
-              <button
+              <Button
                 type="button"
+                size="sm"
                 disabled={recordingEffort || !validMinutes}
                 onClick={() => validMinutes && onRecordEffort(parsedMinutes)}
-                className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
               >
                 {recordingEffort ? "Recording…" : "Record review effort"}
-              </button>
+              </Button>
             </div>
             <p className="mt-2 text-xs text-[var(--gray-09)]">
               One immutable human-input receipt for this exact head and cycle.
@@ -5248,16 +5519,17 @@ export function DependencyObservationsPanel({
                       This observation is not eligible for approval.
                     </p>
                   ) : canApproveDependencyObservation ? (
-                    <button
+                    <Button
                       type="button"
+                      size="sm"
                       disabled={approvingObservationEventId !== null}
                       onClick={() => onApprove(observation.eventId)}
-                      className="mt-3 rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                      className="mt-3"
                     >
                       {approving
                         ? "Approving & minting…"
                         : "Approve & mint external-builder Pack"}
-                    </button>
+                    </Button>
                   ) : (
                     <p className="mt-3 text-[var(--gray-09)]">
                       A workspace owner or admin can approve this observation.
@@ -5379,8 +5651,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         (id) => document.getElementById(id),
       );
       if (!target) return;
-      target.scrollIntoView({ block: "start" });
-      target.focus({ preventScroll: true });
+      revealContextPackFragmentTarget(target);
     };
     const frame = window.requestAnimationFrame(focusFragment);
     window.addEventListener("hashchange", focusFragment);
@@ -5564,7 +5835,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       <div>
         <ChangeRecordBackLink workspaceId={workspaceId} />
         <PageHeader
-          title="Change Record"
+          title="Acceptance Record"
           subtitle={`${data.record.repo} · ${data.record.state}`}
           actions={<CopyId id={data.record.id} label="Record" />}
         />
@@ -5572,27 +5843,13 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
         </p>
       </div>
-      <ChangeRecordAnchors record={data.record} />
-      <ReviewerEvidenceTimeline
+      <AcceptanceDecisionOverview
+        record={data.record}
         acceptanceDetail={data.acceptanceDetail}
         criterionOutcomes={data.criterionOutcomes}
-        dependencyObservations={data.dependencyObservations}
         finalDecision={data.finalDecision}
-        workspaceId={workspaceId}
-        recordId={recordId}
+        canRecordFinalDecision={data.canRecordFinalDecision}
       />
-      <AcceptanceRecordDetailPanel
-        acceptanceDetail={data.acceptanceDetail}
-        criterionOutcomes={data.criterionOutcomes}
-        workspaceId={workspaceId}
-        recordId={recordId}
-        regenerationRequests={data.contextPackRegenerationRequests}
-        canRequestRegeneration={data.canRequestContextPackRegeneration}
-        requestingPackId={requestingContextPackId}
-        regenerationRequestError={contextPackRequestError}
-        onRequestRegeneration={requestContextPackRegeneration}
-      />
-      <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel
         finalDecision={data.finalDecision}
         canRecordFinalDecision={data.canRecordFinalDecision}
@@ -5602,25 +5859,61 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         exceptionRationale={exceptionRationale}
         onExceptionRationaleChange={setExceptionRationale}
       />
-      <ReviewMetricsPanel
-        reviewMetrics={data.reviewMetrics}
-        finalDecision={data.finalDecision}
-        canRecordReviewEffort={data.canRecordReviewEffort}
-        onRecordEffort={recordReviewEffort}
-        recordingEffort={recordingEffort}
-        effortError={effortError}
-        effortMinutes={effortMinutes}
-        onEffortMinutesChange={setEffortMinutes}
-      />
-      <DependencyDraftProposalPanel dependencyDraftProposal={data.dependencyDraftProposal} />
-      <DependencyObservationsPanel
-        dependencyObservations={data.dependencyObservations}
-        canApproveDependencyObservation={data.canApproveDependencyObservation}
-        onApprove={approveDependencyObservation}
-        approvingObservationEventId={approvingObservationEventId}
-        approvalError={dependencyApprovalError}
-      />
-      <LifecycleTimeline events={data.events} />
+      <RecordDetailDisclosure
+        title="Proof, corrections, and Context Packs"
+        description="Review the exact-head evidence, criterion receipts, correction packets, and bounded context custody."
+      >
+        <ReviewerEvidenceTimeline
+          acceptanceDetail={data.acceptanceDetail}
+          criterionOutcomes={data.criterionOutcomes}
+          dependencyObservations={data.dependencyObservations}
+          finalDecision={data.finalDecision}
+          workspaceId={workspaceId}
+          recordId={recordId}
+        />
+        <AcceptanceRecordDetailPanel
+          acceptanceDetail={data.acceptanceDetail}
+          criterionOutcomes={data.criterionOutcomes}
+          workspaceId={workspaceId}
+          recordId={recordId}
+          regenerationRequests={data.contextPackRegenerationRequests}
+          canRequestRegeneration={data.canRequestContextPackRegeneration}
+          requestingPackId={requestingContextPackId}
+          regenerationRequestError={contextPackRequestError}
+          onRequestRegeneration={requestContextPackRegeneration}
+        />
+        <CorrectionsSection correctionPackets={data.correctionPackets} />
+      </RecordDetailDisclosure>
+      <RecordDetailDisclosure
+        title="Record identity and exact-head custody"
+        description="Repository, pull-request, head, merge, and Record identifiers."
+      >
+        <ChangeRecordAnchors record={data.record} />
+      </RecordDetailDisclosure>
+      <RecordDetailDisclosure
+        title="Background and audit"
+        description="Review effort, dependency observation custody, and raw lifecycle events."
+      >
+        <ReviewMetricsPanel
+          reviewMetrics={data.reviewMetrics}
+          finalDecision={data.finalDecision}
+          canRecordReviewEffort={data.canRecordReviewEffort}
+          onRecordEffort={recordReviewEffort}
+          recordingEffort={recordingEffort}
+          effortError={effortError}
+          effortMinutes={effortMinutes}
+          onEffortMinutesChange={setEffortMinutes}
+        />
+        <DependencyDraftProposalPanel dependencyDraftProposal={data.dependencyDraftProposal} />
+        <DependencyObservationsPanel
+          dependencyObservations={data.dependencyObservations}
+          canApproveDependencyObservation={data.canApproveDependencyObservation}
+          onApprove={approveDependencyObservation}
+          approvingObservationEventId={approvingObservationEventId}
+          approvalError={dependencyApprovalError}
+        />
+        <LifecycleTimeline events={data.events} />
+      </RecordDetailDisclosure>
     </div>
   );
 }

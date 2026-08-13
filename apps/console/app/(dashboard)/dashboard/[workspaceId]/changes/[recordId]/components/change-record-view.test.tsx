@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AcceptanceDecisionOverview,
   ChangeRecordAnchors,
   ChangeRecordBackLink,
   AcceptanceRecordDetailPanel,
@@ -11,6 +12,7 @@ import {
   LifecycleTimeline,
   ReviewMetricsPanel,
   ReviewerEvidenceTimeline,
+  RecordDetailDisclosure,
   changeRecordApiPath,
   dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
@@ -24,7 +26,9 @@ import {
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
+  revealContextPackFragmentTarget,
   resolveContextPackFragmentTarget,
+  resolveReviewerJourneyBinding,
   criterionArtifactApiPath,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceRecordDetailEnvelope,
@@ -43,14 +47,26 @@ type ElementLike = {
   props?: Record<string, unknown>;
 };
 
+function renderComponent(element: ElementLike): unknown | null {
+  if (typeof element.type === "function") {
+    return (element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {});
+  }
+  if (typeof element.type === "object" && element.type !== null && "render" in element.type) {
+    const render = (element.type as { render?: unknown }).render;
+    if (typeof render === "function") {
+      return (render as (props: Record<string, unknown>, ref: null) => unknown)(element.props ?? {}, null);
+    }
+  }
+  return null;
+}
+
 function textContent(node: unknown): string {
   if (node == null || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textContent).join(" ");
   const element = node as ElementLike;
-  if (typeof element.type === "function") {
-    return textContent((element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}));
-  }
+  const rendered = renderComponent(element);
+  if (rendered !== null) return textContent(rendered);
   return textContent(element.props?.children)
     .replace(/\s+/g, " ")
     .replace(/\s*([#()])\s*/g, "$1")
@@ -61,9 +77,8 @@ function links(node: unknown): string[] {
   if (node == null || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap(links);
   const element = node as ElementLike;
-  if (typeof element.type === "function") {
-    return links((element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}));
-  }
+  const rendered = renderComponent(element);
+  if (rendered !== null) return links(rendered);
   const href = typeof element.props?.href === "string" ? [element.props.href] : [];
   return [...href, ...links(element.props?.children)];
 }
@@ -72,9 +87,8 @@ function elementTypes(node: unknown): string[] {
   if (node == null || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap(elementTypes);
   const element = node as ElementLike;
-  if (typeof element.type === "function") {
-    return elementTypes((element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}));
-  }
+  const rendered = renderComponent(element);
+  if (rendered !== null) return elementTypes(rendered);
   const own = typeof element.type === "string" ? [element.type] : [];
   return [...own, ...elementTypes(element.props?.children)];
 }
@@ -83,12 +97,8 @@ function elementsOfType(node: unknown, type: string): ElementLike[] {
   if (node == null || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap((child) => elementsOfType(child, type));
   const element = node as ElementLike;
-  if (typeof element.type === "function") {
-    return elementsOfType(
-      (element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}),
-      type,
-    );
-  }
+  const rendered = renderComponent(element);
+  if (rendered !== null) return elementsOfType(rendered, type);
   const own = element.type === type ? [element] : [];
   return [...own, ...elementsOfType(element.props?.children, type)];
 }
@@ -1374,8 +1384,9 @@ const criterionOutcomesNotReady: AcceptanceCriterionOutcomesEnvelope = {
 };
 
 describe("Change Record detail view", () => {
-  it("resolves only a specific Context Pack fragment after client data renders", () => {
-    const target = { focus: vi.fn(), scrollIntoView: vi.fn() };
+  it("resolves reviewer-journey and specific evidence fragments after client data renders", () => {
+    const disclosure = { open: false } as HTMLDetailsElement;
+    const target = { focus: vi.fn(), scrollIntoView: vi.fn(), closest: vi.fn(() => disclosure) };
     const getElementById = vi.fn((id: string) =>
       id === `context-pack-${DETAIL_PACK_ID}` ? target : null
     );
@@ -1387,6 +1398,105 @@ describe("Change Record detail view", () => {
     expect(getElementById).toHaveBeenCalledWith(`context-pack-${DETAIL_PACK_ID}`);
     expect(resolveContextPackFragmentTarget("#context-pack-not-a-uuid", getElementById)).toBeNull();
     expect(resolveContextPackFragmentTarget("#acceptance-record", getElementById)).toBeNull();
+    resolveContextPackFragmentTarget("#reviewer-journey", getElementById);
+    expect(getElementById).toHaveBeenCalledWith("reviewer-journey");
+    resolveContextPackFragmentTarget("#reviewer-evidence", getElementById);
+    expect(getElementById).toHaveBeenCalledWith("reviewer-evidence");
+
+    revealContextPackFragmentTarget(target);
+    expect(disclosure.open).toBe(true);
+    expect(target.closest).toHaveBeenCalledWith("details");
+    expect(target.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(target.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it("puts decision state, exact proof, unknowns, and the next human action first", () => {
+    const rendered = AcceptanceDecisionOverview({
+      record,
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      finalDecision: currentFinalDecision,
+      canRecordFinalDecision: true,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Decision overview");
+    expect(content).toContain("Decision state Decision required");
+    expect(content).toContain("Proof and unknowns Failed");
+    expect(content).toContain("1 proven · 1 failed · 0 not proven · 0 not testable");
+    expect(content).toContain("1 unknown · Outcome not recorded");
+    expect(content).toContain("1 current exact-head Context Pack");
+    expect(content).toContain("Next human action Choose: Changes requested, Rejected, Approved with exception.");
+    expect(content).toContain(`ada/widgets · PR#98 · ${DETAIL_CURRENT_HEAD.slice(0, 12)} · current`);
+    expect(content).toContain("Contract v 3");
+    expect(links(rendered)).toEqual(["#reviewer-evidence", "#final-human-decision"]);
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    expect(resolveReviewerJourneyBinding(currentAcceptanceDetail, currentFinalDecision)).toMatchObject({
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      repo: record.repo,
+      prNumber: record.prNumber,
+      headSha: currentFinalDecision.binding.headSha,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      contract: currentFinalDecision.binding.acceptanceContract,
+      currentPackCount: 1,
+    });
+  });
+
+  it("keeps the primary summary fail closed when canonical detail is unavailable", () => {
+    const rendered = AcceptanceDecisionOverview({
+      record,
+      acceptanceDetail: { kind: "unavailable", reason: "invalid_review_custody" },
+      criterionOutcomes: currentCriterionOutcomes,
+      finalDecision: currentFinalDecision,
+      canRecordFinalDecision: true,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Decision state Unavailable");
+    expect(content).toContain("Proof and unknowns Unknown");
+    expect(content).toContain("No proof is inferred");
+    expect(content).toContain("Revalidate the Acceptance Record before deciding");
+    expect(content).not.toContain("Failed");
+    expect(links(rendered)).toEqual([]);
+  });
+
+  it("withholds the primary decision action when exact-head decision custody does not match", () => {
+    const staleDecision = structuredClone(currentFinalDecision) as Extract<
+      AcceptanceFinalDecisionEnvelope,
+      { kind: "current" }
+    >;
+    staleDecision.binding.headCycleId = HISTORICAL_CYCLE;
+    const rendered = AcceptanceDecisionOverview({
+      record,
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: currentCriterionOutcomes,
+      finalDecision: staleDecision,
+      canRecordFinalDecision: true,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Decision state Decision unavailable");
+    expect(content).toContain("Revalidate exact-head review custody before deciding");
+    expect(content).not.toContain("Go to decision");
+    expect(links(rendered)).toEqual([]);
+    expect(resolveReviewerJourneyBinding(currentAcceptanceDetail, staleDecision)).toBeNull();
+  });
+
+  it("uses native closed disclosure while preserving dense evidence and headings", () => {
+    const rendered = RecordDetailDisclosure({
+      title: "Proof and custody",
+      description: "Exact-head evidence and audit detail.",
+      children: <p>Preserved evidence body</p>,
+    });
+    const details = elementsOfType(rendered, "details");
+
+    expect(details).toHaveLength(1);
+    expect(details[0]?.props?.open).toBeUndefined();
+    expect(elementTypes(rendered)).toContain("summary");
+    expect(textContent(rendered)).toContain("Proof and custody");
+    expect(textContent(rendered)).toContain("Preserved evidence body");
   });
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
@@ -1457,6 +1567,7 @@ describe("Change Record detail view", () => {
       currentFinalDecision.binding.postedReviewUrl,
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
       "#dependency-observations",
+      "#current-context-packs",
     ]);
     expect(content).not.toContain(CURRENT_DATA_ARTIFACT_ID);
     expect(content).not.toContain("payloadRef");
@@ -1714,6 +1825,14 @@ describe("Change Record detail view", () => {
       "Reject PR",
       "Record approval with exception",
     ]);
+    const buttonClasses = elementsOfType(rendered, "button")
+      .map((button) => String(button.props?.className ?? ""));
+    expect(buttonClasses[0]).toContain("bg-[#ffe629]");
+    expect(buttonClasses.slice(1)).toEqual(expect.arrayContaining([
+      expect.stringContaining("bg-[var(--gray-03)]"),
+    ]));
+    expect(buttonClasses.join(" ")).not.toContain("--blue-09");
+    expect(elementTypes(rendered)).toContain("details");
     expect(labels).not.toContain("Approve PR");
     expect(labels.some((label) => /merge/iu.test(label))).toBe(false);
   });
@@ -1734,6 +1853,11 @@ describe("Change Record detail view", () => {
     });
 
     expect(buttonLabels(rendered)).toEqual(["Approve PR", "Request changes", "Reject PR"]);
+    const buttonClasses = elementsOfType(rendered, "button")
+      .map((button) => String(button.props?.className ?? ""));
+    expect(buttonClasses[0]).toContain("bg-[#ffe629]");
+    expect(buttonClasses.slice(1).every((className) => className.includes("bg-[var(--gray-03)]"))).toBe(true);
+    expect(buttonClasses.join(" ")).not.toContain("--blue-09");
     expect(textContent(rendered)).not.toContain("Explicit exception rationale");
   });
 
@@ -2830,7 +2954,7 @@ describe("Change Record detail view", () => {
     expect(content).toContain("Gated issue custody: Unknown");
     expect(elementTypes(rendered)).not.toContain("button");
     expect(elementTypes(rendered)).not.toContain("form");
-    expect(links(rendered)).toEqual([]);
+    expect(links(rendered)).toEqual(["#final-human-decision"]);
     expect(content).not.toContain("artifacts/ui/protected.png");
     expect(content).not.toContain("review-evidence/");
     expect(content).not.toContain("Artifact key");
@@ -3148,6 +3272,7 @@ describe("Change Record detail view", () => {
     expect(content).toContain("Current artifact receipts: 2");
     expect(content).toContain("2 receipt-bound artifacts in the current bundle");
     expect(links(rendered)).toEqual([
+      "#final-human-decision",
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_UI_ARTIFACT_ID),
       criterionArtifactApiPath(record.workspaceId, record.id, CURRENT_DATA_ARTIFACT_ID),
     ]);
@@ -3182,7 +3307,7 @@ describe("Change Record detail view", () => {
 
     expect(content).toContain("Current artifact receipts: 0");
     expect(content).not.toContain("Current artifact receipts: Recorded");
-    expect(links(rendered)).toEqual([]);
+    expect(links(rendered)).toEqual(["#final-human-decision"]);
   });
 
   it("renders closed unavailable detail without falling back to timeline inference", () => {

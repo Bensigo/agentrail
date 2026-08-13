@@ -16,7 +16,7 @@ import {
 
 const BASE_URL = "http://127.0.0.1:3100";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const FIXTURE_SCRIPT = "scripts/proof-r112-console-record.ts";
+const FIXTURE_SCRIPT = "packages/db-postgres/scripts/proof-r112-console-record.ts";
 const CRITERION_TEXT = "A saved filter remains visible after reload";
 const SECOND_CRITERION_TEXT = "The saved-filter summary remains after the retained entry";
 
@@ -43,6 +43,7 @@ type BrowserProofState = {
   executionId: string;
   previewBootId: string;
   observedFailure: string;
+  contextPackId: string;
 };
 
 type FixtureInspection = {
@@ -80,14 +81,8 @@ function artifactClient(): { client: S3Client; bucket: string } {
 
 async function runFixture<T>(command: string, input?: unknown): Promise<T> {
   const child = spawn(
-    "pnpm",
+    resolve(REPO_ROOT, "packages/db-postgres/node_modules/.bin/tsx"),
     [
-      "--filter",
-      "@agentrail/db-postgres",
-      "exec",
-      "node",
-      "--import",
-      "tsx",
       FIXTURE_SCRIPT,
       command,
     ],
@@ -224,7 +219,10 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       record: { repo: string; currentPrHeadSha: string; currentPrHeadCycleId: string };
       acceptanceDetail: {
         kind: string;
-        detail: { contract: { contract: { acceptanceCriteria: Array<{ id: string; text: string }> } } };
+        detail: {
+          contract: { contract: { acceptanceCriteria: Array<{ id: string; text: string }> } };
+          contextPacks: Array<{ compiledPacks: Array<{ id: string }> }>;
+        };
       };
       correctionPackets: { kind: string; packets: Array<{
         criterion: { id: string; snapshot: string };
@@ -244,6 +242,7 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       };
       canRecordFinalDecision: boolean;
       canRecordReviewEffort: boolean;
+      canRequestContextPackRegeneration: boolean;
       canCreateGatedGithubIssue: boolean;
     };
     expect(detail.record).toMatchObject({
@@ -252,6 +251,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
       currentPrHeadCycleId: state.currentHeadCycleId,
     });
     expect(detail.acceptanceDetail.kind).toBe("record");
+    expect(detail.acceptanceDetail.detail.contextPacks.flatMap(
+      (contextPack) => contextPack.compiledPacks.map((pack) => pack.id),
+    )).toContain(state.contextPackId);
     expect(detail.acceptanceDetail.detail.contract.contract.acceptanceCriteria.map(
       (criterion) => [criterion.id, criterion.text],
     )).toEqual([
@@ -285,15 +287,62 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     });
     expect(detail.canRecordFinalDecision).toBe(true);
     expect(detail.canRecordReviewEffort).toBe(true);
+    expect(detail.canRequestContextPackRegeneration).toBe(true);
     expect(detail.canCreateGatedGithubIssue).toBe(false);
 
     const page = await context.newPage();
     const traffic = captureBrowserDataTraffic(page);
-    const navigation = await page.goto(`/dashboard/${state.workspaceId}/changes/${state.recordId}`);
+    const navigation = await page.goto(`/dashboard/${state.workspaceId}/approvals`);
     expect(navigation?.ok()).toBe(true);
 
-    await expect(page.getByText(state.repo, { exact: true }).first()).toBeVisible();
-    await expect(page.locator(`code[title="${state.headA}"]`)).toBeVisible();
+    const reviewCard = page.locator("article").filter({
+      has: page.getByText("Keep saved filters after reload", { exact: true }),
+    });
+    await expect(reviewCard.getByText("Context Pack compiled", { exact: true })).toBeVisible();
+    await expect(reviewCard.getByText("Review failed", { exact: true })).toBeVisible();
+    const reviewLink = reviewCard.getByRole("link", {
+      name: `Review ${state.repo} PR #${state.prNumber}`,
+      exact: true,
+    });
+    await expect(reviewLink).toHaveAttribute(
+      "href",
+      `/dashboard/${state.workspaceId}/changes/${state.recordId}#reviewer-journey`,
+    );
+    await reviewLink.click();
+    await expect(page).toHaveURL(new RegExp(
+      `/dashboard/${state.workspaceId}/changes/${state.recordId}#reviewer-journey$`,
+      "u",
+    ));
+
+    const decisionOverview = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Decision overview", exact: true }),
+    });
+    await expect(decisionOverview.getByText(state.repo, { exact: false })).toBeVisible();
+    await expect(decisionOverview.getByText("Decision required", { exact: true })).toBeVisible();
+    await expect(decisionOverview.getByText("Failed", { exact: true })).toBeVisible();
+    await expect(decisionOverview.getByText(
+      "0 proven · 1 failed · 0 not proven · 1 not testable",
+      { exact: true },
+    )).toBeVisible();
+    await expect(decisionOverview.getByText("1 current exact-head Context Pack", { exact: true })).toBeVisible();
+    await expect(decisionOverview.getByText(state.headA.slice(0, 12), { exact: false })).toBeVisible();
+    await expect(decisionOverview.getByRole("link", { name: "Go to decision", exact: true })).toBeVisible();
+    if (process.env["R112_CAPTURE_UNIFIED_REVIEWER"] === "1") {
+      await page.screenshot({
+        path: resolve(REPO_ROOT, "docs/screenshots/acceptance-record-decision-first.png"),
+        fullPage: false,
+      });
+    }
+
+    const proofDisclosure = page.getByText(
+      "Proof, corrections, and Context Packs",
+      { exact: true },
+    ).locator("xpath=ancestor::details[1]");
+    await expect(proofDisclosure).not.toHaveAttribute("open", "");
+    await expect(page.getByRole("heading", { name: "Reviewer evidence timeline", exact: true })).toBeHidden();
+    await decisionOverview.getByRole("link", { name: "Review evidence and custody", exact: true }).click();
+    await expect(page).toHaveURL(/#reviewer-evidence$/u);
+    await expect(proofDisclosure).toHaveAttribute("open", "");
     const reviewerTimeline = page.locator("section").filter({
       has: page.getByRole("heading", { name: "Reviewer evidence timeline", exact: true }),
     });
@@ -309,6 +358,17 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     })).toHaveAttribute("href", artifactPath(state));
     await expect(reviewerTimeline.getByText("What this proves:", { exact: false }).first()).toBeVisible();
     await expect(reviewerTimeline.getByText("Still unproven:", { exact: false }).first()).toBeVisible();
+    await reviewerTimeline.getByRole("link", { name: "Continue to Context Pack", exact: true }).click();
+    await expect(page).toHaveURL(/#current-context-packs$/u);
+    const contextPack = page.locator(`#context-pack-${state.contextPackId}`);
+    await expect(contextPack.getByRole("heading", { name: "Compiled Context Pack", exact: true })).toBeVisible();
+    await expect(contextPack).toContainText(state.contextPackId);
+    await expect(contextPack).toContainText(state.headA);
+    await expect(contextPack.getByRole("button", { name: "Report stale", exact: true })).toBeVisible();
+    await expect(contextPack.getByRole("button", { name: "Report inadequate", exact: true })).toBeVisible();
+    await expect(contextPack).toContainText("does not start compilation, contact a builder, or change the PR");
+    await page.getByRole("link", { name: "Continue to decision", exact: true }).click();
+    await expect(page).toHaveURL(/#final-human-decision$/u);
     await expect(page.getByText("Confirmed Acceptance Contract")).toBeVisible();
     await expect(page.getByText(CRITERION_TEXT).first()).toBeVisible();
     await expect(page.getByText(SECOND_CRITERION_TEXT).first()).toBeVisible();
@@ -378,14 +438,31 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     await expect(page.getByText("Current artifact receipts: 1")).toBeVisible();
     await expect(page.getByText(/Ask Jace to create the current correction issue/)).toBeVisible();
     await expect(page.getByRole("button", { name: /create.*issue/i })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Request changes" })).toBeVisible();
+    const requestChanges = page.getByRole("button", { name: "Request changes" });
+    await expect(requestChanges).toBeVisible();
+    await expect(requestChanges).toHaveCSS("background-color", "rgb(255, 230, 41)");
+    await expect(requestChanges).toHaveCSS("color", "rgb(0, 0, 0)");
     await expect(page.getByRole("button", { name: "Reject PR" })).toBeVisible();
+    const exceptionDisclosure = page.getByText("Approve with exception", { exact: true })
+      .locator("xpath=ancestor::details[1]");
+    await expect(exceptionDisclosure).not.toHaveAttribute("open", "");
+    await expect(page.getByRole("textbox", { name: "Explicit exception rationale" })).toBeHidden();
+    await exceptionDisclosure.locator(":scope > summary").click();
+    await expect(exceptionDisclosure).toHaveAttribute("open", "");
     await expect(page.getByRole("textbox", { name: "Explicit exception rationale" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Record approval with exception" })).toBeDisabled();
+    await expect(page.getByRole("spinbutton", { name: "Current cycle review effort (whole minutes)" })).toBeHidden();
+    await page.getByText("Background and audit", { exact: true }).click();
     await expect(page.getByRole("spinbutton", { name: "Current cycle review effort (whole minutes)" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Record review effort" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Approve PR" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve & mint external-builder Pack" })).toHaveCount(0);
+    await requestChanges.click();
+    await expect(page.getByText("Recorded current decision: Changes requested", { exact: true })).toBeVisible();
+    await page.getByRole("link", { name: "Back to Approvals", exact: true }).click();
+    await expect(page).toHaveURL(`/dashboard/${state.workspaceId}/approvals`);
+    await expect(page.getByText("No reviews waiting.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Keep saved filters after reload", { exact: true })).toHaveCount(0);
     expectNoPrivateStorageCoordinates(await page.content(), state);
     await traffic.assertNoPrivateStorageCoordinates(state);
     await context.close();
@@ -408,8 +485,9 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     const traffic = captureBrowserDataTraffic(page);
     const navigation = await page.goto(`/dashboard/${state.workspaceId}/changes/${state.recordId}`);
     expect(navigation?.ok()).toBe(true);
+    await page.getByText("Proof, corrections, and Context Packs", { exact: true }).click();
     await expect(page.getByText("Current recorded outcome: Failed")).toBeVisible();
-    await expect(page.getByText("A workspace owner or admin can record the final decision.")).toBeVisible();
+    await expect(page.getByText("Recorded current decision: Changes requested", { exact: true })).toBeVisible();
     for (const name of [
       "Approve PR",
       "Request changes",
@@ -531,6 +609,7 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     expect(oldArtifact.status()).toBe(409);
     const page = await owner.newPage();
     await page.goto(`/dashboard/${state.workspaceId}/changes/${state.recordId}`);
+    await page.getByText("Proof, corrections, and Context Packs", { exact: true }).click();
     await expect(page.getByText("Current criterion outcomes are not available.")).toBeVisible();
     await expect(page.getByText("Current artifact receipts: Unknown")).toBeVisible();
     await expect(page.getByText("Current recorded outcome: Failed")).toHaveCount(0);

@@ -76,10 +76,12 @@ describe("AcceptanceReviewList", () => {
     expect(reviewRequestLabel(record as never)).toBe("Keep the checkout total exact");
     expect(links).toHaveLength(1);
     expect(links[0]?.props).toMatchObject({
-      href: `/dashboard/${WORKSPACE_ID}/changes/${RECORD_ID}`,
+      href: `/dashboard/${WORKSPACE_ID}/changes/${RECORD_ID}#reviewer-journey`,
       "aria-label": "Review acme/widgets PR #98",
       children: "Review",
     });
+    expect(String(links[0]?.props.className)).toContain("bg-[#ffe629]");
+    expect(String(links[0]?.props.className)).not.toContain("--blue-09");
   });
 
   it("has no inline approve, hold, or reject controls", () => {

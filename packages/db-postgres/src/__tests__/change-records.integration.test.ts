@@ -59,6 +59,7 @@ import {
   recordAcceptancePostMergeOutcome,
   recordAcceptanceBuilderRouteSelection,
   recordAcceptanceContextPackSnapshot,
+  recordAcceptanceContextPackRegenerationRequest,
   resolveAcceptanceContextPackCustody,
   recordAcceptanceCompiledContextPack,
   resolveAcceptanceCompiledContextPack,
@@ -2267,6 +2268,153 @@ describe.skipIf(!DB_AVAILABLE)(
       } finally {
         await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
       }
+    });
+
+    it("records only an owner request against the exact current Context Pack", async () => {
+      const headA = "a".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-request",
+        prNumber: 620,
+        headSha: headA,
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const member = await addAcceptanceDecisionActor(wsId, "member");
+      const input = {
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate" as const,
+        requestedBy: owner,
+      };
+
+      const first = await recordAcceptanceContextPackRegenerationRequest(input);
+      const replay = await recordAcceptanceContextPackRegenerationRequest(input);
+      if (first.kind !== "recorded") throw new Error("expected recorded Context Pack request");
+      expect(first).toMatchObject({
+        kind: "recorded",
+        request: {
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          headSha: headA,
+          headCycleId: fixture.advanced.jobId,
+          reason: "inadequate",
+          requestedBy: owner,
+          requestedRole: "owner",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+      });
+      expect(replay).toMatchObject({ kind: "replayed", request: first.request });
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        ...input,
+        reason: "stale",
+        requestedBy: member,
+      })).resolves.toEqual({ kind: "not_authorized" });
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        ...input,
+        workspaceId: randomUUID(),
+      })).resolves.toEqual({ kind: "not_found" });
+
+      const events = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        actor: owner,
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+      });
+      expect(await db.select().from(acceptanceCorrectionDispatches).where(
+        eq(acceptanceCorrectionDispatches.recordId, fixture.draft.record.id),
+      )).toHaveLength(0);
+
+      const next = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 620,
+        headSha: "b".repeat(40),
+        event: "synchronize",
+        deliveryId: "context-pack-regeneration-request:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: "b".repeat(40) },
+        source: "github_webhook",
+      });
+      if (next.kind !== "advanced") throw new Error("expected successor Context Pack cycle");
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        ...input,
+        reason: "stale",
+      })).resolves.toEqual({ kind: "not_current" });
+
+      const repeatedHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 620,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "context-pack-regeneration-request:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: "b".repeat(40), afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (repeatedHead.kind !== "advanced") throw new Error("expected repeated-head Context Pack cycle");
+      expect(repeatedHead.jobId).not.toBe(fixture.advanced.jobId);
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        ...input,
+        reason: "stale",
+      })).resolves.toEqual({ kind: "not_current" });
+
+      const tampered = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-tampered-custody",
+        prNumber: 619,
+        headSha: "c".repeat(40),
+      });
+      const stored = (await db.select().from(acceptanceCompiledContextPacks).where(
+        eq(acceptanceCompiledContextPacks.id, tampered.pack.id),
+      ))[0]!;
+      const tamperedBinding = { ...stored.binding, repo: "acme/other" };
+      const tamperedCore = {
+        kind: "compiled_acceptance_context_pack" as const,
+        version: 1 as const,
+        binding: tamperedBinding,
+        compiler: {
+          version: stored.compilerVersion,
+          policyVersion: stored.policyVersion,
+          byteCounter: "utf8_byte_upper_bound_v1",
+          byteBudget: 65_536,
+        },
+        manifest: stored.manifest,
+        sourceCustodyReceipt: stored.sourceCustodyReceipt,
+        exactHeadDependencyTreeProofs: stored.exactHeadDependencyTreeProofs,
+        representations: {
+          jsonSha256: stored.jsonSha256,
+          markdownSha256: stored.markdownSha256,
+        },
+        renderedByteCount: stored.renderedByteCount,
+      };
+      await db.update(acceptanceCompiledContextPacks).set({
+        binding: tamperedBinding,
+        packSha256: acceptanceContextPackCanonicalSha256(tamperedCore),
+      }).where(eq(acceptanceCompiledContextPacks.id, tampered.pack.id));
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: tampered.draft.record.id,
+        compiledPackId: tampered.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      })).resolves.toEqual({ kind: "not_current" });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, tampered.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(0);
     });
 
     it("keeps all deterministic A-to-B-to-A occurrences distinct and occurrence-binds historical context", async () => {

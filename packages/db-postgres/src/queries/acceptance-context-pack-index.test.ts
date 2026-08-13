@@ -28,7 +28,10 @@ const { chain, database, rows } = vi.hoisted(() => {
 
 vi.mock("../db.js", () => ({ db: database }));
 
-import { listAcceptanceContextPacksForWorkspace } from "./change_records.js";
+import {
+  listAcceptanceContextPacksForWorkspace,
+  recordAcceptanceContextPackRegenerationRequest,
+} from "./change_records.js";
 
 const workspaceId = "00000000-0000-4000-8000-000000000001";
 
@@ -43,6 +46,28 @@ describe("Context Pack workspace index query", () => {
     ]) {
       await expect(listAcceptanceContextPacksForWorkspace(input as never))
         .rejects.toThrow("Context Pack index requires only workspace and bounded limit");
+    }
+    expect(database.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects regeneration requests that carry mutable authority before database access", async () => {
+    const base = {
+      workspaceId,
+      recordId: "00000000-0000-4000-8000-000000000002",
+      compiledPackId: "00000000-0000-4000-8000-000000000003",
+      reason: "stale",
+      requestedBy: "user:00000000-0000-4000-8000-000000000004",
+    };
+    for (const input of [
+      { ...base, workspaceId: "foreign" },
+      { ...base, compiledPackId: "pack-1" },
+      { ...base, reason: "missing" },
+      { ...base, requestedBy: "builder:codex" },
+      { ...base, headSha: "a".repeat(40) },
+      { ...base, dispatch: true },
+    ]) {
+      await expect(recordAcceptanceContextPackRegenerationRequest(input as never))
+        .rejects.toThrow("Invalid Context Pack regeneration request input");
     }
     expect(database.select).not.toHaveBeenCalled();
   });

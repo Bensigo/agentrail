@@ -642,10 +642,28 @@ export type ChangeRecordResponse = {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   dependencyDraftProposal: AcceptanceDependencyDraftProposal;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
+  contextPackRegenerationRequests: ContextPackRegenerationRequest[];
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
+  canRequestContextPackRegeneration: boolean;
   canCreateGatedGithubIssue: boolean;
+};
+
+export type ContextPackRegenerationRequest = {
+  eventId: string;
+  eventKey: string;
+  sourceSnapshotId: string;
+  compiledPackId: string;
+  headSha: string;
+  headCycleId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  reason: "stale" | "inadequate";
+  requestedBy: string;
+  requestedRole: "owner" | "admin";
+  requestedAt: string;
+  authority: "request_only";
+  status: "request_recorded";
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -1503,7 +1521,7 @@ function isDetailCompiledPack(
   const contractIdentity = contract.identity;
   if (!isObject(value) || !hasExactKeys(value, [
     "id", "sourceSnapshotId", "compilerVersion", "policyVersion", "packSha256",
-    "sourceCustodyIdentitySha256", "representations", "binding", "manifest", "sourceCustody",
+    "sourceCustodyIdentitySha256", "representations", "budget", "binding", "manifest", "sourceCustody",
     "exactHeadDependencyTreeProofs", "createdAt",
   ]) || !isUuid(value.id) || value.sourceSnapshotId !== snapshot.id
     || !isSafeText(value.compilerVersion, 256) || !isSafeText(value.policyVersion, 256)
@@ -1512,6 +1530,10 @@ function isDetailCompiledPack(
       "jsonSha256", "markdownSha256", "renderedByteCount",
     ]) || !isSha256(value.representations.jsonSha256) || !isSha256(value.representations.markdownSha256)
     || !isPositiveInteger(value.representations.renderedByteCount)
+    || !isObject(value.budget) || !hasExactKeys(value.budget, ["counter", "limitBytes"])
+    || value.budget.counter !== "utf8_byte_upper_bound_v1"
+    || value.budget.limitBytes !== 65_536
+    || (value.representations.renderedByteCount as number) > value.budget.limitBytes
     || !isObject(value.binding) || !hasExactKeys(value.binding, [
       "sourceSnapshotId", "workspaceId", "recordId", "reviewJobId", "acceptanceContractId",
       "acceptanceContractVersion", "acceptanceContractSha256", "repo", "prNumber", "baseSha",
@@ -3297,12 +3319,61 @@ export function isDependencyDraftProposal(value: unknown): value is AcceptanceDe
     && value.proposal.laterEvidence.result === "not_recorded";
 }
 
+function contextPackRequestsMatchDetail(
+  requests: unknown,
+  acceptanceDetail: unknown,
+): requests is ContextPackRegenerationRequest[] {
+  if (!Array.isArray(requests) || requests.length > 128) return false;
+  if (!isObject(acceptanceDetail) || acceptanceDetail.kind !== "record"
+    || !isObject(acceptanceDetail.detail) || !isObject(acceptanceDetail.detail.contract)
+    || !isContractIdentity(acceptanceDetail.detail.contract.identity)
+    || !isObject(acceptanceDetail.detail.pullRequest)
+    || acceptanceDetail.detail.pullRequest.kind !== "attached"
+    || !isObject(acceptanceDetail.detail.pullRequest.current)
+    || !Array.isArray(acceptanceDetail.detail.contextPacks)) return requests.length === 0;
+  const current = acceptanceDetail.detail.pullRequest.current;
+  const contractIdentity = acceptanceDetail.detail.contract.identity;
+  const packSnapshots = new Map<string, string>();
+  for (const contextPack of acceptanceDetail.detail.contextPacks) {
+    if (!isObject(contextPack) || !isObject(contextPack.occurrence)
+      || contextPack.occurrence.kind !== "current"
+      || contextPack.occurrence.headCycleId !== current.headCycleId
+      || !isObject(contextPack.sourceSnapshot) || !isUuid(contextPack.sourceSnapshot.id)
+      || !Array.isArray(contextPack.compiledPacks)) continue;
+    for (const pack of contextPack.compiledPacks) {
+      if (isObject(pack) && isUuid(pack.id)) packSnapshots.set(pack.id, contextPack.sourceSnapshot.id);
+    }
+  }
+  const seen = new Set<string>();
+  return requests.every((request) => {
+    if (!isObject(request) || !hasExactKeys(request, [
+      "eventId", "eventKey", "sourceSnapshotId", "compiledPackId", "headSha", "headCycleId",
+      "acceptanceContract", "reason", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
+    ]) || !isUuid(request.eventId) || seen.has(request.eventId)
+      || !isUuid(request.sourceSnapshotId) || !isUuid(request.compiledPackId)
+      || packSnapshots.get(request.compiledPackId) !== request.sourceSnapshotId
+      || request.headSha !== current.headSha || request.headCycleId !== current.headCycleId
+      || !exactJsonEqual(request.acceptanceContract, contractIdentity)
+      || (request.reason !== "stale" && request.reason !== "inadequate")
+      || typeof request.requestedBy !== "string"
+      || !request.requestedBy.startsWith("user:")
+      || !UUID.test(request.requestedBy.slice("user:".length))
+      || (request.requestedRole !== "owner" && request.requestedRole !== "admin")
+      || !isIsoTimestamp(request.requestedAt)
+      || request.authority !== "request_only" || request.status !== "request_recorded") return false;
+    const expectedKey = `context-pack-regeneration:${request.compiledPackId}:${request.reason}:${request.requestedBy.slice("user:".length)}`;
+    if (request.eventKey !== expectedKey) return false;
+    seen.add(request.eventId);
+    return true;
+  });
+}
+
 export function isChangeRecordResponse(value: unknown): value is ChangeRecordResponse {
   return isObject(value) && hasExactKeys(value, [
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
     "dependencyObservations", "acceptanceDetail", "dependencyDraftProposal",
-    "criterionOutcomes", "canRecordFinalDecision", "canRecordReviewEffort",
-    "canApproveDependencyObservation", "canCreateGatedGithubIssue",
+    "criterionOutcomes", "contextPackRegenerationRequests", "canRecordFinalDecision", "canRecordReviewEffort",
+    "canApproveDependencyObservation", "canRequestContextPackRegeneration", "canCreateGatedGithubIssue",
   ]) && isObject(value.record) && Array.isArray(value.events)
     && value.events.every(isSafeTimelineEvent)
     && isCorrectionPacketsEnvelope(value.correctionPackets)
@@ -3313,9 +3384,11 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
     && isDependencyDraftProposal(value.dependencyDraftProposal)
     && isCriterionOutcomesEnvelope(value.criterionOutcomes)
     && criterionOutcomesMatchDetail(value.criterionOutcomes, value.acceptanceDetail)
+    && contextPackRequestsMatchDetail(value.contextPackRegenerationRequests, value.acceptanceDetail)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
     && typeof value.canApproveDependencyObservation === "boolean"
+    && typeof value.canRequestContextPackRegeneration === "boolean"
     && typeof value.canCreateGatedGithubIssue === "boolean";
 }
 
@@ -3328,6 +3401,17 @@ export function dependencyObservationApprovalPatchBody(observationEventId: strin
   observationEventId: string;
 } {
   return { action: "approve_dependency_observation", observationEventId };
+}
+
+export function contextPackRegenerationPatchBody(
+  compiledPackId: string,
+  reason: "stale" | "inadequate",
+): {
+  action: "request_context_pack_regeneration";
+  compiledPackId: string;
+  reason: "stale" | "inadequate";
+} {
+  return { action: "request_context_pack_regeneration", compiledPackId, reason };
 }
 
 export function reviewEffortPatchBody(bindingId: string, minutes: number): {
@@ -3368,6 +3452,20 @@ export function formatChangeRecordDate(value: string): string {
     second: "2-digit",
     hour12: false,
   });
+}
+
+type ContextPackFragmentTarget = {
+  focus(options?: FocusOptions): void;
+  scrollIntoView(options?: ScrollIntoViewOptions): void;
+};
+
+export function resolveContextPackFragmentTarget(
+  hash: string,
+  getElementById: (id: string) => ContextPackFragmentTarget | null,
+): ContextPackFragmentTarget | null {
+  const id = hash.startsWith("#") ? hash.slice(1) : "";
+  const packId = id.startsWith("context-pack-") ? id.slice("context-pack-".length) : "";
+  return UUID.test(packId) ? getElementById(id) : null;
 }
 
 export function ChangeRecordBackLink({ workspaceId }: { workspaceId: string }) {
@@ -3663,11 +3761,24 @@ export function AcceptanceRecordDetailPanel({
   criterionOutcomes,
   workspaceId,
   recordId,
+  regenerationRequests = [],
+  canRequestRegeneration = false,
+  requestingPackId = null,
+  regenerationRequestError = null,
+  onRequestRegeneration,
 }: {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   workspaceId: string;
   recordId: string;
+  regenerationRequests?: ContextPackRegenerationRequest[];
+  canRequestRegeneration?: boolean;
+  requestingPackId?: string | null;
+  regenerationRequestError?: string | null;
+  onRequestRegeneration?: (
+    compiledPackId: string,
+    reason: "stale" | "inadequate",
+  ) => void;
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
@@ -3803,7 +3914,10 @@ export function AcceptanceRecordDetailPanel({
         </article>
 
         <article className="border-t border-[var(--gray-05)] pt-5">
-          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Context Pack custody</h3>
+          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Context Packs</h3>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">
+            Inspect the exact-head manifest, provenance, and bounds supplied for this reviewable change.
+          </p>
           {detail.contextPacks.length === 0 ? (
             <p className="mt-2 text-xs text-[var(--gray-09)]">No validated Context Pack metadata is recorded.</p>
           ) : (
@@ -3812,80 +3926,180 @@ export function AcceptanceRecordDetailPanel({
                 <div key={contextPack.sourceSnapshot.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
                   <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
                     <CorrectionDatum label="Source snapshot" mono>{contextPack.sourceSnapshot.id}</CorrectionDatum>
-                    <CorrectionDatum label="Occurrence" mono>
-                      {contextPack.occurrence.headSha} · {contextPack.occurrence.headCycleId}
+                    <CorrectionDatum label="Review occurrence" mono>
+                      {occurrenceLabel(contextPack.occurrence.kind)} · {contextPack.occurrence.headSha}
                     </CorrectionDatum>
                     <CorrectionDatum label="Snapshot status">
                       {contextPack.sourceSnapshot.status === "admitted" ? "Admitted" : `Not proven · ${contextPack.sourceSnapshot.reason}`}
                     </CorrectionDatum>
-                    <CorrectionDatum label="Packet-set SHA-256" mono>{contextPack.sourceSnapshot.packetSetSha256}</CorrectionDatum>
-                    <CorrectionDatum label="Compiler" mono>{contextPack.sourceSnapshot.compilerVersion}</CorrectionDatum>
+                    <CorrectionDatum label="Captured at">{formatChangeRecordDate(contextPack.sourceSnapshot.createdAt)}</CorrectionDatum>
+                    <CorrectionDatum label="Exact head / cycle" mono>
+                      {contextPack.occurrence.headSha} · {contextPack.occurrence.headCycleId}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Contract binding" mono>
+                      {contextPack.sourceSnapshot.binding.acceptanceContract.id} v{contextPack.sourceSnapshot.binding.acceptanceContract.version}
+                    </CorrectionDatum>
                     <CorrectionDatum label="Compiled variants">{contextPack.compiledPacks.length}</CorrectionDatum>
                   </dl>
-                  {contextPack.compiledPacks.map((pack) => (
-                    <div key={pack.id} className="mt-4 border-t border-[var(--gray-05)] pt-4">
-                      <h4 className="text-xs font-medium text-[var(--gray-12)]">Compiled Pack receipt</h4>
-                      <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
-                        <CorrectionDatum label="Pack ID" mono>{pack.id}</CorrectionDatum>
-                        <CorrectionDatum label="Pack SHA-256" mono>{pack.packSha256}</CorrectionDatum>
-                        <CorrectionDatum label="Source-custody identity" mono>{pack.sourceCustodyIdentitySha256}</CorrectionDatum>
-                        <CorrectionDatum label="Compiler / policy" mono>{pack.compilerVersion} · {pack.policyVersion}</CorrectionDatum>
-                        <CorrectionDatum label="Base / merge base" mono>{pack.binding.baseSha} · {pack.binding.mergeBaseSha}</CorrectionDatum>
-                        <CorrectionDatum label="Head / tree" mono>{pack.binding.headSha} · {pack.binding.headTreeSha}</CorrectionDatum>
-                        <CorrectionDatum label="Persisted source bodies">
-                          None — raw source and snippets are not persisted
-                        </CorrectionDatum>
-                        <CorrectionDatum label="Source / exclusion counts">
-                          {pack.manifest.sourceCount} selected · {pack.manifest.exclusionCount} excluded
-                        </CorrectionDatum>
-                      </dl>
-                      <div className="mt-4">
-                        <h5 className="text-xs font-medium text-[var(--gray-12)]">Selected context citations</h5>
-                        {pack.manifest.sources.length === 0 ? (
-                          <p className="mt-2 text-xs text-[var(--gray-09)]">No selected citation metadata recorded.</p>
-                        ) : (
-                          <ul className="mt-2 space-y-2 text-xs text-[var(--gray-11)]">
-                            {pack.manifest.sources.map((source, index) => (
-                              <li key={`${source.rangeSha256}:${index}`} className="rounded bg-[var(--gray-02)] p-2">
-                                <code>{source.kind === "base_index_background" ? source.slug : source.path}</code>
-                                {` · lines ${source.startLine}-${source.endLine} · ${source.reason} · ${source.citation}`}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+                  <details className="mt-4 border-t border-[var(--gray-05)] pt-4" open={contextPack.occurrence.kind === "current"}>
+                    <summary className="cursor-pointer text-xs font-semibold text-[var(--blue-11)]">
+                      Inspect provenance and bounds
+                    </summary>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <h4 className="text-xs font-medium text-[var(--gray-12)]">Snapshot provenance</h4>
+                        <DetailStringList
+                          values={contextPack.sourceSnapshot.provenance.included.map((item) =>
+                            `${item.path ?? item.source} · ${item.source} · ${item.reason}`
+                          )}
+                          empty="No included provenance recorded."
+                        />
                       </div>
-                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <h5 className="text-xs font-medium text-[var(--gray-12)]">Excluded context</h5>
-                          {pack.manifest.exclusions.length === 0 ? (
-                            <p className="mt-2 text-xs text-[var(--gray-09)]">No exclusions recorded.</p>
-                          ) : (
-                            <ul className="mt-2 space-y-1 text-xs text-[var(--gray-11)]">
-                              {pack.manifest.exclusions.map((exclusion, index) => (
-                                <li key={`${index}:${exclusion.identitySha256 ?? exclusion.reason}`}>
-                                  <code>{exclusion.path ?? exclusion.source}</code> · {exclusion.reason}
+                      <div>
+                        <h4 className="text-xs font-medium text-[var(--gray-12)]">Snapshot exclusions</h4>
+                        <DetailStringList
+                          values={contextPack.sourceSnapshot.provenance.excluded.map((item) =>
+                            `${item.path ?? item.source} · ${item.source} · ${item.reason}`
+                          )}
+                          empty="No snapshot exclusions recorded."
+                        />
+                      </div>
+                    </div>
+                    {contextPack.compiledPacks.map((pack) => {
+                      const requests = regenerationRequests.filter((request) => request.compiledPackId === pack.id);
+                      const requesting = requestingPackId === pack.id;
+                      return (
+                        <section
+                          id={`context-pack-${pack.id}`}
+                          key={pack.id}
+                          tabIndex={-1}
+                          aria-labelledby={`context-pack-title-${pack.id}`}
+                          className="mt-5 scroll-mt-6 border-t border-[var(--gray-05)] pt-4 target:bg-[var(--blue-02)]"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h4 id={`context-pack-title-${pack.id}`} className="text-xs font-semibold text-[var(--gray-12)]">Compiled Context Pack</h4>
+                              <p className="mt-1 break-all font-mono text-xs text-[var(--gray-09)]">{pack.id}</p>
+                            </div>
+                            <span className="rounded-sm border border-[var(--gray-06)] px-2 py-1 text-xs text-[var(--gray-10)]">
+                              {contextPack.occurrence.kind === "current" ? "Current exact head" : "Historical receipt"}
+                            </span>
+                          </div>
+                          <dl className="mt-4 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+                            <CorrectionDatum label="Pack SHA-256" mono>{pack.packSha256}</CorrectionDatum>
+                            <CorrectionDatum label="Created at">{formatChangeRecordDate(pack.createdAt)}</CorrectionDatum>
+                            <CorrectionDatum label="Compiler / policy" mono>{pack.compilerVersion} · {pack.policyVersion}</CorrectionDatum>
+                            <CorrectionDatum label="Rendered bound">
+                              {pack.representations.renderedByteCount.toLocaleString()} / {pack.budget.limitBytes.toLocaleString()} bytes · {pack.budget.counter}
+                            </CorrectionDatum>
+                            <CorrectionDatum label="JSON representation SHA-256" mono>{pack.representations.jsonSha256}</CorrectionDatum>
+                            <CorrectionDatum label="Markdown representation SHA-256" mono>{pack.representations.markdownSha256}</CorrectionDatum>
+                            <CorrectionDatum label="Source-custody identity" mono>{pack.sourceCustodyIdentitySha256}</CorrectionDatum>
+                            <CorrectionDatum label="Base / merge base" mono>{pack.binding.baseSha} · {pack.binding.mergeBaseSha}</CorrectionDatum>
+                            <CorrectionDatum label="Head / tree" mono>{pack.binding.headSha} · {pack.binding.headTreeSha}</CorrectionDatum>
+                            <CorrectionDatum label="Persisted source bodies">
+                              None — raw source, snippets, and rendered Pack bodies are not retained
+                            </CorrectionDatum>
+                            <CorrectionDatum label="Source / exclusion counts">
+                              {pack.manifest.sourceCount} selected · {pack.manifest.exclusionCount} excluded
+                            </CorrectionDatum>
+                          </dl>
+                          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <div>
+                              <h5 className="text-xs font-medium text-[var(--gray-12)]">Contract scope</h5>
+                              <DetailStringList
+                                values={pack.manifest.acceptanceCriterionIds.map((id) => `criterion:${id}`)}
+                                empty="No criteria recorded."
+                              />
+                              <DetailStringList
+                                values={pack.manifest.architectureBoundaries}
+                                empty="No architecture boundaries recorded."
+                              />
+                            </div>
+                            <div>
+                              <h5 className="text-xs font-medium text-[var(--gray-12)]">Tests and decisions</h5>
+                              <DetailStringList values={pack.manifest.tests} empty="No selected test citations recorded." />
+                              <DetailStringList values={pack.manifest.decisions} empty="No Pack decisions recorded." />
+                            </div>
+                          </div>
+                          <div className="mt-4">
+                            <h5 className="text-xs font-medium text-[var(--gray-12)]">Selected context</h5>
+                            <ul className="mt-2 space-y-2 text-xs text-[var(--gray-11)]">
+                              {pack.manifest.sources.map((source, index) => (
+                                <li key={`${source.rangeSha256}:${index}`} className="rounded bg-[var(--gray-02)] p-2">
+                                  <code>{source.kind === "base_index_background" ? source.slug : source.path}</code>
+                                  {` · lines ${source.startLine}-${source.endLine} · ${source.reason} · ${source.citation}`}
                                 </li>
                               ))}
                             </ul>
-                          )}
-                        </div>
-                        <div>
-                          <h5 className="text-xs font-medium text-[var(--gray-12)]">Exact-head source custody</h5>
-                          <p className="mt-2 text-xs text-[var(--gray-11)]">
-                            {pack.sourceCustody.changedFileCount} changed · {pack.sourceCustody.recordCount} records · {pack.sourceCustody.exclusionCount} exclusions · {pack.sourceCustody.directReadReceiptCount} direct reads · {pack.sourceCustody.selectedExactRangeCount} selected ranges
-                          </p>
-                          <DetailStringList
-                            values={pack.sourceCustody.changedManifest.map((file) => `${file.path} (${file.status})`)}
-                            empty="No changed-file metadata recorded."
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                          </div>
+                          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <div>
+                              <h5 className="text-xs font-medium text-[var(--gray-12)]">Excluded context</h5>
+                              <DetailStringList
+                                values={pack.manifest.exclusions.map((exclusion) =>
+                                  `${exclusion.path ?? exclusion.source} · ${exclusion.reason}`
+                                )}
+                                empty="No exclusions recorded."
+                              />
+                            </div>
+                            <div>
+                              <h5 className="text-xs font-medium text-[var(--gray-12)]">Exact-head custody</h5>
+                              <p className="mt-2 text-xs text-[var(--gray-11)]">
+                                {pack.sourceCustody.changedFileCount} changed · {pack.sourceCustody.recordCount} records · {pack.sourceCustody.exclusionCount} exclusions · {pack.sourceCustody.directReadReceiptCount} direct reads · {pack.sourceCustody.selectedExactRangeCount} selected ranges
+                              </p>
+                              <DetailStringList
+                                values={pack.sourceCustody.changedManifest.map((file) => `${file.path} (${file.status})`)}
+                                empty="No changed-file metadata recorded."
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-5 border-t border-[var(--gray-05)] pt-4">
+                            <h5 className="text-xs font-semibold text-[var(--gray-12)]">Request a new Context Pack</h5>
+                            <p className="mt-1 text-xs text-[var(--gray-09)]">
+                              Records a request for Jace. It does not start compilation, contact a builder, or change the PR.
+                            </p>
+                            {requests.map((request) => (
+                              <p key={request.eventId} className="mt-2 text-xs text-[var(--gray-11)]">
+                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)} · request-only custody
+                              </p>
+                            ))}
+                            {contextPack.occurrence.kind !== "current" ? (
+                              <p className="mt-2 text-xs text-[var(--gray-09)]">Historical Packs cannot be regenerated against an old head.</p>
+                            ) : canRequestRegeneration && onRequestRegeneration ? (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  disabled={requesting || requests.some((request) => request.reason === "stale")}
+                                  onClick={() => onRequestRegeneration(pack.id, "stale")}
+                                  className="rounded border border-[var(--gray-07)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-50"
+                                >
+                                  {requesting ? "Recording…" : "Report stale"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={requesting || requests.some((request) => request.reason === "inadequate")}
+                                  onClick={() => onRequestRegeneration(pack.id, "inadequate")}
+                                  className="rounded border border-[var(--gray-07)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-50"
+                                >
+                                  {requesting ? "Recording…" : "Report inadequate"}
+                                </button>
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-xs text-[var(--gray-09)]">A workspace owner or admin can record this request.</p>
+                            )}
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </details>
                 </div>
               ))}
             </div>
           )}
+          {regenerationRequestError ? (
+            <p className="mt-3 text-xs text-[var(--red-11)]">{regenerationRequestError}</p>
+          ) : null}
         </article>
 
         <article className="border-t border-[var(--gray-05)] pt-5">
@@ -4802,6 +5016,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [effortMinutes, setEffortMinutes] = useState("");
   const [approvingObservationEventId, setApprovingObservationEventId] = useState<string | null>(null);
   const [dependencyApprovalError, setDependencyApprovalError] = useState<string | null>(null);
+  const [requestingContextPackId, setRequestingContextPackId] = useState<string | null>(null);
+  const [contextPackRequestError, setContextPackRequestError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -4831,6 +5047,25 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     load();
     return () => controller.abort();
   }, [workspaceId, recordId, reloadVersion]);
+
+  useEffect(() => {
+    if (!data) return;
+    const focusFragment = () => {
+      const target = resolveContextPackFragmentTarget(
+        window.location.hash,
+        (id) => document.getElementById(id),
+      );
+      if (!target) return;
+      target.scrollIntoView({ block: "start" });
+      target.focus({ preventScroll: true });
+    };
+    const frame = window.requestAnimationFrame(focusFragment);
+    window.addEventListener("hashchange", focusFragment);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("hashchange", focusFragment);
+    };
+  }, [data]);
 
   async function recordFinalDecision(
     decision: AcceptancePrDecision,
@@ -4950,6 +5185,39 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
+  async function requestContextPackRegeneration(
+    compiledPackId: string,
+    reason: "stale" | "inadequate",
+  ) {
+    if (!data || !data.canRequestContextPackRegeneration) {
+      setContextPackRequestError("This Context Pack request is no longer authorized");
+      return;
+    }
+    setRequestingContextPackId(compiledPackId);
+    setContextPackRequestError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(contextPackRegenerationPatchBody(compiledPackId, reason)),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        kind?: string;
+        error?: string;
+      };
+      if (!response.ok || (body.kind !== "recorded" && body.kind !== "replayed")) {
+        throw new Error(body.error ?? `HTTP ${response.status}`);
+      }
+      setReloadVersion((current) => current + 1);
+    } catch (caught) {
+      setContextPackRequestError(
+        caught instanceof Error ? caught.message : "Failed to record Context Pack request",
+      );
+    } finally {
+      setRequestingContextPackId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
@@ -4987,6 +5255,11 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         criterionOutcomes={data.criterionOutcomes}
         workspaceId={workspaceId}
         recordId={recordId}
+        regenerationRequests={data.contextPackRegenerationRequests}
+        canRequestRegeneration={data.canRequestContextPackRegeneration}
+        requestingPackId={requestingContextPackId}
+        regenerationRequestError={contextPackRequestError}
+        onRequestRegeneration={requestContextPackRegeneration}
       />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel

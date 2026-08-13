@@ -5,6 +5,8 @@ vi.mock("@agentrail/auth", () => ({
   auth: vi.fn(),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
+  AcceptanceContextPackRegenerationRequestConflictError:
+    class AcceptanceContextPackRegenerationRequestConflictError extends Error {},
   AcceptanceDependencyExternalBuilderPackConflictError:
     class AcceptanceDependencyExternalBuilderPackConflictError extends Error {},
   AcceptancePrDecisionConflictError: class AcceptancePrDecisionConflictError extends Error {},
@@ -21,10 +23,16 @@ vi.mock("@agentrail/db-postgres", () => ({
   readDependencyDraftProposalDetail: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
   recordAcceptancePrReviewEffort: vi.fn(),
+  recordAcceptanceContextPackRegenerationRequest: vi.fn(),
+  changeRecordEventId: vi.fn(({ recordId, eventKey }: { recordId: string; eventKey: string }) =>
+    eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:stale:00000000-0000-4000-8000-000000000777"
+      ? "00000000-0000-4000-8000-000000000048"
+      : recordId),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
+  AcceptanceContextPackRegenerationRequestConflictError,
   AcceptanceDependencyExternalBuilderPackConflictError,
   AcceptancePrDecisionConflictError,
   AcceptancePrReviewEffortConflictError,
@@ -40,6 +48,7 @@ import {
   readDependencyDraftProposalDetail,
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
+  recordAcceptanceContextPackRegenerationRequest,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
 
@@ -66,6 +75,7 @@ const DEPENDENCY_APPROVAL_EVENT_ID = "00000000-0000-4000-8000-000000000052";
 const EXTERNAL_BUILDER_PACK_EVENT_ID = "00000000-0000-4000-8000-000000000051";
 const EXTERNAL_BUILDER_PACK_ID = "00000000-0000-4000-8000-000000000050";
 const COMPILED_PACK_ID = "00000000-0000-4000-8000-000000000049";
+const REGENERATION_REQUEST_EVENT_ID = "00000000-0000-4000-8000-000000000048";
 const CANDIDATE_FINGERPRINT = `sha256:${"9".repeat(64)}`;
 const DEPENDENCY_OBSERVED_AT = new Date("2026-08-03T12:03:00.000Z");
 const DEPENDENCY_APPROVED_AT = new Date("2026-08-03T12:08:00.000Z");
@@ -585,6 +595,29 @@ beforeEach(() => {
     approval: dependencyApproval,
     externalBuilderPack,
   } as never);
+  vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValue({
+    kind: "recorded",
+    request: {
+      eventId: REGENERATION_REQUEST_EVENT_ID,
+      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`,
+      workspaceId: WS,
+      recordId: RECORD,
+      sourceSnapshotId: "00000000-0000-4000-8000-000000000047",
+      compiledPackId: COMPILED_PACK_ID,
+      repo: "ada/widgets",
+      prNumber: 98,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      authorityGeneration: 1,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      reason: "stale",
+      requestedBy: `user:${USER}`,
+      requestedRole: "owner",
+      requestedAt: EFFORT_AT,
+      authority: "request_only",
+      status: "request_recorded",
+    },
+  } as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -724,9 +757,11 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         kind: "not_ready",
         reason: "criterion_outcome_bundle_not_recorded",
       },
+      contextPackRegenerationRequests: [],
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
+      canRequestContextPackRegeneration: false,
       canCreateGatedGithubIssue: false,
     });
     expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
@@ -958,7 +993,107 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canRecordFinalDecision).toBe(true);
     expect(body.canRecordReviewEffort).toBe(true);
     expect(body.canApproveDependencyObservation).toBe(true);
+    expect(body.canRequestContextPackRegeneration).toBe(true);
     expect(body.canCreateGatedGithubIssue).toBe(false);
+  });
+
+  it("projects only the current actor's exact current request-only Context Pack receipt", async () => {
+    const sourceSnapshotId = "00000000-0000-4000-8000-000000000047";
+    const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`;
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      events: [...timeline.events, {
+        id: REGENERATION_REQUEST_EVENT_ID,
+        recordId: RECORD,
+        eventKey,
+        stage: "human_context_request",
+        at: EFFORT_AT,
+        actor: `user:${USER}`,
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          version: 1,
+          workspaceId: WS,
+          recordId: RECORD,
+          sourceSnapshotId,
+          compiledPackId: COMPILED_PACK_ID,
+          repo: "ada/widgets",
+          prNumber: 98,
+          headSha: HEAD,
+          headCycleId: CYCLE,
+          authorityGeneration: 1,
+          acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+          reason: "stale",
+          requestedBy: `user:${USER}`,
+          requestedRole: "owner",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+        createdAt: EFFORT_AT,
+      }, {
+        id: RECORD,
+        recordId: RECORD,
+        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:00000000-0000-4000-8000-000000000778`,
+        stage: "human_context_request",
+        at: EFFORT_AT,
+        actor: "user:00000000-0000-4000-8000-000000000778",
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          version: 1,
+          workspaceId: WS,
+          recordId: RECORD,
+          sourceSnapshotId,
+          compiledPackId: COMPILED_PACK_ID,
+          repo: "ada/widgets",
+          prNumber: 98,
+          headSha: HEAD,
+          headCycleId: CYCLE,
+          authorityGeneration: 1,
+          acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+          reason: "inadequate",
+          requestedBy: "user:00000000-0000-4000-8000-000000000778",
+          requestedRole: "admin",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+        createdAt: EFFORT_AT,
+      }],
+    } as never);
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue({
+      ...currentAcceptanceDetail,
+      detail: {
+        ...currentAcceptanceDetail.detail,
+        contextPacks: [{
+          occurrence: {
+            kind: "current",
+            repo: "ada/widgets",
+            prNumber: 98,
+            headSha: HEAD,
+            headCycleId: CYCLE,
+          },
+          sourceSnapshot: { id: sourceSnapshotId },
+          compiledPacks: [{ id: COMPILED_PACK_ID }],
+        }],
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.contextPackRegenerationRequests).toEqual([{
+      eventId: REGENERATION_REQUEST_EVENT_ID,
+      eventKey,
+      sourceSnapshotId,
+      compiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      reason: "stale",
+      requestedBy: `user:${USER}`,
+      requestedRole: "owner",
+      requestedAt: EFFORT_AT.toISOString(),
+      authority: "request_only",
+      status: "request_recorded",
+    }]);
   });
 
   it("returns only the bounded draft dependency projection", async () => {
@@ -1454,6 +1589,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
     expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
+    expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: "not-a-uuid" } } as never);
     const invalidActor = await PATCH(patchReq({ nope: true }), { params: params() });
@@ -1462,6 +1598,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
     expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
+    expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
@@ -1470,6 +1607,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
     expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
     expect(approveAcceptanceDependencyObservationAndMintExternalBuilderPack).not.toHaveBeenCalled();
+    expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
   });
 
   it("rejects non-JSON, declared oversize, unknown decisions, and extra authority fields", async () => {
@@ -1496,6 +1634,82 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       expect(response.status).toBe(400);
     }
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
+  });
+
+  it("records only a request against a server-revalidated Pack binding", async () => {
+    const response = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+    }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceContextPackRegenerationRequest).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+      requestedBy: `user:${USER}`,
+    });
+    const body = await response.json();
+    expect(body.kind).toBe("recorded");
+    expect(body.request.authority).toBe("request_only");
+    expect(body.request.status).toBe("request_recorded");
+  });
+
+  it("rejects regeneration bodies that try to supply head or execution authority", async () => {
+    for (const body of [
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "missing" },
+      { action: "request_context_pack_regeneration", compiledPackId: "not-a-uuid", reason: "stale" },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", headSha: HEAD },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", dispatch: true },
+    ]) {
+      const response = await PATCH(patchReq(body), { params: params() });
+      expect(response.status).toBe(400);
+    }
+    expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ kind: "not_found" }, 404],
+    [{ kind: "not_authorized" }, 403],
+    [{ kind: "not_current" }, 409],
+  ] as const)("maps the closed Context Pack request result %# without inventing regeneration", async (result, status) => {
+    vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValue(result as never);
+    const response = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "inadequate",
+    }), { params: params() });
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(result);
+  });
+
+  it("maps immutable Context Pack request conflicts without exposing storage failures", async () => {
+    vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockRejectedValueOnce(
+      new AcceptanceContextPackRegenerationRequestConflictError(),
+    );
+    const conflict = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+    }), { params: params() });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "Context Pack regeneration request conflicts with immutable custody",
+    });
+
+    vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockRejectedValueOnce(
+      new Error("postgres://secret@db/internal"),
+    );
+    const unavailable = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+    }), { params: params() });
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });
   });
 
   it("derives workspace, Record, actor, and current proof while normalizing bounded rationale", async () => {

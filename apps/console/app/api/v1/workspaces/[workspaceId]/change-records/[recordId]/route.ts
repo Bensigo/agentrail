@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
+  AcceptanceContextPackRegenerationRequestConflictError,
   AcceptanceDependencyExternalBuilderPackConflictError,
   AcceptancePrDecisionConflictError,
   AcceptancePrReviewEffortConflictError,
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
+  changeRecordEventId,
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
   readAcceptanceRecordDetail,
@@ -16,6 +18,7 @@ import {
   readDependencyDraftProposalDetail,
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
+  recordAcceptanceContextPackRegenerationRequest,
 } from "@agentrail/db-postgres";
 import { containsSecretShapedValue } from "../../../../../../../lib/secret-scan";
 
@@ -46,9 +49,16 @@ type ParsedDependencyObservationApprovalBody = {
   observationEventId: string;
 };
 
+type ParsedContextPackRegenerationRequestBody = {
+  action: "request_context_pack_regeneration";
+  compiledPackId: string;
+  reason: "stale" | "inadequate";
+};
+
 type ParsedPatchBody = ParsedDecisionBody
   | ParsedReviewEffortBody
-  | ParsedDependencyObservationApprovalBody;
+  | ParsedDependencyObservationApprovalBody
+  | ParsedContextPackRegenerationRequestBody;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
@@ -243,6 +253,23 @@ function parseDependencyObservationApprovalBody(
   };
 }
 
+function parseContextPackRegenerationRequestBody(
+  value: unknown,
+): ParsedContextPackRegenerationRequestBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).length !== 3
+    || !Object.keys(input).every((key) => key === "action" || key === "compiledPackId" || key === "reason")
+    || input.action !== "request_context_pack_regeneration"
+    || typeof input.compiledPackId !== "string" || !UUID.test(input.compiledPackId)
+    || (input.reason !== "stale" && input.reason !== "inadequate")) return null;
+  return {
+    action: "request_context_pack_regeneration",
+    compiledPackId: input.compiledPackId,
+    reason: input.reason,
+  };
+}
+
 function parsePatchBody(value: unknown): ParsedPatchBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const action = (value as Record<string, unknown>).action;
@@ -252,7 +279,78 @@ function parsePatchBody(value: unknown): ParsedPatchBody | null {
       ? parseReviewEffortBody(value)
       : action === "approve_dependency_observation"
         ? parseDependencyObservationApprovalBody(value)
+        : action === "request_context_pack_regeneration"
+          ? parseContextPackRegenerationRequestBody(value)
         : null;
+}
+
+function contextPackRegenerationRequests(
+  timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
+  detailResult: Awaited<ReturnType<typeof readAcceptanceRecordDetail>>,
+  requestedBy: string,
+): Array<Record<string, unknown>> {
+  if (detailResult.kind !== "record" || detailResult.detail.pullRequest.kind !== "attached") return [];
+  const current = detailResult.detail.pullRequest.current;
+  if (!current) return [];
+  const packs = new Map(detailResult.detail.contextPacks
+    .filter((contextPack) => contextPack.occurrence.kind === "current"
+      && contextPack.occurrence.headCycleId === current.headCycleId)
+    .flatMap((contextPack) => contextPack.compiledPacks.map((pack) => [pack.id, {
+      pack,
+      snapshotId: contextPack.sourceSnapshot.id,
+    }] as const)));
+  return timeline.events.flatMap((event) => {
+    const payload = event.payloadRef;
+    if (!object(payload) || payload.kind !== "acceptance_context_pack_regeneration_request"
+      || event.actor !== requestedBy) return [];
+    const expectedKeys = [
+      "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
+      "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
+      "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
+    ];
+    if (Object.keys(payload).length !== expectedKeys.length
+      || Object.keys(payload).some((key) => !expectedKeys.includes(key))
+      || payload.version !== 1 || typeof payload.compiledPackId !== "string"
+      || !UUID.test(payload.compiledPackId) || typeof payload.sourceSnapshotId !== "string"
+      || !UUID.test(payload.sourceSnapshotId)
+      || (payload.reason !== "stale" && payload.reason !== "inadequate")
+      || typeof payload.requestedBy !== "string"
+      || !payload.requestedBy.startsWith("user:")
+      || !UUID.test(payload.requestedBy.slice("user:".length))
+      || (payload.requestedRole !== "owner" && payload.requestedRole !== "admin")
+      || payload.authority !== "request_only" || payload.status !== "request_recorded") return [];
+    const found = packs.get(payload.compiledPackId);
+    const requestedByUserId = payload.requestedBy.slice("user:".length).toLowerCase();
+    const eventKey = `context-pack-regeneration:${payload.compiledPackId}:${payload.reason}:${requestedByUserId}`;
+    if (!found || found.snapshotId !== payload.sourceSnapshotId
+      || payload.workspaceId !== timeline.record.workspaceId || payload.recordId !== timeline.record.id
+      || payload.repo !== timeline.record.repo || payload.prNumber !== timeline.record.prNumber
+      || payload.headSha !== current.headSha || payload.headCycleId !== current.headCycleId
+      || payload.authorityGeneration !== current.authorityGeneration
+      || !object(payload.acceptanceContract)
+      || Object.keys(payload.acceptanceContract).length !== 3
+      || payload.acceptanceContract.id !== detailResult.detail.contract.identity.id
+      || payload.acceptanceContract.version !== detailResult.detail.contract.identity.version
+      || payload.acceptanceContract.sha256 !== detailResult.detail.contract.identity.sha256
+      || event.recordId !== timeline.record.id || event.eventKey !== eventKey
+      || event.id !== changeRecordEventId({ recordId: timeline.record.id, eventKey })
+      || event.stage !== "human_context_request" || event.actor !== payload.requestedBy) return [];
+    return [{
+      eventId: event.id,
+      eventKey: event.eventKey,
+      sourceSnapshotId: payload.sourceSnapshotId,
+      compiledPackId: payload.compiledPackId,
+      headSha: payload.headSha,
+      headCycleId: payload.headCycleId,
+      acceptanceContract: payload.acceptanceContract,
+      reason: payload.reason,
+      requestedBy: payload.requestedBy,
+      requestedRole: payload.requestedRole,
+      requestedAt: event.at.toISOString(),
+      authority: "request_only",
+      status: "request_recorded",
+    }];
+  }).slice(-128);
 }
 
 function serializeFinalDecision<T extends {
@@ -510,6 +608,11 @@ export async function GET(
         ? { kind: "not_ready" as const, reason: "invalid_criterion_outcome_custody" as const }
         : serializeDates(resolvedCriterionOutcomes);
     const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
+    const regenerationRequests = contextPackRegenerationRequests(
+      timeline,
+      resolvedAcceptanceDetail,
+      `user:${session.user.id.toLowerCase()}`,
+    );
 
     return json(redactMemberStorageCoordinates({
       record: {
@@ -544,9 +647,11 @@ export async function GET(
       acceptanceDetail,
       dependencyDraftProposal,
       criterionOutcomes,
+      contextPackRegenerationRequests: regenerationRequests,
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,
+      canRequestContextPackRegeneration: canRecordHumanEvidence,
       canCreateGatedGithubIssue: false,
     }) as Record<string, unknown>);
   } catch (err) {
@@ -583,6 +688,21 @@ export async function PATCH(
   if (!body) return json({ error: "Invalid Change Record action" }, 400);
 
   try {
+    if (body.action === "request_context_pack_regeneration") {
+      const result = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId,
+        recordId,
+        compiledPackId: body.compiledPackId,
+        reason: body.reason,
+        requestedBy: `user:${session.user.id}`,
+      });
+      if (result.kind === "recorded" || result.kind === "replayed") {
+        return json(serializeDates(result) as Record<string, unknown>, result.kind === "recorded" ? 201 : 200);
+      }
+      if (result.kind === "not_found") return json(result, 404);
+      if (result.kind === "not_authorized") return json(result, 403);
+      return json(result, 409);
+    }
     if (body.action === "approve_dependency_observation") {
       const result = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
         workspaceId,
@@ -631,6 +751,9 @@ export async function PATCH(
     if (result.kind === "not_authorized") return json(result, 403);
     return json(result, 409);
   } catch (error) {
+    if (error instanceof AcceptanceContextPackRegenerationRequestConflictError) {
+      return json({ error: "Context Pack regeneration request conflicts with immutable custody" }, 409);
+    }
     if (error instanceof AcceptanceDependencyExternalBuilderPackConflictError) {
       return json({ error: "Dependency observation approval conflicts with existing Pack custody" }, 409);
     }

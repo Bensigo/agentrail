@@ -83,7 +83,9 @@ describe("ContextPacksPage", () => {
     const rendered = await render();
     const links = findByType(rendered, "a");
     expect(links).toHaveLength(1);
-    expect(links[0]?.props?.href).toBe(`/dashboard/${workspaceId}/changes/${recordId}`);
+    expect(links[0]?.props?.href).toBe(
+      `/dashboard/${workspaceId}/changes/${recordId}#context-pack-00000000-0000-4000-8000-000000000011`,
+    );
   });
 
   it("does not read Packs without workspace membership", async () => {

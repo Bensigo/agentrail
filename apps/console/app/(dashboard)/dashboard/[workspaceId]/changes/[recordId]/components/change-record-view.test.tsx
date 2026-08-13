@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ChangeRecordAnchors,
   ChangeRecordBackLink,
@@ -23,6 +23,7 @@ import {
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
+  resolveContextPackFragmentTarget,
   criterionArtifactApiPath,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceRecordDetailEnvelope,
@@ -33,6 +34,7 @@ import {
   type AcceptancePrReviewMetricsEnvelope,
   type ChangeRecord,
   type ChangeRecordEvent,
+  type ContextPackRegenerationRequest,
 } from "./change-record-view";
 
 type ElementLike = {
@@ -966,6 +968,10 @@ const currentAcceptanceDetail: AcceptanceRecordDetailEnvelope = {
           markdownSha256: "0".repeat(64),
           renderedByteCount: 2048,
         },
+        budget: {
+          counter: "utf8_byte_upper_bound_v1",
+          limitBytes: 65_536,
+        },
         binding: {
           sourceSnapshotId: DETAIL_SNAPSHOT_ID,
           workspaceId: record.workspaceId,
@@ -1367,6 +1373,20 @@ const criterionOutcomesNotReady: AcceptanceCriterionOutcomesEnvelope = {
 };
 
 describe("Change Record detail view", () => {
+  it("resolves only a specific Context Pack fragment after client data renders", () => {
+    const target = { focus: vi.fn(), scrollIntoView: vi.fn() };
+    const getElementById = vi.fn((id: string) =>
+      id === `context-pack-${DETAIL_PACK_ID}` ? target : null
+    );
+
+    expect(resolveContextPackFragmentTarget(
+      `#context-pack-${DETAIL_PACK_ID}`,
+      getElementById,
+    )).toBe(target);
+    expect(getElementById).toHaveBeenCalledWith(`context-pack-${DETAIL_PACK_ID}`);
+    expect(resolveContextPackFragmentTarget("#context-pack-not-a-uuid", getElementById)).toBeNull();
+    expect(resolveContextPackFragmentTarget("#acceptance-record", getElementById)).toBeNull();
+  });
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
 
@@ -2607,10 +2627,14 @@ describe("Change Record detail view", () => {
     expect(content).toContain(detailHistoricalOccurrence.headCycleId);
     expect(content).toContain("Not durably recorded for this historical cycle");
     expect(content).toContain(DETAIL_CURRENT_HEAD);
-    expect(content).toContain("Compiled Pack receipt");
+    expect(content).toContain("Compiled Context Pack");
     expect(content).toContain(`apps/account/page.tsx@${DETAIL_BLOB_SHA}#L10-L18`);
     expect(content).toContain("apps/account/secret.ts");
-    expect(content).toContain("raw source and snippets are not persisted");
+    expect(content).toContain("raw source, snippets, and rendered Pack bodies are not retained");
+    expect(content).toContain("2,048 / 65,536 bytes");
+    expect(content).toContain("Account page stays in the authenticated Console boundary.");
+    expect(content).toContain("Run the protected-page UI criterion.");
+    expect(content).toContain("Inspect provenance and bounds");
     expect(content).toContain("Correction context(failed)");
     expect(content).toContain("criterion result not durably rederivable");
     expect(content).toContain("Aggregate review verdicts are not treated as criterion proof");
@@ -2623,6 +2647,43 @@ describe("Change Record detail view", () => {
     expect(content).not.toContain("review-evidence/");
     expect(content).not.toContain("Artifact key");
     expect(content).not.toMatch(/(?:Create issue|Merge PR|Delivered|Acknowledged|Repaired)/u);
+  });
+
+  it("offers owner/admin request-only controls for the current Pack and renders immutable receipts", () => {
+    const onRequest = vi.fn();
+    const request: ContextPackRegenerationRequest = {
+      eventId: "00000000-0000-4000-8000-000000000045",
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:stale:00000000-0000-4000-8000-000000000002`,
+      sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+      compiledPackId: DETAIL_PACK_ID,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      acceptanceContract: detailContract.identity,
+      reason: "stale",
+      requestedBy: "user:00000000-0000-4000-8000-000000000002",
+      requestedRole: "owner",
+      requestedAt: "2026-08-11T09:05:00.000Z",
+      authority: "request_only",
+      status: "request_recorded",
+    };
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      regenerationRequests: [request],
+      canRequestRegeneration: true,
+      onRequestRegeneration: onRequest,
+    });
+    const buttons = elementsOfType(rendered, "button");
+    expect(buttonLabels(rendered)).toEqual(["Report stale", "Report inadequate"]);
+    expect(buttons[0]?.props?.disabled).toBe(true);
+    expect(buttons[1]?.props?.disabled).toBe(false);
+    expect(textContent(rendered)).toContain("Stale request recorded");
+    expect(textContent(rendered)).toContain("request-only custody");
+    expect(textContent(rendered)).toContain("does not start compilation, contact a builder, or change the PR");
+    (buttons[1]?.props?.onClick as (() => void))();
+    expect(onRequest).toHaveBeenCalledWith(DETAIL_PACK_ID, "inadequate");
   });
 
   it("strictly validates current gated-issue binding and terminal GitHub receipt custody", () => {
@@ -2959,9 +3020,11 @@ describe("Change Record detail view", () => {
       acceptanceDetail: currentAcceptanceDetail,
       dependencyDraftProposal: draftDependencyProposal,
       criterionOutcomes: criterionOutcomesNotReady,
+      contextPackRegenerationRequests: [],
       canRecordFinalDecision: true,
       canRecordReviewEffort: true,
       canApproveDependencyObservation: true,
+      canRequestContextPackRegeneration: true,
       canCreateGatedGithubIssue: true,
     };
     expect(isChangeRecordResponse(validResponse)).toBe(true);

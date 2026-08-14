@@ -645,6 +645,7 @@ export const acceptanceDependencyObservationClaims = pgTable(
     candidateFingerprint: text("candidate_fingerprint").notNull(),
     candidate: jsonb("candidate").$type<Record<string, unknown>>().notNull(),
     profile: jsonb("profile").$type<Record<string, unknown>>().notNull(),
+    managerCustody: jsonb("manager_custody").$type<Record<string, unknown>>().notNull().default({}),
     claimedBy: text("claimed_by").notNull(),
     claimTokenSha256: text("claim_token_sha256").notNull(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
@@ -672,6 +673,7 @@ export const acceptanceDependencyObservationClaims = pgTable(
         AND ${t.claimTokenSha256} ~ '^[a-f0-9]{64}$'
         AND jsonb_typeof(${t.candidate}) = 'object'
         AND jsonb_typeof(${t.profile}) = 'object'
+        AND jsonb_typeof(${t.managerCustody}) = 'object'
         AND ${t.leaseExpiresAt} > ${t.claimedAt}
         AND ((${t.consumedAt} IS NULL) = (${t.observationEventId} IS NULL))`,
     ),

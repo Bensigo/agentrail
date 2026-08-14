@@ -768,6 +768,60 @@ function composerDependencyEnvelope(
   }
   return envelope;
 }
+
+function goModulesDependencyEnvelope(
+  withPack = false,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "go",
+    manager: "go-modules",
+    profile: "go_root_public_proxy_lock_v1",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    package: "gopkg.in/yaml.v3",
+    dependencyKind: "dependencies",
+    specifier: "v3.0.0",
+    currentVersion: "v3.0.0",
+    targetVersion: "v3.0.1",
+  };
+  item.observation.runtime = {
+    ...item.observation.runtime,
+    identity,
+    version: "1.23.4",
+  };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "go",
+    version: "1.23.4",
+    profile: "go_root_public_proxy_lock_v1",
+    updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "go.mod" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "go.sum" };
+  item.observation.security = {
+    ...item.observation.security,
+    identity,
+    reference: "osv:Go:gopkg.in/yaml.v3@v3.0.1",
+  };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -2709,6 +2763,39 @@ describe("Change Record detail view", () => {
     mismatchedPack.observations[0]!.externalBuilderPack!.packageManager.updateArgv
       .push("--prefer-source");
     expect(isDependencyObservationsEnvelope(mismatchedPack)).toBe(false);
+  });
+
+  it("renders the exact Go Modules receipt and keeps the observed item approval-eligible", () => {
+    const observed = goModulesDependencyEnvelope();
+    expect(isDependencyObservationsEnvelope(observed)).toBe(true);
+    expect(isDependencyObservationsEnvelope(goModulesDependencyEnvelope(true))).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: observed,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("gopkg.in/yaml.v3 v3.0.0 → v3.0.1");
+    expect(content).toContain("safe · go / go-modules · 1.23.4");
+    expect(content).toContain("safe · go 1.23.4 · go_root_public_proxy_lock_v1");
+    expect(content).toContain("go.mod");
+    expect(content).toContain("go.sum");
+    expect(buttonLabels(rendered)).toEqual(["Approve & mint external-builder Pack"]);
+
+    const managerAliasDrift = goModulesDependencyEnvelope();
+    managerAliasDrift.observations[0]!.observation.packageManager.name = "go-modules";
+    expect(isDependencyObservationsEnvelope(managerAliasDrift)).toBe(false);
+
+    const crossMajor = goModulesDependencyEnvelope();
+    crossMajor.observations[0]!.observation.candidate.targetVersion = "v4.0.0";
+    crossMajor.observations[0]!.observation.packageManager.updateArgv[2] =
+      "gopkg.in/yaml.v3@v4.0.0";
+    crossMajor.observations[0]!.observation.security.reference =
+      "osv:Go:gopkg.in/yaml.v3@v4.0.0";
+    expect(isDependencyObservationsEnvelope(crossMajor)).toBe(false);
   });
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {
     const historical = npmDependencyEnvelope();

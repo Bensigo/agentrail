@@ -38,7 +38,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await recordAcceptanceDependencyObservation(parsed.input, { claimToken });
+    const result = await recordAcceptanceDependencyObservation(parsed.input, {
+      claimToken,
+      ...(parsed.kind === "current" && parsed.sumdbCustody
+        ? { goSumdbCustody: parsed.sumdbCustody }
+        : {}),
+    });
     switch (result.kind) {
       case "recorded":
       case "replayed":

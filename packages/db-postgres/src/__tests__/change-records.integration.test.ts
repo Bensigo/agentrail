@@ -33,6 +33,13 @@ import {
   changeRecords,
 } from "../schema/change_records.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import {
+  dependencyWatchGoSumdbSignedTreeNotes,
+  dependencyWatchObservations,
+  dependencyWatches,
+  type GoDependencySourceInventoryEntry,
+  type GoDependencySourceInventoryReceipt,
+} from "../schema/dependency_watches.js";
 import { workspaceMemberships } from "../schema/workspace_memberships.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
@@ -138,8 +145,13 @@ import {
 } from "../queries/acceptance_dependency_observation_work.js";
 import {
   dependencyObservationProposalCustodyIdentity,
+  goModulesObservationCandidateFingerprint,
   pnpmObservationCandidateFingerprint,
 } from "../queries/dependency_observation_acceptance_records.js";
+import {
+  deleteGoSumdbSignedTreeNoteCustodyForWatchTeardown,
+  retainGoSumdbSignedTreeNote,
+} from "../queries/go_sumdb_note_custody.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
 import {
@@ -1144,6 +1156,154 @@ function pnpmProposalFixtureCustody(headSha: string) {
   return { source, contract, criterionText, manifestContent, lockfileContent };
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean"
+    || typeof value === "number") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+function goProposalFixtureCustody(input: {
+  headSha: string;
+  repositoryId: string;
+  watchId: string;
+  observationId: string;
+}) {
+  const manifestContent = "module acme.example/widgets\n\ngo 1.23.0\n\nrequire gopkg.in/yaml.v3 v3.0.0\n";
+  const lockfileContent = [
+    "gopkg.in/yaml.v3 v3.0.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "gopkg.in/yaml.v3 v3.0.0/go.mod h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+    "",
+  ].join("\n");
+  const candidateBase = {
+    package: "gopkg.in/yaml.v3",
+    ecosystem: "go" as const,
+    package_manager: "go-modules" as const,
+    package_manager_version: null,
+    dependency_kind: "dependencies",
+    specifier: "v3.0.0",
+    current_version: "v3.0.0",
+    target_version: "v3.0.1",
+    manifest_path: "go.mod",
+    lockfile_path: "go.sum",
+    baseline_sha: input.headSha,
+    verification_commands: ["go mod download", "go test ./..."] as [string, string],
+    manager_commands: {
+      version: "go version",
+      install: "go mod download",
+      update: "go get gopkg.in/yaml.v3@v3.0.1",
+    },
+  };
+  const candidate = {
+    ...candidateBase,
+    fingerprint: goModulesObservationCandidateFingerprint(candidateBase),
+  };
+  const profile = {
+    ecosystem: "go", manager: "go-modules", profile: "go_root_public_proxy_lock_v1",
+    capability: "proposal_observation_only",
+  };
+  const selectedFileHashes = {
+    "go.mod": createHash("sha256").update(manifestContent, "utf8").digest("hex"),
+    "go.sum": createHash("sha256").update(lockfileContent, "utf8").digest("hex"),
+  };
+  const gitBlob = (content: string) => {
+    const bytes = Buffer.from(content, "utf8");
+    return createHash("sha1").update(`blob ${bytes.length}\0`, "utf8").update(bytes).digest("hex");
+  };
+  const entries: GoDependencySourceInventoryEntry[] = [
+    { path: "go.mod", mode: "100644", type: "blob", objectSha: gitBlob(manifestContent) },
+    { path: "go.sum", mode: "100644", type: "blob", objectSha: gitBlob(lockfileContent) },
+  ];
+  const sha256 = (value: unknown) => createHash("sha256")
+    .update(canonicalJson(value), "utf8").digest("hex");
+  const receiptCore: Omit<GoDependencySourceInventoryReceipt, "identitySha256"> = {
+    kind: "github_exact_tree_dependency_source_inventory",
+    schemaVersion: 1,
+    identity: {
+      ecosystem: "go", manager: "go-modules",
+      profile: "go_github_exact_tree_source_inventory_v1",
+    },
+    authority: {
+      provider: "github", method: "github_app_installation_api",
+      apiOrigin: "https://api.github.com", repository: "acme/widgets",
+      requestedRef: input.headSha, commitSha: input.headSha, rootTreeSha: "6".repeat(40),
+    },
+    inventory: {
+      recursive: true, truncated: false, entryCount: entries.length,
+      entries, entriesSha256: sha256(entries),
+    },
+    requiredFiles: [
+      { path: "go.mod", mode: "100644", blobSha: entries[0]!.objectSha, byteCount: Buffer.byteLength(manifestContent), contentSha256: selectedFileHashes["go.mod"] },
+      { path: "go.sum", mode: "100644", blobSha: entries[1]!.objectSha, byteCount: Buffer.byteLength(lockfileContent), contentSha256: selectedFileHashes["go.sum"] },
+    ],
+    policy: { name: "go_root_source_inventory_v1", result: "admitted" },
+  };
+  const sourceInventoryReceiptSha256 = sha256(receiptCore);
+  const receipt: GoDependencySourceInventoryReceipt = {
+    ...receiptCore,
+    identitySha256: sourceInventoryReceiptSha256,
+  };
+  const observationKey = `go-observation:${randomUUID()}:source:${sourceInventoryReceiptSha256}`;
+  const sourceCore = {
+    repositoryId: input.repositoryId,
+    repositoryName: "acme/widgets",
+    watchId: input.watchId,
+    observationId: input.observationId,
+    observationKey,
+    candidateFingerprint: candidate.fingerprint,
+    candidate,
+    baselineSha: input.headSha,
+    manifestPath: "go.mod" as const,
+    lockfilePath: "go.sum" as const,
+    selectedFileHashes,
+    sourceInventoryReceiptSha256,
+    profile,
+    repositorySourceVerification: "watch_observation_only" as const,
+    independentSourceProof: "not_proven" as const,
+  };
+  const proposalCustodyIdentity = dependencyObservationProposalCustodyIdentity(sourceCore);
+  if (!proposalCustodyIdentity) throw new Error("expected Go proposal custody identity");
+  const source = {
+    kind: "dependency_watch_observation_proposal", version: 1,
+    ...sourceCore, proposalCustodyIdentity,
+  };
+  const unresolved = [
+    "release", "usage", "runtime", "target-lock", "security", "human-confirmation",
+    "approval", "context-pack", "builder-handoff",
+  ];
+  const criterionText = "Watch-observation proposal custody remains exact and grants no delivery authority.";
+  const contract = {
+    originalRequest: "Assess observed dependency candidate gopkg.in/yaml.v3 from v3.0.0 to v3.0.1.",
+    normalizedRequirements: [
+      "This is a draft-only dependency proposal with server-derived observation custody.",
+      "No confirmation, approval, Context Pack, route, issue, pull request, queue, execution, or delivery is authorized.",
+    ],
+    acceptanceCriteria: [{ id: "DEP-PROPOSAL-CUSTODY", text: criterionText, userVisible: false }],
+    nonGoals: ["No dependency change or operational handoff."],
+    risks: unresolved.map((kind) => `${kind} evidence is unresolved and blocking.`),
+    environment: {
+      kind: source.kind, admission: "draft_only", profile,
+      repositoryId: source.repositoryId, repositoryName: source.repositoryName,
+      watchId: source.watchId, observationId: source.observationId, observationKey,
+      candidateFingerprint: source.candidateFingerprint, proposalCustodyIdentity, candidate,
+      baselineSha: input.headSha, manifestPath: "go.mod", lockfilePath: "go.sum",
+      selectedFileHashes, sourceInventoryReceiptSha256,
+      repositorySourceVerification: source.repositorySourceVerification,
+      independentSourceProof: source.independentSourceProof,
+    },
+    stops: unresolved.map((kind) => `${kind} evidence remains unresolved.`),
+    unresolvedQuestions: unresolved.map((kind) => ({
+      id: `dependency-${kind}-evidence`, text: `${kind} evidence has not been admitted.`,
+    })),
+  };
+  return {
+    source, contract, criterionText, manifestContent, lockfileContent,
+    candidate, receipt, sourceInventoryReceiptSha256, observationKey,
+  };
+}
+
 function acceptanceDependencyObservationInput(input: {
   workspaceId: string;
   recordId: string;
@@ -1190,6 +1350,59 @@ function acceptanceDependencyObservationInput(input: {
       disposition: "clear" as const,
       provider: "osv",
       reference: `osv:npm:lodash@${targetVersion}`,
+      reportSha256: "4".repeat(64),
+    },
+  };
+}
+
+function goAcceptanceDependencyObservationInput(input: {
+  workspaceId: string;
+  recordId: string;
+  compiledPackId: string;
+  headSha: string;
+  manifestBlobSha: string;
+  lockfileBlobSha: string;
+}) {
+  const identity = {
+    ecosystem: "go", manager: "go-modules", profile: "go_root_public_proxy_lock_v1",
+  };
+  return {
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    compiledPackId: input.compiledPackId,
+    candidate: {
+      identity,
+      package: "gopkg.in/yaml.v3",
+      dependencyKind: "dependencies",
+      specifier: "v3.0.0",
+      currentVersion: "v3.0.0",
+      targetVersion: "v3.0.1",
+    },
+    runtime: {
+      identity, disposition: "safe" as const, version: "1.23.4",
+      evidenceSha256: "1".repeat(64),
+    },
+    packageManager: {
+      disposition: "safe" as const,
+      name: "go",
+      version: "1.23.4",
+      profile: "go_root_public_proxy_lock_v1",
+      updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+      evidenceSha256: "2".repeat(64),
+    },
+    manifest: { path: "go.mod", blobSha: input.manifestBlobSha },
+    lockfile: {
+      disposition: "present" as const,
+      path: "go.sum",
+      blobSha: input.lockfileBlobSha,
+      evidenceSha256: "3".repeat(64),
+    },
+    baseline: { headSha: input.headSha },
+    security: {
+      identity,
+      disposition: "clear" as const,
+      provider: "osv",
+      reference: "osv:Go:gopkg.in/yaml.v3@v3.0.1",
       reportSha256: "4".repeat(64),
     },
   };
@@ -1885,6 +2098,8 @@ describe.skipIf(!DB_AVAILABLE)(
     });
 
     afterEach(async () => {
+      await db.delete(dependencyWatchGoSumdbSignedTreeNotes)
+        .where(eq(dependencyWatchGoSumdbSignedTreeNotes.workspaceId, wsId));
       await db.delete(workspaces).where(eq(workspaces.id, wsId));
     });
 
@@ -7903,6 +8118,259 @@ describe.skipIf(!DB_AVAILABLE)(
         workerId: "worker:r10-pnpm-after-observation",
       })).resolves.toBeNull();
       await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
+    });
+
+    it("claims one exact Go Modules task with source receipt and retained sumdb note custody", async () => {
+      const headSha = "5".repeat(40);
+      let repository = (await db.select().from(repositories).where(and(
+        eq(repositories.workspaceId, wsId), eq(repositories.name, "acme/widgets"),
+      )).limit(1))[0];
+      if (!repository) {
+        repository = (await db.insert(repositories).values({
+          workspaceId: wsId, name: "acme/widgets", url: "https://github.com/acme/widgets",
+        }).returning())[0]!;
+      }
+      const watchId = randomUUID();
+      const observationId = randomUUID();
+      const proposal = goProposalFixtureCustody({
+        headSha, repositoryId: repository.id, watchId, observationId,
+      });
+      await db.insert(dependencyWatches).values({
+        id: watchId, workspaceId: wsId, repositoryId: repository.id,
+        manifestPath: "go.mod", lockfilePath: "go.sum",
+      });
+      await db.insert(dependencyWatchObservations).values({
+        id: observationId, workspaceId: wsId, watchId, repositoryId: repository.id,
+        trigger: "scheduled", baselineSha: headSha,
+        selectedFileHashes: proposal.source.selectedFileHashes,
+        observationKey: proposal.observationKey,
+        candidateFingerprint: proposal.candidate.fingerprint,
+        sourceInventoryReceipt: proposal.receipt,
+        sourceInventoryReceiptSha256: proposal.sourceInventoryReceiptSha256,
+        status: "candidates", candidates: [proposal.candidate], observedAt: new Date(),
+      });
+      const priorNote = Buffer.from("opaque retained signed tree note", "utf8");
+      const priorNoteSha256 = createHash("sha256").update(priorNote).digest("hex");
+      await retainGoSumdbSignedTreeNote({
+        workspaceId: wsId, watchId, repositoryId: repository.id,
+        sourceObservationId: observationId,
+        expectedPriorSignedTreeNoteSha256: null,
+        signedTreeNoteBase64: priorNote.toString("base64"),
+        signedTreeNoteSha256: priorNoteSha256,
+      });
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-go-producer-claim",
+        prNumber: 379,
+        headSha,
+        manifestPath: "go.mod",
+        lockfilePath: "go.sum",
+        manifestContent: proposal.manifestContent,
+        lockfileContent: proposal.lockfileContent,
+        contractOverrides: proposal.contract,
+        originChannel: "dependency_watch",
+        sourceReferences: [proposal.source],
+        criterionId: "DEP-PROPOSAL-CUSTODY",
+        criterionText: proposal.criterionText,
+      });
+
+      const claimed = await claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId, workerId: "worker:r10-go-integration",
+      });
+
+      expect(claimed).toMatchObject({
+        binding: {
+          workspaceId: wsId, recordId: fixture.draft.record.id,
+          repo: "acme/widgets", prNumber: 379, headSha,
+          headCycleId: fixture.advanced.jobId,
+          acceptanceContract: { id: fixture.draft.contract.id, version: 1 },
+          compiledPack: { id: fixture.pack.id, sha256: fixture.pack.packSha256 },
+        },
+        candidate: {
+          identity: { ecosystem: "go", manager: "go-modules", profile: "go_root_public_proxy_lock_v1" },
+          package: "gopkg.in/yaml.v3", currentVersion: "v3.0.0", targetVersion: "v3.0.1",
+          proposalFingerprint: proposal.candidate.fingerprint,
+        },
+        source: {
+          manifest: { path: "go.mod", blobSha: fixture.manifestBlobSha },
+          lockfile: { path: "go.sum", blobSha: fixture.lockfileBlobSha },
+          inventory: { identitySha256: proposal.sourceInventoryReceiptSha256, receipt: proposal.receipt },
+          sumdb: {
+            priorSignedTreeNoteBase64: priorNote.toString("base64"),
+            priorSignedTreeNoteSha256: priorNoteSha256,
+            generation: 0,
+          },
+        },
+        operation: {
+          updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+          authority: "observe_or_refuse_only",
+        },
+      });
+      if (!claimed) throw new Error("expected Go producer claim");
+      const claimRow = (await db.select().from(acceptanceDependencyObservationClaims)
+        .where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id)))[0]!;
+      expect(claimRow.managerCustody).toEqual({
+        kind: "go_modules_sumdb_observation_custody", version: 1,
+        repositoryId: repository.id, watchId, sourceObservationId: observationId,
+        sourceInventoryReceiptSha256: proposal.sourceInventoryReceiptSha256,
+        priorSignedTreeNoteSha256: priorNoteSha256, priorGeneration: 0,
+      });
+      const evidence = goAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha!,
+      });
+      const successorNote = Buffer.from("opaque verified successor signed tree note", "utf8");
+      const successorNoteSha256 = createHash("sha256").update(successorNote).digest("hex");
+      const sumdbCustody = {
+        priorGeneration: 0,
+        priorSignedTreeNoteSha256: priorNoteSha256,
+        successorSignedTreeNoteBase64: successorNote.toString("base64"),
+        successorSignedTreeNoteSha256: successorNoteSha256,
+        sourceInventoryReceiptSha256: proposal.sourceInventoryReceiptSha256,
+      };
+
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+
+      await db.update(acceptanceDependencyObservationClaims).set({
+        managerCustody: { ...claimRow.managerCustody as Record<string, unknown>, priorGeneration: 9 },
+      }).where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id));
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.update(acceptanceDependencyObservationClaims).set({
+        managerCustody: claimRow.managerCustody,
+      }).where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id));
+
+      await db.update(dependencyWatchObservations).set({
+        candidateFingerprint: "sha256:" + "9".repeat(64),
+      }).where(eq(dependencyWatchObservations.id, observationId));
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.update(dependencyWatchObservations).set({
+        candidateFingerprint: proposal.candidate.fingerprint,
+      }).where(eq(dependencyWatchObservations.id, observationId));
+
+      await db.update(dependencyWatchObservations).set({
+        sourceInventoryReceipt: {
+          ...proposal.receipt,
+          policy: { name: "go_root_source_inventory_v1", result: "refused" },
+        } as GoDependencySourceInventoryReceipt,
+      }).where(eq(dependencyWatchObservations.id, observationId));
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.update(dependencyWatchObservations).set({
+        sourceInventoryReceipt: proposal.receipt,
+      }).where(eq(dependencyWatchObservations.id, observationId));
+
+      await db.update(changeRecords).set({
+        sourceReferences: [{ ...proposal.source, unexpectedAuthority: true }],
+      }).where(eq(changeRecords.id, fixture.draft.record.id));
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.update(changeRecords).set({
+        sourceReferences: [proposal.source],
+      }).where(eq(changeRecords.id, fixture.draft.record.id));
+
+      await db.update(dependencyWatchObservations).set({
+        candidates: [proposal.candidate, { ...proposal.candidate }],
+      }).where(eq(dependencyWatchObservations.id, observationId));
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.update(dependencyWatchObservations).set({
+        candidates: [proposal.candidate],
+      }).where(eq(dependencyWatchObservations.id, observationId));
+
+      const newerObservationId = randomUUID();
+      await db.insert(dependencyWatchObservations).values({
+        id: newerObservationId,
+        workspaceId: wsId,
+        watchId,
+        repositoryId: repository.id,
+        trigger: "scheduled",
+        baselineSha: headSha,
+        selectedFileHashes: {},
+        observationKey: `go-observation:${randomUUID()}:newer-refusal`,
+        candidateFingerprint: null,
+        status: "failed",
+        candidates: [],
+        errorCode: "insufficient_evidence",
+        errorMessage: "newer observation revoked prior candidate custody",
+        observedAt: new Date(Date.now() + 10_000),
+      });
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      await db.delete(dependencyWatchObservations)
+        .where(eq(dependencyWatchObservations.id, newerObservationId));
+
+      const candidateFingerprint = `sha256:${acceptanceContextPackCanonicalSha256({
+        identity: evidence.candidate.identity,
+        manifestPath: evidence.manifest.path,
+        package: evidence.candidate.package,
+        dependencyKind: evidence.candidate.dependencyKind,
+        specifier: evidence.candidate.specifier,
+        currentVersion: evidence.candidate.currentVersion,
+        targetVersion: evidence.candidate.targetVersion,
+      })}`;
+      const conflictingEventKey = `acceptance-dependency-observation:v2:${fixture.advanced.jobId}:${candidateFingerprint.slice("sha256:".length)}`;
+      const [conflictingEvent] = await db.insert(changeRecordEvents).values({
+        id: randomUUID(),
+        recordId: fixture.draft.record.id,
+        eventKey: conflictingEventKey,
+        stage: "dependency_observation",
+        actor: "server:dependency-observation",
+        payloadRef: { kind: "forged_conflict" },
+      }).returning();
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      expect(await db.select().from(dependencyWatchGoSumdbSignedTreeNotes).where(and(
+        eq(dependencyWatchGoSumdbSignedTreeNotes.workspaceId, wsId),
+        eq(dependencyWatchGoSumdbSignedTreeNotes.watchId, watchId),
+      ))).toHaveLength(1);
+      await db.delete(changeRecordEvents).where(eq(changeRecordEvents.id, conflictingEvent!.id));
+
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).resolves.toMatchObject({ kind: "recorded", observation: { status: "observed" } });
+      const retainedNotes = await db.select().from(dependencyWatchGoSumdbSignedTreeNotes).where(and(
+        eq(dependencyWatchGoSumdbSignedTreeNotes.workspaceId, wsId),
+        eq(dependencyWatchGoSumdbSignedTreeNotes.watchId, watchId),
+      ));
+      expect(retainedNotes).toHaveLength(2);
+      expect(retainedNotes[1]).toMatchObject({
+        generation: 1,
+        sourceObservationId: observationId,
+        sourceInventoryReceiptSha256: proposal.sourceInventoryReceiptSha256,
+        expectedPriorGeneration: 0,
+        expectedPriorSignedTreeNoteSha256: priorNoteSha256,
+        signedTreeNoteSha256: successorNoteSha256,
+      });
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: claimed.claim.token,
+        goSumdbCustody: sumdbCustody,
+      })).resolves.toMatchObject({ kind: "replayed" });
+      await deleteGoSumdbSignedTreeNoteCustodyForWatchTeardown({
+        workspaceId: wsId, watchId, repositoryId: repository.id,
+      });
     });
 
     it("records one exact-head dependency observation and replays only exact normalized evidence", async () => {

@@ -20,6 +20,7 @@ import {
 import {
   type DependencyUpgradeCandidate,
 } from "./dependency_upgrade_contracts.js";
+import { validateGoDependencySourceInventoryReceipt } from "./dependency_watches.js";
 
 const ACTOR = "server:dependency-observation-proposal";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -27,6 +28,8 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const FILE_SHA256 = /^[a-f0-9]{64}$/;
 const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const GO_MODULE = /^(?=.{1,512}$)[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?)+$/u;
+const GO_VERSION = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const NPM_PRERELEASE_IDENTIFIER = "(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
 const NPM_PRERELEASE = `${NPM_PRERELEASE_IDENTIFIER}(?:\\.${NPM_PRERELEASE_IDENTIFIER})*`;
 const NPM_BUILD = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
@@ -87,6 +90,16 @@ export const dependencyObservationProposalProfileRegistry = {
     manifestPath: "package.json",
     lockfilePath: "package-lock.json",
   },
+  "go:go-modules": {
+    profile: {
+      ecosystem: "go",
+      manager: "go-modules",
+      profile: "go_root_public_proxy_lock_v1",
+      capability: "proposal_observation_only",
+    },
+    manifestPath: "go.mod",
+    lockfilePath: "go.sum",
+  },
 } as const;
 
 type ProposalProfileDefinition =
@@ -101,7 +114,8 @@ export type DependencyObservationAcceptanceRecordDraft = AcceptanceRecordDraft &
 };
 
 type LegacyObservationProposalCandidate<
-  Manager extends "pnpm" | "npm",
+  Ecosystem extends "node" | "go",
+  Manager extends "pnpm" | "npm" | "go-modules",
   VerificationCommands extends string[],
 > = Omit<
   DependencyUpgradeCandidate,
@@ -111,7 +125,7 @@ type LegacyObservationProposalCandidate<
   | "verification_commands"
   | "manager_commands"
 > & {
-  ecosystem: "node";
+  ecosystem: Ecosystem;
   package_manager: Manager;
   package_manager_version: null;
   verification_commands: VerificationCommands;
@@ -119,20 +133,29 @@ type LegacyObservationProposalCandidate<
 };
 
 type PnpmObservationProposalCandidate = LegacyObservationProposalCandidate<
+  "node",
   "pnpm",
   [string, string]
 >;
 type NpmObservationProposalCandidate = LegacyObservationProposalCandidate<
+  "node",
   "npm",
   [string]
 >;
+type GoModulesObservationProposalCandidate = LegacyObservationProposalCandidate<
+  "go",
+  "go-modules",
+  [string, string]
+>;
 export type DependencyObservationProposalCandidate =
   | PnpmObservationProposalCandidate
-  | NpmObservationProposalCandidate;
+  | NpmObservationProposalCandidate
+  | GoModulesObservationProposalCandidate;
 
 export type DependencyObservationSelectedFileHashes =
   | { "package.json": string; "pnpm-lock.yaml": string }
-  | { "package.json": string; "package-lock.json": string };
+  | { "package.json": string; "package-lock.json": string }
+  | { "go.mod": string; "go.sum": string };
 
 type Custody = {
   watchId: string;
@@ -141,11 +164,12 @@ type Custody = {
   observationId: string;
   observationKey: string;
   baselineSha: string;
-  manifestPath: "package.json";
-  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  manifestPath: "package.json" | "go.mod";
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json" | "go.sum";
   selectedFileHashes: DependencyObservationSelectedFileHashes;
   candidate: DependencyObservationProposalCandidate;
   profile: DependencyObservationProposalProfile;
+  sourceInventoryReceiptSha256: string | null;
 };
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -339,8 +363,8 @@ function npmTargetIsNewer(current: string, target: string): boolean {
 function selectedHashes(
   value: unknown,
   definition: {
-    manifestPath: "package.json";
-    lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+    manifestPath: "package.json" | "go.mod";
+    lockfilePath: "pnpm-lock.yaml" | "package-lock.json" | "go.sum";
   },
 ): DependencyObservationSelectedFileHashes | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -353,7 +377,9 @@ function selectedHashes(
     || !FILE_SHA256.test(manifest) || !FILE_SHA256.test(lockfile)) return null;
   return definition.lockfilePath === "pnpm-lock.yaml"
     ? { "package.json": manifest, "pnpm-lock.yaml": lockfile }
-    : { "package.json": manifest, "package-lock.json": lockfile };
+    : definition.lockfilePath === "package-lock.json"
+      ? { "package.json": manifest, "package-lock.json": lockfile }
+      : { "go.mod": manifest, "go.sum": lockfile };
 }
 
 const LEGACY_CANDIDATE_KEYS = [
@@ -383,6 +409,9 @@ function profileDefinition(value: unknown): ProposalProfileDefinition | null {
   }
   if (raw.ecosystem === "node" && raw.package_manager === "npm") {
     return dependencyObservationProposalProfileRegistry["node:npm"];
+  }
+  if (raw.ecosystem === "go" && raw.package_manager === "go-modules") {
+    return dependencyObservationProposalProfileRegistry["go:go-modules"];
   }
   return null;
 }
@@ -444,6 +473,117 @@ export function npmObservationCandidateFingerprint(
     specifier: candidate.specifier,
     target_version: candidate.target_version,
   });
+}
+
+/** Byte-compatible with observation.py:_make_candidate for the Go Modules profile. */
+export function goModulesObservationCandidateFingerprint(
+  candidate: Pick<
+    DependencyUpgradeCandidate,
+    | "baseline_sha"
+    | "current_version"
+    | "dependency_kind"
+    | "lockfile_path"
+    | "manifest_path"
+    | "package"
+    | "specifier"
+    | "target_version"
+  >,
+): string {
+  return stableSha256({
+    baseline_sha: candidate.baseline_sha,
+    current_version: candidate.current_version,
+    dependency_kind: candidate.dependency_kind,
+    lockfile_path: candidate.lockfile_path,
+    manifest_path: candidate.manifest_path,
+    package: candidate.package,
+    package_manager: "go-modules",
+    specifier: candidate.specifier,
+    target_version: candidate.target_version,
+  });
+}
+
+function goVersionParts(value: unknown): [number, number, number] | null {
+  if (typeof value !== "string") return null;
+  const match = GO_VERSION.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger)
+    ? [parts[0]!, parts[1]!, parts[2]!]
+    : null;
+}
+
+function goModuleMajor(modulePath: string): number | null {
+  const first = modulePath.split("/", 1)[0]!;
+  if (!first.includes(".") || /^\d+(?:\.\d+){3}$/u.test(first)) return null;
+  const slash = /\/v([2-9][0-9]*)$/u.exec(modulePath);
+  if (slash) return Number(slash[1]);
+  const gopkg = /^gopkg\.in\/.+\.v([1-9][0-9]*)$/u.exec(modulePath);
+  return gopkg ? Number(gopkg[1]) : 0;
+}
+
+/** Parse only the public root Go profile emitted by the live watcher. */
+export function validateGoModulesObservationProposalCandidate(
+  value: unknown,
+): GoModulesObservationProposalCandidate | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!candidateRaw(raw) || LEGACY_CANDIDATE_KEYS.some((key) => !(key in raw))) return null;
+  if (raw.ecosystem !== "go" || raw.package_manager !== "go-modules"
+    || raw.package_manager_version !== null
+    || !safeText(raw.package) || !GO_MODULE.test(raw.package)
+    || raw.package !== raw.package.toLowerCase()
+    || raw.dependency_kind !== "dependencies"
+    || raw.specifier !== raw.current_version
+    || raw.manifest_path !== "go.mod" || raw.lockfile_path !== "go.sum"
+    || typeof raw.baseline_sha !== "string" || !GIT_SHA.test(raw.baseline_sha)
+    || typeof raw.fingerprint !== "string" || !SHA256.test(raw.fingerprint)) return null;
+  const current = goVersionParts(raw.current_version);
+  const target = goVersionParts(raw.target_version);
+  const moduleMajor = goModuleMajor(raw.package);
+  if (!current || !target || moduleMajor === null
+    || current[0] !== target[0]
+    || (moduleMajor === 0 ? current[0] > 1 : current[0] !== moduleMajor)
+    || compareNpmSemver(
+      { major: BigInt(current[0]), minor: BigInt(current[1]), patch: BigInt(current[2]), prerelease: [] },
+      { major: BigInt(target[0]), minor: BigInt(target[1]), patch: BigInt(target[2]), prerelease: [] },
+    ) >= 0) return null;
+
+  const commands = raw.manager_commands;
+  const verification = raw.verification_commands;
+  if (!commands || typeof commands !== "object" || Array.isArray(commands)
+    || !Array.isArray(verification)) return null;
+  const commandRecord = commands as Record<string, unknown>;
+  if (Object.keys(commandRecord).length !== 3
+    || commandRecord.version !== "go version"
+    || commandRecord.install !== "go mod download"
+    || commandRecord.update !== `go get ${raw.package}@${raw.target_version}`
+    || verification.length !== 2
+    || verification[0] !== "go mod download"
+    || verification[1] !== "go test ./...") return null;
+
+  const candidate: GoModulesObservationProposalCandidate = {
+    package: raw.package,
+    ecosystem: "go",
+    package_manager: "go-modules",
+    package_manager_version: null,
+    dependency_kind: "dependencies",
+    specifier: raw.specifier as string,
+    current_version: raw.current_version as string,
+    target_version: raw.target_version as string,
+    manifest_path: "go.mod",
+    lockfile_path: "go.sum",
+    baseline_sha: raw.baseline_sha,
+    fingerprint: raw.fingerprint,
+    verification_commands: [verification[0], verification[1]],
+    manager_commands: {
+      version: commandRecord.version as string,
+      install: commandRecord.install as string,
+      update: commandRecord.update as string,
+    },
+  };
+  return goModulesObservationCandidateFingerprint(candidate) === candidate.fingerprint
+    ? candidate
+    : null;
 }
 
 /** Parse exactly the asdict shape serialized by the live pnpm watch producer. */
@@ -570,8 +710,8 @@ export function validateNpmObservationProposalCandidate(
 export type ResolvedDependencyObservationProposalCandidate = {
   candidate: DependencyObservationProposalCandidate;
   profile: DependencyObservationProposalProfile;
-  manifestPath: "package.json";
-  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  manifestPath: "package.json" | "go.mod";
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json" | "go.sum";
 };
 
 /** Resolve through the closed registry; an unknown manager is never coerced to npm. */
@@ -582,7 +722,9 @@ export function resolveDependencyObservationProposalCandidate(
   if (!definition) return null;
   const candidate = definition.profile.manager === "pnpm"
     ? validatePnpmObservationProposalCandidate(value)
-    : validateNpmObservationProposalCandidate(value);
+    : definition.profile.manager === "npm"
+      ? validateNpmObservationProposalCandidate(value)
+      : validateGoModulesObservationProposalCandidate(value);
   return candidate ? { candidate, ...definition } : null;
 }
 
@@ -602,6 +744,9 @@ function custodyIdentity(custody: Custody): string {
     baselineSha: custody.baselineSha,
     selectedFileHashes: custody.selectedFileHashes,
     candidate: custody.candidate,
+    ...(custody.sourceInventoryReceiptSha256 === null
+      ? {}
+      : { sourceInventoryReceiptSha256: custody.sourceInventoryReceiptSha256 }),
   });
 }
 
@@ -618,6 +763,7 @@ export function dependencyObservationProposalCustodyIdentity(input: {
   baselineSha: string;
   selectedFileHashes: Record<string, string>;
   candidate: unknown;
+  sourceInventoryReceiptSha256?: string | null;
 }): string | null {
   const resolved = resolveDependencyObservationProposalCandidate(input.candidate);
   const hashes = resolved ? selectedHashes(input.selectedFileHashes, resolved) : null;
@@ -626,6 +772,10 @@ export function dependencyObservationProposalCustodyIdentity(input: {
     || !UUID.test(input.watchId) || !UUID.test(input.observationId)
     || !safeText(input.observationKey) || !GIT_SHA.test(input.baselineSha)
     || resolved.candidate.baseline_sha !== input.baselineSha) return null;
+  const sourceInventoryReceiptSha256 = input.sourceInventoryReceiptSha256 ?? null;
+  if (resolved.profile.manager === "go-modules"
+    ? !FILE_SHA256.test(sourceInventoryReceiptSha256 ?? "")
+    : sourceInventoryReceiptSha256 !== null) return null;
   return custodyIdentity({
     repositoryId: input.repositoryId,
     repositoryName: input.repositoryName,
@@ -638,6 +788,7 @@ export function dependencyObservationProposalCustodyIdentity(input: {
     selectedFileHashes: hashes,
     candidate: resolved.candidate,
     profile: resolved.profile,
+    sourceInventoryReceiptSha256,
   });
 }
 
@@ -649,6 +800,9 @@ function sourceReferences(custody: Custody, proposalCustodyIdentity: string): Re
     candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity,
     candidate: custody.candidate, baselineSha: custody.baselineSha,
     manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath, selectedFileHashes: custody.selectedFileHashes,
+    ...(custody.sourceInventoryReceiptSha256 === null ? {} : {
+      sourceInventoryReceiptSha256: custody.sourceInventoryReceiptSha256,
+    }),
     profile: custody.profile, repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
   }];
 }
@@ -686,6 +840,9 @@ function contract(custody: Custody, proposalCustodyIdentity: string): Record<str
       candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity, candidate: custody.candidate,
       baselineSha: custody.baselineSha, manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath,
       selectedFileHashes: custody.selectedFileHashes,
+      ...(custody.sourceInventoryReceiptSha256 === null ? {} : {
+        sourceInventoryReceiptSha256: custody.sourceInventoryReceiptSha256,
+      }),
       repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
     },
     stops: unresolved.map((kind) => `${kind} evidence remains unresolved.`),
@@ -702,6 +859,9 @@ function payload(custody: Custody, recordId: string, contractId: string, proposa
     candidateFingerprint: custody.candidate.fingerprint, proposalCustodyIdentity, candidate: custody.candidate,
     profile: custody.profile, baselineSha: custody.baselineSha, manifestPath: custody.manifestPath, lockfilePath: custody.lockfilePath,
     selectedFileHashes: custody.selectedFileHashes, evidenceAdmission: "unresolved", authority: "draft_only",
+    ...(custody.sourceInventoryReceiptSha256 === null ? {} : {
+      sourceInventoryReceiptSha256: custody.sourceInventoryReceiptSha256,
+    }),
     repositorySourceVerification: "watch_observation_only", independentSourceProof: "not_proven",
   };
 }
@@ -759,6 +919,13 @@ async function readCustody(
   }
   const resolved = resolveDependencyObservationProposalCandidate(raw);
   const hashes = selectedHashes(observation.selectedFileHashes, definition);
+  const sourceInventoryReceiptSha256 = observation.sourceInventoryReceiptSha256 ?? null;
+  const sourceInventoryReceipt = sourceInventoryReceiptSha256 === null
+    ? null
+    : validateGoDependencySourceInventoryReceipt(
+      observation.sourceInventoryReceipt,
+      sourceInventoryReceiptSha256,
+    );
   const exactRootPaths = watch.manifestPath === definition.manifestPath
     && watch.lockfilePath === definition.lockfilePath;
   const autoRootPaths = watch.manifestPath === "auto" && watch.lockfilePath === "auto";
@@ -770,7 +937,17 @@ async function readCustody(
   }
   if (observation.status !== "candidates" || !resolved
     || observation.baselineSha !== resolved.candidate.baseline_sha || !GIT_SHA.test(observation.baselineSha ?? "")
-    || !hashes) {
+    || !hashes
+    || (definition.profile.manager === "go-modules"
+      ? !sourceInventoryReceipt
+        || sourceInventoryReceipt.authority.repository !== watch.repositoryName
+        || sourceInventoryReceipt.authority.commitSha !== observation.baselineSha
+        || sourceInventoryReceipt.authority.requestedRef !== observation.baselineSha
+        || sourceInventoryReceipt.requiredFiles[0]?.contentSha256
+          !== (hashes as { "go.mod": string })["go.mod"]
+        || sourceInventoryReceipt.requiredFiles[1]?.contentSha256
+          !== (hashes as { "go.sum": string })["go.sum"]
+      : sourceInventoryReceiptSha256 !== null || observation.sourceInventoryReceipt != null)) {
     throw new DependencyObservationDraftError(
       "unsafe_custody",
       `Dependency observation lacks bounded ${definition.profile.manager} proposal custody`,
@@ -788,6 +965,7 @@ async function readCustody(
     selectedFileHashes: hashes,
     candidate: resolved.candidate,
     profile: resolved.profile,
+    sourceInventoryReceiptSha256,
   };
 }
 

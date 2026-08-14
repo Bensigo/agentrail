@@ -16,9 +16,14 @@ import {
   githubInstallationIdentitySha256,
 } from "./change_records.js";
 import {
+  dependencyWatchGoSumdbSignedTreeNotes,
+  dependencyWatchObservations,
+} from "../schema/dependency_watches.js";
+import {
   dependencyObservationProposalContractMatches,
   resolveDependencyObservationProposalSourceCustody,
 } from "./dependency_draft_proposal_detail.js";
+import { validateGoDependencySourceInventoryReceipt } from "./dependency_watches.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const WORKER = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u;
@@ -42,26 +47,33 @@ export function parseAcceptanceDependencyObservationClaimInput(
   return { workspaceId: input.workspaceId.toLowerCase(), workerId: input.workerId };
 }
 
-export type AcceptanceDependencyObservationWorkDescriptor = {
-  claim: { id: string; token: string; expiresAt: Date };
-  binding: {
-    workspaceId: string;
-    recordId: string;
-    repo: string;
-    prNumber: number;
-    headSha: string;
-    headCycleId: string;
-    authorityGeneration: number;
-    acceptanceContract: { id: string; version: number; sha256: string };
-    compiledPack: {
-      id: string;
-      sha256: string;
-      sourceSnapshotId: string;
-      sourceCustodyIdentitySha256: string;
-      compilerVersion: string;
-      policyVersion: string;
-    };
+type AcceptanceDependencyObservationWorkBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  compiledPack: {
+    id: string;
+    sha256: string;
+    sourceSnapshotId: string;
+    sourceCustodyIdentitySha256: string;
+    compilerVersion: string;
+    policyVersion: string;
   };
+};
+
+type AcceptanceDependencyObservationWorkBase = {
+  claim: { id: string; token: string; expiresAt: Date };
+  binding: AcceptanceDependencyObservationWorkBinding;
+  githubInstallationIdentitySha256: string;
+};
+
+export type PnpmAcceptanceDependencyObservationWorkDescriptor =
+  AcceptanceDependencyObservationWorkBase & {
   candidate: {
     identity: { ecosystem: "node"; manager: "pnpm"; profile: "pnpm_lockfile_only_v1" };
     package: string;
@@ -79,8 +91,38 @@ export type AcceptanceDependencyObservationWorkDescriptor = {
     updateArgv: ["pnpm", "update", string, "--lockfile-only", "--ignore-scripts"];
     authority: "observe_or_refuse_only";
   };
-  githubInstallationIdentitySha256: string;
 };
+
+export type GoModulesAcceptanceDependencyObservationWorkDescriptor =
+  AcceptanceDependencyObservationWorkBase & {
+    candidate: {
+      identity: { ecosystem: "go"; manager: "go-modules"; profile: "go_root_public_proxy_lock_v1" };
+      package: string;
+      dependencyKind: "dependencies";
+      specifier: string;
+      currentVersion: string;
+      targetVersion: string;
+      proposalFingerprint: string;
+    };
+    source: {
+      manifest: { path: "go.mod"; blobSha: string };
+      lockfile: { path: "go.sum"; blobSha: string };
+      inventory: { receipt: Record<string, unknown>; identitySha256: string };
+      sumdb: {
+        priorSignedTreeNoteBase64: string | null;
+        priorSignedTreeNoteSha256: string | null;
+        generation: number | null;
+      };
+    };
+    operation: {
+      updateArgv: ["go", "get", string];
+      authority: "observe_or_refuse_only";
+    };
+  };
+
+export type AcceptanceDependencyObservationWorkDescriptor =
+  | PnpmAcceptanceDependencyObservationWorkDescriptor
+  | GoModulesAcceptanceDependencyObservationWorkDescriptor;
 
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -153,7 +195,7 @@ export async function releaseAcceptanceDependencyObservationClaim(input: {
 }
 
 /**
- * Claims one server-selected current pnpm evidence task. The caller supplies
+ * Claims one server-selected current operational dependency evidence task. The caller supplies
  * no Record, PR, head, Contract, Pack, candidate, path, profile, or command.
  * This is scheduling only: the existing v2 observation writer remains the
  * final exact-custody admission boundary after evidence gathering.
@@ -212,10 +254,15 @@ export async function claimAcceptanceDependencyObservationWork(
         || !record.headShas.includes(record.currentPrHeadSha)) continue;
 
       const source = resolveDependencyObservationProposalSourceCustody(record.sourceReferences[0]);
-      if (!source || source.profile.ecosystem !== "node" || source.profile.manager !== "pnpm"
-        || source.profile.profile !== "pnpm_lockfile_only_v1"
-        || source.profile.capability !== "proposal_observation_only"
+      if (!source || source.profile.capability !== "proposal_observation_only"
         || record.repo !== source.repositoryName) continue;
+      const isPnpm = source.profile.ecosystem === "node" && source.profile.manager === "pnpm"
+        && source.profile.profile === "pnpm_lockfile_only_v1"
+        && source.sourceInventoryReceiptSha256 === null;
+      const isGo = source.profile.ecosystem === "go" && source.profile.manager === "go-modules"
+        && source.profile.profile === "go_root_public_proxy_lock_v1"
+        && source.sourceInventoryReceiptSha256 !== null;
+      if (!isPnpm && !isGo) continue;
 
       const contracts = await tx.select().from(acceptanceContracts).where(and(
         eq(acceptanceContracts.recordId, record.id),
@@ -248,9 +295,74 @@ export async function claimAcceptanceDependencyObservationWork(
         acceptanceContractSha256: contractSha256,
       });
       if (!current) continue;
-      const manifestBlobSha = exactPackBlobSha(current.pack.manifest, "package.json");
-      const lockfileBlobSha = exactPackBlobSha(current.pack.manifest, "pnpm-lock.yaml");
+      const manifestPath = isGo ? "go.mod" as const : "package.json" as const;
+      const lockfilePath = isGo ? "go.sum" as const : "pnpm-lock.yaml" as const;
+      const manifestBlobSha = exactPackBlobSha(current.pack.manifest, manifestPath);
+      const lockfileBlobSha = exactPackBlobSha(current.pack.manifest, lockfilePath);
       if (!manifestBlobSha || !lockfileBlobSha) continue;
+
+      let goManagerCustody: Record<string, unknown> | null = null;
+      let goDescriptorSource: GoModulesAcceptanceDependencyObservationWorkDescriptor["source"] | null = null;
+      if (isGo) {
+        const sourceInventoryReceiptSha256 = source.sourceInventoryReceiptSha256;
+        if (sourceInventoryReceiptSha256 === null) continue;
+        const observation = (await tx.select().from(dependencyWatchObservations).where(and(
+          eq(dependencyWatchObservations.id, source.observationId),
+          eq(dependencyWatchObservations.workspaceId, parsed.workspaceId),
+          eq(dependencyWatchObservations.watchId, source.watchId),
+          eq(dependencyWatchObservations.repositoryId, source.repositoryId),
+        )).limit(1))[0];
+        const inventory = observation?.sourceInventoryReceiptSha256 === sourceInventoryReceiptSha256
+          ? validateGoDependencySourceInventoryReceipt(
+            observation.sourceInventoryReceipt,
+            sourceInventoryReceiptSha256,
+          )
+          : null;
+        const requiredManifest = inventory?.requiredFiles.find((file) => file.path === "go.mod");
+        const requiredLockfile = inventory?.requiredFiles.find((file) => file.path === "go.sum");
+        if (!observation || observation.status !== "candidates"
+          || observation.baselineSha !== record.currentPrHeadSha
+          || observation.candidateFingerprint !== source.candidateFingerprint
+          || !inventory || inventory.authority.repository !== record.repo
+          || inventory.authority.requestedRef !== record.currentPrHeadSha
+          || inventory.authority.commitSha !== record.currentPrHeadSha
+          || requiredManifest?.blobSha !== manifestBlobSha
+          || requiredLockfile?.blobSha !== lockfileBlobSha
+          || requiredManifest.contentSha256
+            !== (source.selectedFileHashes as { "go.mod": string })["go.mod"]
+          || requiredLockfile.contentSha256
+            !== (source.selectedFileHashes as { "go.sum": string })["go.sum"]) continue;
+        const note = (await tx.select().from(dependencyWatchGoSumdbSignedTreeNotes).where(and(
+          eq(dependencyWatchGoSumdbSignedTreeNotes.workspaceId, parsed.workspaceId),
+          eq(dependencyWatchGoSumdbSignedTreeNotes.watchId, source.watchId),
+          eq(dependencyWatchGoSumdbSignedTreeNotes.repositoryId, source.repositoryId),
+        )).orderBy(desc(dependencyWatchGoSumdbSignedTreeNotes.generation)).limit(1))[0] ?? null;
+        if (note && (note.sourceInventoryReceiptSha256 !== sourceInventoryReceiptSha256
+          || note.sourceObservationId !== source.observationId)) continue;
+        goManagerCustody = {
+          kind: "go_modules_sumdb_observation_custody",
+          version: 1,
+          repositoryId: source.repositoryId,
+          watchId: source.watchId,
+          sourceObservationId: source.observationId,
+          sourceInventoryReceiptSha256,
+          priorSignedTreeNoteSha256: note?.signedTreeNoteSha256 ?? null,
+          priorGeneration: note?.generation ?? null,
+        };
+        goDescriptorSource = {
+          manifest: { path: "go.mod", blobSha: manifestBlobSha },
+          lockfile: { path: "go.sum", blobSha: lockfileBlobSha },
+          inventory: {
+            receipt: inventory as unknown as Record<string, unknown>,
+            identitySha256: sourceInventoryReceiptSha256,
+          },
+          sumdb: {
+            priorSignedTreeNoteBase64: note?.signedTreeNoteBase64 ?? null,
+            priorSignedTreeNoteSha256: note?.signedTreeNoteSha256 ?? null,
+            generation: note?.generation ?? null,
+          },
+        };
+      }
 
       const observationPrefix = `acceptance-dependency-observation:v2:${record.currentPrHeadCycleId}:%`;
       const legacyObservationPrefix = `acceptance-dependency-observation:${record.currentPrHeadCycleId}:%`;
@@ -262,11 +374,10 @@ export async function claimAcceptanceDependencyObservationWork(
       )).limit(1))[0];
       if (observed) continue;
 
-      const observationCandidate: Omit<
-        AcceptanceDependencyObservationWorkDescriptor["candidate"],
-        "proposalFingerprint"
-      > = {
-        identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
+      const observationCandidate = {
+        identity: isGo
+          ? { ecosystem: "go" as const, manager: "go-modules" as const, profile: "go_root_public_proxy_lock_v1" as const }
+          : { ecosystem: "node" as const, manager: "pnpm" as const, profile: "pnpm_lockfile_only_v1" as const },
         package: source.candidate.package,
         dependencyKind: source.candidate.dependency_kind,
         specifier: source.candidate.specifier,
@@ -275,7 +386,7 @@ export async function claimAcceptanceDependencyObservationWork(
       };
       const observationCandidateFingerprint = `sha256:${acceptanceContextPackCanonicalSha256({
         identity: observationCandidate.identity,
-        manifestPath: "package.json",
+        manifestPath,
         package: observationCandidate.package,
         dependencyKind: observationCandidate.dependencyKind,
         specifier: observationCandidate.specifier,
@@ -310,6 +421,7 @@ export async function claimAcceptanceDependencyObservationWork(
         candidateFingerprint: observationCandidateFingerprint,
         candidate: observationCandidate,
         profile: source.profile,
+        managerCustody: goManagerCustody ?? {},
         claimedBy: parsed.workerId,
         claimTokenSha256: tokenSha256,
         claimedAt: now,
@@ -332,6 +444,7 @@ export async function claimAcceptanceDependencyObservationWork(
           githubInstallationIdentitySha256: installationIdentitySha256,
           candidate: observationCandidate,
           profile: source.profile,
+          managerCustody: goManagerCustody ?? {},
           claimedBy: parsed.workerId,
           claimTokenSha256: tokenSha256,
           claimedAt: now,
@@ -340,28 +453,58 @@ export async function claimAcceptanceDependencyObservationWork(
         },
       });
 
+      const binding: AcceptanceDependencyObservationWorkBinding = {
+        workspaceId: parsed.workspaceId,
+        recordId: record.id,
+        repo: record.repo,
+        prNumber: record.prNumber,
+        headSha: record.currentPrHeadSha,
+        headCycleId: record.currentPrHeadCycleId,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        acceptanceContract: { id: contract.id, version: contract.version, sha256: contractSha256 },
+        compiledPack: {
+          id: current.pack.id,
+          sha256: current.pack.packSha256,
+          sourceSnapshotId: current.pack.sourceSnapshotId,
+          sourceCustodyIdentitySha256: current.pack.sourceCustodyIdentitySha256,
+          compilerVersion: current.pack.compilerVersion,
+          policyVersion: current.pack.policyVersion,
+        },
+      };
+      if (isGo) {
+        if (!goDescriptorSource) continue;
+        return {
+          claim: { id, token, expiresAt },
+          binding,
+          candidate: {
+            identity: {
+              ecosystem: "go", manager: "go-modules", profile: "go_root_public_proxy_lock_v1",
+            },
+            package: observationCandidate.package,
+            dependencyKind: "dependencies",
+            specifier: observationCandidate.specifier,
+            currentVersion: observationCandidate.currentVersion,
+            targetVersion: observationCandidate.targetVersion,
+            proposalFingerprint: source.candidateFingerprint,
+          },
+          source: goDescriptorSource,
+          operation: {
+            updateArgv: ["go", "get", `${source.candidate.package}@${source.candidate.target_version}`],
+            authority: "observe_or_refuse_only",
+          },
+          githubInstallationIdentitySha256: installationIdentitySha256,
+        } satisfies GoModulesAcceptanceDependencyObservationWorkDescriptor;
+      }
       return {
         claim: { id, token, expiresAt },
-        binding: {
-          workspaceId: parsed.workspaceId,
-          recordId: record.id,
-          repo: record.repo,
-          prNumber: record.prNumber,
-          headSha: record.currentPrHeadSha,
-          headCycleId: record.currentPrHeadCycleId,
-          authorityGeneration: record.currentPrHeadAuthorityGeneration,
-          acceptanceContract: { id: contract.id, version: contract.version, sha256: contractSha256 },
-          compiledPack: {
-            id: current.pack.id,
-            sha256: current.pack.packSha256,
-            sourceSnapshotId: current.pack.sourceSnapshotId,
-            sourceCustodyIdentitySha256: current.pack.sourceCustodyIdentitySha256,
-            compilerVersion: current.pack.compilerVersion,
-            policyVersion: current.pack.policyVersion,
-          },
-        },
+        binding,
         candidate: {
-          ...observationCandidate,
+          identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
+          package: observationCandidate.package,
+          dependencyKind: observationCandidate.dependencyKind,
+          specifier: observationCandidate.specifier,
+          currentVersion: observationCandidate.currentVersion,
+          targetVersion: observationCandidate.targetVersion,
           proposalFingerprint: source.candidateFingerprint,
         },
         source: {
@@ -376,7 +519,7 @@ export async function claimAcceptanceDependencyObservationWork(
           authority: "observe_or_refuse_only",
         },
         githubInstallationIdentitySha256: installationIdentitySha256,
-      };
+      } satisfies PnpmAcceptanceDependencyObservationWorkDescriptor;
     }
     return null;
   });

@@ -122,7 +122,7 @@ function sourceSafePath(value: unknown): value is string {
     && value.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
 }
 
-function validateGoDependencySourceInventoryReceipt(
+export function validateGoDependencySourceInventoryReceipt(
   value: unknown,
   declaredSha256: string,
 ): GoDependencySourceInventoryReceipt | null {

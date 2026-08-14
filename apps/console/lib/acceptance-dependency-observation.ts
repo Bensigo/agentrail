@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { scanForSecrets } from "./secret-scan";
 
 export const ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES = 64 * 1024;
@@ -7,6 +8,7 @@ export const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 export const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE = "composer_lock_public_packagist_v1";
+export const ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE = "go_root_public_proxy_lock_v1";
 export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -17,6 +19,9 @@ const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const COMPOSER_PACKAGE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
 const COMPOSER_STABLE_RELEASE = /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/u;
 const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/u;
+const GO_MODULE = /^(?=.{1,512}$)[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?)+$/u;
+const GO_VERSION = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
@@ -73,6 +78,7 @@ export type AcceptanceDependencyObservationInput = {
 type AcceptanceDependencyObservationProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
   readonly frozenUnsupportedReplayOnMismatch: boolean;
+  readonly packageManagerName?: string;
   candidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -114,6 +120,9 @@ const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
 };
 const ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "php", manager: "composer", profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+};
+const ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE,
 };
 
 function nodeCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
@@ -244,6 +253,40 @@ function osvComposerSecurityIsValid(
   return security.provider === "osv"
     && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`;
 }
+function goVersionParts(value: string): [number, number, number] | null {
+  const match = GO_VERSION.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number) as [number, number, number];
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
+function goModuleMajor(modulePath: string): number | null {
+  const first = modulePath.split("/", 1)[0]!;
+  if (!first.includes(".") || /^\d+(?:\.\d+){3}$/u.test(first)) return null;
+  const slash = /\/v([2-9]\d*)$/u.exec(modulePath);
+  if (slash) return Number(slash[1]);
+  const gopkg = /^gopkg\.in\/.+\.v([1-9]\d*)$/u.exec(modulePath);
+  return gopkg ? Number(gopkg[1]) : 0;
+}
+function goCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
+  const current = goVersionParts(candidate.currentVersion);
+  const target = goVersionParts(candidate.targetVersion);
+  const moduleMajor = goModuleMajor(candidate.package);
+  return GO_MODULE.test(candidate.package)
+    && candidate.package === candidate.package.toLowerCase()
+    && candidate.dependencyKind === "dependencies"
+    && candidate.specifier === candidate.currentVersion
+    && current !== null && target !== null && moduleMajor !== null
+    && current[0] === target[0]
+    && (moduleMajor === 0 ? current[0] <= 1 : current[0] === moduleMajor)
+    && compareStableSemver(current, target) < 0;
+}
+function osvGoSecurityIsValid(
+  security: AcceptanceDependencyObservationInput["security"],
+  candidate: AcceptanceDependencyObservationInput["candidate"],
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion}`;
+}
 const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
@@ -322,6 +365,18 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
       "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
   }],
+  ["go:go-modules:go_root_public_proxy_lock_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: false,
+    packageManagerName: "go",
+    candidateIsValid: goCandidateIsValid,
+    runtimeVersionIsValid: (version) => stableSemverParts(version) !== null,
+    packageManagerVersionIsValid: (version) => stableSemverParts(version) !== null,
+    manifestPathIsValid: (path) => path === "go.mod",
+    lockfilePathIsValid: (path) => path === "go.sum",
+    securityIsValid: osvGoSecurityIsValid,
+    expectedArgv: (candidate) => ["go", "get", `${candidate.package}@${candidate.targetVersion}`],
+  }],
 ]);
 
 /**
@@ -343,8 +398,18 @@ export type ParsedAcceptanceDependencyObservation = {
   boundaryAssessment: AcceptanceDependencyObservationBoundaryAssessment;
 };
 
+export type AcceptanceDependencyGoSumdbCustodyInput = {
+  priorGeneration: number | null;
+  priorSignedTreeNoteSha256: string | null;
+  successorSignedTreeNoteBase64: string;
+  successorSignedTreeNoteSha256: string;
+  sourceInventoryReceiptSha256: string;
+};
+
 export type ParsedAcceptanceDependencyObservationForStorage =
-  | ({ kind: "current" } & ParsedAcceptanceDependencyObservation)
+  | ({ kind: "current" } & ParsedAcceptanceDependencyObservation & {
+    sumdbCustody?: AcceptanceDependencyGoSumdbCustodyInput;
+  })
   | { kind: "historical_replay_candidate"; input: AcceptanceDependencyObservationInput };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -517,6 +582,55 @@ function parseSecurity(value: unknown): AcceptanceDependencyObservationInput["se
   };
 }
 
+function parseGoSumdbCustody(value: unknown): AcceptanceDependencyGoSumdbCustodyInput | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "priorGeneration",
+    "priorSignedTreeNoteSha256",
+    "successorSignedTreeNoteBase64",
+    "successorSignedTreeNoteSha256",
+    "sourceInventoryReceiptSha256",
+  ])) return null;
+  const priorIsBootstrap = value.priorGeneration === null && value.priorSignedTreeNoteSha256 === null;
+  const priorIsRetained = Number.isSafeInteger(value.priorGeneration)
+    && (value.priorGeneration as number) >= 0
+    && typeof value.priorSignedTreeNoteSha256 === "string"
+    && SHA256.test(value.priorSignedTreeNoteSha256);
+  if (!priorIsBootstrap && !priorIsRetained) return null;
+  if (
+    typeof value.successorSignedTreeNoteBase64 !== "string"
+    || value.successorSignedTreeNoteBase64.length < 4
+    || value.successorSignedTreeNoteBase64.length > 5_464
+    || !CANONICAL_BASE64.test(value.successorSignedTreeNoteBase64)
+    || typeof value.successorSignedTreeNoteSha256 !== "string"
+    || !SHA256.test(value.successorSignedTreeNoteSha256)
+    || typeof value.sourceInventoryReceiptSha256 !== "string"
+    || !SHA256.test(value.sourceInventoryReceiptSha256)
+  ) return null;
+  const successor = Buffer.from(value.successorSignedTreeNoteBase64, "base64");
+  if (
+    successor.byteLength < 1
+    || successor.byteLength > 4_096
+    || successor.toString("base64") !== value.successorSignedTreeNoteBase64
+  ) return null;
+  const actualSuccessorSha256 = createHash("sha256")
+    .update(successor)
+    .digest("hex");
+  if (
+    actualSuccessorSha256 !== value.successorSignedTreeNoteSha256.toLowerCase()
+    || (typeof value.priorSignedTreeNoteSha256 === "string"
+      && actualSuccessorSha256 === value.priorSignedTreeNoteSha256.toLowerCase())
+  ) return null;
+  return {
+    priorGeneration: value.priorGeneration as number | null,
+    priorSignedTreeNoteSha256: typeof value.priorSignedTreeNoteSha256 === "string"
+      ? value.priorSignedTreeNoteSha256.toLowerCase()
+      : null,
+    successorSignedTreeNoteBase64: value.successorSignedTreeNoteBase64,
+    successorSignedTreeNoteSha256: actualSuccessorSha256,
+    sourceInventoryReceiptSha256: value.sourceInventoryReceiptSha256.toLowerCase(),
+  };
+}
+
 function boundaryAssessment(input: AcceptanceDependencyObservationInput): AcceptanceDependencyObservationBoundaryAssessment {
   const profile = operationalProfile(input.candidate.identity);
   if (!profile
@@ -529,7 +643,7 @@ function boundaryAssessment(input: AcceptanceDependencyObservationInput): Accept
   const expectedArgv = profile.expectedArgv(input.candidate);
   const exactRuntimeProfile = input.runtime.disposition !== "unsafe";
   const exactPackageManagerProfile = input.packageManager.disposition !== "unsafe"
-    && input.packageManager.name === profile.identity.manager
+    && input.packageManager.name === (profile.packageManagerName ?? profile.identity.manager)
     && input.packageManager.profile === profile.identity.profile
     && (
       input.packageManager.disposition !== "safe"
@@ -553,7 +667,12 @@ function boundaryAssessment(input: AcceptanceDependencyObservationInput): Accept
 export function parseAcceptanceDependencyObservationForStorage(
   value: unknown,
 ): ParsedAcceptanceDependencyObservationForStorage | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value)) return null;
+  const candidateIdentity = isRecord(value.candidate) ? parseIdentity(value.candidate.identity) : null;
+  const isGoModules = candidateIdentity?.ecosystem === ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY.ecosystem
+    && candidateIdentity.manager === ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY.manager
+    && candidateIdentity.profile === ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY.profile;
+  if (!hasExactKeys(value, [
     "workspaceId",
     "recordId",
     "compiledPackId",
@@ -564,6 +683,7 @@ export function parseAcceptanceDependencyObservationForStorage(
     "lockfile",
     "baseline",
     "security",
+    ...(isGoModules ? ["sumdbCustody"] : []),
   ])) return null;
   if (
     typeof value.workspaceId !== "string" || !UUID.test(value.workspaceId)
@@ -577,7 +697,9 @@ export function parseAcceptanceDependencyObservationForStorage(
   const lockfile = parseLockfile(value.lockfile);
   const baseline = parseBaseline(value.baseline);
   const security = candidate ? parseSecurity(value.security) : null;
-  if (!candidate || !runtime || !packageManager || !manifest || !lockfile || !baseline || !security) return null;
+  const sumdbCustody = isGoModules ? parseGoSumdbCustody(value.sumdbCustody) : null;
+  if (!candidate || !runtime || !packageManager || !manifest || !lockfile || !baseline || !security
+    || (isGoModules && !sumdbCustody)) return null;
   const input: AcceptanceDependencyObservationInput = {
     workspaceId: value.workspaceId.toLowerCase(),
     recordId: value.recordId.toLowerCase(),
@@ -613,6 +735,7 @@ export function parseAcceptanceDependencyObservationForStorage(
     kind: "current",
     input,
     boundaryAssessment: boundaryAssessment(input),
+    ...(sumdbCustody ? { sumdbCustody } : {}),
   };
 }
 

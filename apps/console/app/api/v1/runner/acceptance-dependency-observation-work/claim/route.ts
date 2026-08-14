@@ -30,8 +30,9 @@ async function boundedJson(request: NextRequest): Promise<unknown | null> {
 }
 
 /**
- * Claim one server-selected pnpm evidence task, then mint an exact-repository
- * contents-read token. A failed mint releases the opaque lease immediately.
+ * Claim one server-selected operational dependency evidence task, then mint
+ * an exact-repository contents-read token. A failed mint releases the opaque
+ * lease immediately.
  */
 export async function POST(request: NextRequest) {
   const auth = await requireBearer(request);

@@ -73,6 +73,8 @@ export type DeleteGoSumdbSignedTreeNoteCustodyResult = {
   deletedCount: number;
 };
 
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 function isPostgresUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const record = error as { code?: unknown; cause?: unknown };
@@ -194,8 +196,16 @@ function validatedRawSignedTreeNote(input: unknown): RetainGoSumdbSignedTreeNote
 export async function retainGoSumdbSignedTreeNote(
   input: RetainGoSumdbSignedTreeNoteInput,
 ): Promise<RetainGoSumdbSignedTreeNoteResult> {
-  const validated = validatedRawSignedTreeNote(input);
-  return db.transaction(async (tx) => {
+  validatedRawSignedTreeNote(input);
+  return db.transaction((tx) => retainGoSumdbSignedTreeNoteInTransaction(tx, input));
+}
+
+/** Same custody transition, for callers that must commit it with another event. */
+export async function retainGoSumdbSignedTreeNoteInTransaction(
+  tx: DbTransaction,
+  input: RetainGoSumdbSignedTreeNoteInput,
+): Promise<RetainGoSumdbSignedTreeNoteResult> {
+    const validated = validatedRawSignedTreeNote(input);
     const lockKey = `go-sumdb-note-custody:${validated.workspaceId}:${validated.watchId}`;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
 
@@ -322,7 +332,6 @@ export async function retainGoSumdbSignedTreeNote(
       );
     }
     return { recorded: true, note: inserted };
-  });
 }
 
 /** Read the latest opaque note bytes; callers must re-authenticate them. */

@@ -2664,6 +2664,8 @@ const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
+const GO_MODULE = /^(?=.{1,512}$)[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?)+$/u;
+const GO_STABLE_RELEASE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const NODE_DEPENDENCY_KINDS = [
   "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
@@ -2683,6 +2685,7 @@ const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
 
 type AcceptanceDependencyReceiptProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
+  readonly packageManagerName?: string;
   readonly compiledPackCompilerVersion?: string;
   readonly compiledPackPolicyVersion?: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
@@ -2830,6 +2833,27 @@ function composerDependencyCandidateIsValid(candidate: AcceptanceDependencyCandi
     && compareStableSemver(current, upper) < 0
     && compareStableSemver(target, upper) < 0;
 }
+
+function goStableReleaseParts(value: string): [number, number, number] | null {
+  const match = GO_STABLE_RELEASE.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger)
+    ? [parts[0]!, parts[1]!, parts[2]!]
+    : null;
+}
+
+function goDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  const current = goStableReleaseParts(candidate.currentVersion);
+  const target = goStableReleaseParts(candidate.targetVersion);
+  return candidate.dependencyKind === "dependencies"
+    && GO_MODULE.test(candidate.package)
+    && candidate.specifier === candidate.currentVersion
+    && current !== null
+    && target !== null
+    && current[0] === target[0]
+    && compareStableSemver(target, current) > 0;
+}
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2852,6 +2876,14 @@ function osvComposerReceiptIsValid(
 ): boolean {
   return security.provider === "osv"
     && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`;
+}
+
+function osvGoReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion}`;
 }
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
@@ -2937,6 +2969,21 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "update", `${candidate.package}:${candidate.targetVersion}`, "--with-dependencies",
       "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
+  }],
+  ["go:go-modules:go_root_public_proxy_lock_v1", {
+    identity: {
+      ecosystem: "go",
+      manager: "go-modules",
+      profile: "go_root_public_proxy_lock_v1",
+    },
+    packageManagerName: "go",
+    candidateIsValid: goDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => stableSemverParts(version) !== null,
+    packageManagerVersionIsValid: (version) => stableSemverParts(version) !== null,
+    manifestPathIsValid: (path) => path === "go.mod",
+    lockfilePathIsValid: (path) => path === "go.sum",
+    securityIsValid: osvGoReceiptIsValid,
+    expectedArgv: (candidate) => ["go", "get", `${candidate.package}@${candidate.targetVersion}`],
   }],
 ]);
 
@@ -3127,7 +3174,7 @@ function isDependencyObservation(
     && value.runtime.disposition === "safe"
     && profile.runtimeVersionIsValid(value.runtime.version ?? "")
     && value.packageManager.disposition === "safe"
-    && value.packageManager.name === profile.identity.manager
+    && value.packageManager.name === (profile.packageManagerName ?? profile.identity.manager)
     && profile.packageManagerVersionIsValid(value.packageManager.version ?? "")
     && value.packageManager.profile === profile.identity.profile
     && exactJsonEqual(value.packageManager.updateArgv, profile.expectedArgv(value.candidate))

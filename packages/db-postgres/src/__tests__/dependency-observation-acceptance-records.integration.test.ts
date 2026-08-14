@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
@@ -8,6 +8,8 @@ import { repositories } from "../schema/repositories.js";
 import {
   dependencyWatchObservations,
   dependencyWatches,
+  type GoDependencySourceInventoryEntry,
+  type GoDependencySourceInventoryReceipt,
 } from "../schema/dependency_watches.js";
 import {
   acceptanceContracts,
@@ -17,11 +19,13 @@ import {
 import type { DependencyUpgradeCandidate } from "../queries/dependency_upgrade_contracts.js";
 import {
   createDraftAcceptanceRecordFromDependencyObservation,
+  goModulesObservationCandidateFingerprint,
   npmObservationConstraintMatches,
   npmObservationCandidateFingerprint,
   pnpmObservationCandidateFingerprint,
   resolveDependencyObservationProposalCandidate,
   validateNpmObservationProposalCandidate,
+  validateGoModulesObservationProposalCandidate,
   validatePnpmObservationProposalCandidate,
   type DependencyObservationDraftError,
 } from "../queries/dependency_observation_acceptance_records.js";
@@ -57,6 +61,10 @@ type PnpmProducerCandidate = Omit<
   "package_manager_version"
 > & { package_manager_version: null };
 type NpmProducerCandidate = Omit<
+  DependencyUpgradeCandidate,
+  "package_manager_version"
+> & { package_manager_version: null };
+type GoModulesProducerCandidate = Omit<
   DependencyUpgradeCandidate,
   "package_manager_version"
 > & { package_manager_version: null };
@@ -111,6 +119,79 @@ function npmCandidate(overrides: Partial<NpmProducerCandidate> = {}): NpmProduce
     ...overrides,
   };
   return { ...candidate, fingerprint: npmObservationCandidateFingerprint(candidate) };
+}
+
+/** Exact 14-key output of dependency_runtime._legacy_candidate_payload for Go. */
+function goModulesCandidate(
+  overrides: Partial<GoModulesProducerCandidate> = {},
+): GoModulesProducerCandidate {
+  const candidate: GoModulesProducerCandidate = {
+    package: "gopkg.in/yaml.v3",
+    ecosystem: "go",
+    package_manager: "go-modules",
+    dependency_kind: "dependencies",
+    specifier: "v3.0.0",
+    current_version: "v3.0.0",
+    target_version: "v3.0.1",
+    manifest_path: "go.mod",
+    lockfile_path: "go.sum",
+    baseline_sha: BASELINE,
+    fingerprint: "",
+    package_manager_version: null,
+    verification_commands: ["go mod download", "go test ./..."],
+    manager_commands: {
+      version: "go version",
+      install: "go mod download",
+      update: "go get gopkg.in/yaml.v3@v3.0.1",
+    },
+    ...overrides,
+  };
+  return { ...candidate, fingerprint: goModulesObservationCandidateFingerprint(candidate) };
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean"
+    || typeof value === "number") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+function goSourceReceipt(repository: string, commitSha = BASELINE): {
+  receipt: GoDependencySourceInventoryReceipt;
+  identitySha256: string;
+} {
+  const entries: GoDependencySourceInventoryEntry[] = [
+    { path: "go.mod", mode: "100644", type: "blob", objectSha: "c".repeat(40) },
+    { path: "go.sum", mode: "100644", type: "blob", objectSha: "d".repeat(40) },
+  ];
+  const sha256 = (value: unknown) => createHash("sha256")
+    .update(canonicalJson(value), "utf8").digest("hex");
+  const withoutIdentity: Omit<GoDependencySourceInventoryReceipt, "identitySha256"> = {
+    kind: "github_exact_tree_dependency_source_inventory",
+    schemaVersion: 1,
+    identity: {
+      ecosystem: "go", manager: "go-modules",
+      profile: "go_github_exact_tree_source_inventory_v1",
+    },
+    authority: {
+      provider: "github", method: "github_app_installation_api",
+      apiOrigin: "https://api.github.com", repository,
+      requestedRef: commitSha, commitSha, rootTreeSha: "b".repeat(40),
+    },
+    inventory: {
+      recursive: true, truncated: false, entryCount: entries.length,
+      entries, entriesSha256: sha256(entries),
+    },
+    requiredFiles: [
+      { path: "go.mod", mode: "100644", blobSha: "c".repeat(40), byteCount: 32, contentSha256: MANIFEST_HASH },
+      { path: "go.sum", mode: "100644", blobSha: "d".repeat(40), byteCount: 64, contentSha256: LOCKFILE_HASH },
+    ],
+    policy: { name: "go_root_source_inventory_v1", result: "admitted" },
+  };
+  const identitySha256 = sha256(withoutIdentity);
+  return { receipt: { ...withoutIdentity, identitySha256 }, identitySha256 };
 }
 
 function npmRangeCandidate(
@@ -296,6 +377,46 @@ describe("dependency observation proposal producer compatibility", () => {
     expect(resolveDependencyObservationProposalCandidate(yarn)).toBeNull();
   });
 
+  it("admits only the exact root Go Modules candidate shape", () => {
+    const candidate = goModulesCandidate();
+
+    expect(Object.keys(candidate)).toHaveLength(14);
+    expect(validateGoModulesObservationProposalCandidate(candidate)).toEqual(candidate);
+    expect(resolveDependencyObservationProposalCandidate(candidate)).toMatchObject({
+      candidate,
+      manifestPath: "go.mod",
+      lockfilePath: "go.sum",
+      profile: {
+        ecosystem: "go",
+        manager: "go-modules",
+        profile: "go_root_public_proxy_lock_v1",
+        capability: "proposal_observation_only",
+      },
+    });
+  });
+
+  it.each([
+    ["nested manifest", goModulesCandidate({ manifest_path: "tools/go.mod" })],
+    ["pseudo version", goModulesCandidate({ target_version: "v3.0.1-0.20260101000000-deadbeefdead" })],
+    ["major mismatch", goModulesCandidate({
+      package: "gopkg.in/yaml.v3",
+      target_version: "v4.0.0",
+      manager_commands: {
+        version: "go version", install: "go mod download",
+        update: "go get gopkg.in/yaml.v3@v4.0.0",
+      },
+    })],
+    ["command drift", goModulesCandidate({
+      manager_commands: {
+        version: "go version", install: "go mod download",
+        update: "go get gopkg.in/yaml.v3@latest",
+      },
+    })],
+    ["adapter claim", { ...goModulesCandidate(), adapter_profile: "go_root_public_proxy_lock_v1" }],
+  ] as const)("refuses Go Modules %s custody drift", (_name, candidate) => {
+    expect(validateGoModulesObservationProposalCandidate(candidate)).toBeNull();
+  });
+
   it("keeps the proposal query free of approval, Pack, queue, PR, and merge authority", () => {
     const source = readFileSync(
       new URL("../queries/dependency_observation_acceptance_records.ts", import.meta.url),
@@ -453,6 +574,22 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     });
   }
 
+  async function observeGo() {
+    const source = await observe({
+      candidate: goModulesCandidate(),
+      hashes: { "go.mod": MANIFEST_HASH, "go.sum": LOCKFILE_HASH },
+      watchManifestPath: "go.mod",
+      watchLockfilePath: "go.sum",
+    });
+    const inventory = goSourceReceipt(source.repository.name);
+    await db.update(dependencyWatchObservations).set({
+      observationKey: `${source.observation.observationKey}:source:${inventory.identitySha256}`,
+      sourceInventoryReceipt: inventory.receipt,
+      sourceInventoryReceiptSha256: inventory.identitySha256,
+    }).where(eq(dependencyWatchObservations.id, source.observation.id));
+    return { ...source, inventory };
+  }
+
   it("creates one draft Record, v1 Contract, and immutable exact pnpm proposal custody", async () => {
     const source = await observe({
       hashes: {
@@ -560,6 +697,36 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
         independentSourceProof: "not_proven",
       },
     });
+  });
+
+  it("creates one root Go Modules proposal only from exact source-inventory custody", async () => {
+    const source = await observeGo();
+
+    const result = await createDraftAcceptanceRecordFromDependencyObservation(locator(source));
+
+    expect(result).toMatchObject({
+      created: true,
+      record: { repo: source.repository.name, originChannel: "dependency_watch" },
+      profile: {
+        ecosystem: "go", manager: "go-modules",
+        profile: "go_root_public_proxy_lock_v1", capability: "proposal_observation_only",
+      },
+    });
+    expect(result.record.sourceReferences).toEqual([expect.objectContaining({
+      observationId: source.observation.id,
+      baselineSha: BASELINE,
+      manifestPath: "go.mod",
+      lockfilePath: "go.sum",
+      selectedFileHashes: { "go.mod": MANIFEST_HASH, "go.sum": LOCKFILE_HASH },
+      sourceInventoryReceiptSha256: source.inventory.identitySha256,
+    })]);
+
+    await db.update(dependencyWatchObservations).set({
+      sourceInventoryReceipt: null,
+      sourceInventoryReceiptSha256: null,
+    }).where(eq(dependencyWatchObservations.id, source.observation.id));
+    await expect(createDraftAcceptanceRecordFromDependencyObservation(locator(source)))
+      .rejects.toMatchObject({ code: "unsafe_custody" } satisfies Partial<DependencyObservationDraftError>);
   });
 
   it.each([
@@ -1098,7 +1265,7 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     ["Yarn", "node", "yarn"], ["Bun", "node", "bun"],
     ["pip", "python", "pip"], ["Poetry", "python", "poetry"], ["uv", "python", "uv"],
     ["Maven", "java", "maven"], ["Gradle", "java", "gradle"], ["dotnet", "dotnet", "dotnet"],
-    ["Composer", "php", "composer"], ["Cargo", "rust", "cargo"], ["Go", "go", "go-modules"],
+    ["Composer", "php", "composer"], ["Cargo", "rust", "cargo"],
   ])("refuses %s managers without a legacy pre-PR draft profile", async (_name, ecosystem, manager) => {
     const source = await observe({
       candidate: pnpmCandidate({ ecosystem, package_manager: manager }),

@@ -676,6 +676,22 @@ release-ready** until those profiles are complete, a canonical runner supplies
 real evidence, an approved Pack reaches an external builder and re-enters
 exact-head review, and deployed/live and customer proof gates are satisfied.
 
+The current `github_claude` handoff branch adds one narrower R10.2 source/test
+continuation. An owner/admin can reserve one exact approved external Builder
+Pack before a single metadata-only GitHub comment write. The capability is an
+initial dependency handoff with one selected `@claude` mention; it does not
+reuse the correction-only capability lifecycle. Exact accepted receipts,
+ambiguous terminal holds, and append-only events retain the Record, Contract,
+compiled Pack, external Builder Pack, route revision, installation identity,
+and delivered head occurrence. A later signed same-repository synchronize from
+that delivered occurrence records re-entry only in the transaction that
+admits the successor exact-head review job. The re-entry receipt says
+`authorship: not_independently_proven` and `proof: not_proven`; delivery or head
+movement does not pass a criterion. Focused local Postgres and adapter tests are
+the only proof in this branch. It does not claim an external comment, Claude
+pickup/implementation, hosted webhook, deployed runtime, review result, merge,
+or customer use. The live exercise remains required after merge and deployment.
+
 ## R11 progress
 
 PR #1683 merged the bounded R11.1 source/test slice. One tenant-scoped,

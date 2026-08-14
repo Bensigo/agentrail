@@ -976,6 +976,117 @@ export const acceptanceCorrectionDispatchGithubActivations = pgTable(
 );
 
 /**
+ * One reserve-before-send, metadata-only initial dependency handoff. This is
+ * deliberately separate from correction delivery capability and custody.
+ */
+export const acceptanceDependencyBuilderDeliveries = pgTable(
+  "acceptance_dependency_builder_deliveries",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    externalBuilderPackId: uuid("external_builder_pack_id").notNull(),
+    externalBuilderPackEventId: uuid("external_builder_pack_event_id").notNull(),
+    externalBuilderPackIdentitySha256: text("external_builder_pack_identity_sha256").notNull(),
+    observationEventId: uuid("observation_event_id").notNull(),
+    approvalEventId: uuid("approval_event_id").notNull(),
+    candidateFingerprint: text("candidate_fingerprint").notNull(),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    deliveredHeadSha: text("delivered_head_sha").notNull(),
+    deliveredHeadCycleId: uuid("delivered_head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    compiledPackId: uuid("compiled_pack_id").notNull().references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
+    compiledPackSha256: text("compiled_pack_sha256").notNull(),
+    sourceCustodyIdentitySha256: text("source_custody_identity_sha256").notNull(),
+    routeId: uuid("route_id").notNull().references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeAdapter: text("route_adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    routeSelectionEventId: uuid("route_selection_event_id").notNull(),
+    routeSnapshotSha256: text("route_snapshot_sha256").notNull(),
+    capabilitySnapshot: jsonb("capability_snapshot").$type<Record<string, unknown>>().notNull(),
+    capabilitySnapshotSha256: text("capability_snapshot_sha256").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    requestedRole: text("requested_role").notNull(),
+    deliveryIdentitySha256: text("delivery_identity_sha256").notNull(),
+    body: text("body").notNull(),
+    bodySha256: text("body_sha256").notNull(),
+    status: text("status").notNull().default("reserved"),
+    githubCommentId: text("github_comment_id"),
+    githubCommentUrl: text("github_comment_url"),
+    resultReason: text("result_reason"),
+    githubDeliveryId: text("github_delivery_id"),
+    githubDeliveryEventId: uuid("github_delivery_event_id"),
+    githubHeadAdvanceEventId: uuid("github_head_advance_event_id"),
+    successorHeadSha: text("successor_head_sha"),
+    successorHeadCycleId: uuid("successor_head_cycle_id"),
+    successorReviewJobId: uuid("successor_review_job_id").references(() => reviewJobs.id, { onDelete: "restrict" }),
+    reenteredAt: timestamp("reentered_at", { withTimezone: true }),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    packEvent: uniqueIndex("acceptance_dependency_builder_deliveries_pack_event_key").on(t.externalBuilderPackEventId),
+    commentReceipt: uniqueIndex("acceptance_dependency_builder_deliveries_comment_key")
+      .on(t.githubCommentId).where(sql`${t.githubCommentId} IS NOT NULL`),
+    currentRecord: index("acceptance_dependency_builder_deliveries_record_head_idx")
+      .on(t.workspaceId, t.recordId, t.deliveredHeadCycleId),
+    bindingCheck: check(
+      "acceptance_dependency_builder_deliveries_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND ${t.prNumber} > 0
+        AND ${t.deliveredHeadSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.acceptanceContractVersion} > 0
+        AND ${t.routeAdapter} = 'github_claude'
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.candidateFingerprint} ~ '^sha256:[A-Fa-f0-9]{64}$'
+        AND ${t.externalBuilderPackIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.acceptanceContractSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.compiledPackSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.sourceCustodyIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.routeSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND jsonb_typeof(${t.capabilitySnapshot}) = 'object'
+        AND ${t.capabilitySnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubInstallationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.requestedBy} ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        AND ${t.requestedRole} IN ('owner', 'admin')
+        AND ${t.deliveryIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND octet_length(${t.body}) BETWEEN 1 AND 12288
+        AND ${t.bodySha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    stateCheck: check(
+      "acceptance_dependency_builder_deliveries_state_check",
+      sql`${t.status} IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold', 'reentered')
+        AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
+        AND ((${t.status} IN ('carrier_accepted', 'reentered')) = (${t.githubCommentId} IS NOT NULL))
+        AND ((${t.status} IN ('carrier_accepted', 'reentered')) = (${t.githubCommentUrl} IS NOT NULL))
+        AND (${t.githubCommentId} IS NULL OR (char_length(${t.githubCommentId}) BETWEEN 1 AND 40 AND ${t.githubCommentId} ~ '^[1-9][0-9]*$'))
+        AND (${t.githubCommentUrl} IS NULL OR ${t.githubCommentUrl} = 'https://github.com/' || ${t.repo} || '/pull/' || (${t.prNumber})::text || '#issuecomment-' || ${t.githubCommentId})
+        AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
+        AND (${t.status} <> 'bounded_failed' OR ${t.resultReason} IN ('credential_unavailable', 'github_rejected', 'invalid_db_issued_body'))
+        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN ('github_unavailable', 'ambiguous_response', 'storage_unavailable'))
+        AND ((${t.status} = 'reentered') = (${t.reenteredAt} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.successorHeadSha} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.successorHeadCycleId} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.successorReviewJobId} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.githubDeliveryId} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.githubDeliveryEventId} IS NOT NULL))
+        AND ((${t.status} = 'reentered') = (${t.githubHeadAdvanceEventId} IS NOT NULL))
+        AND (${t.successorHeadSha} IS NULL OR ${t.successorHeadSha} ~ '^[A-Fa-f0-9]{40}$')`
+    ),
+  })
+);
+
+/**
  * One immutable acknowledgement receipt for a carrier-accepted
  * `github_claude` activation. GitHub Actions OIDC authenticates the pinned
  * workflow; only hashes of the resumable Claude session id, OIDC subject, and
@@ -1782,6 +1893,7 @@ export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatc
 export type AcceptanceCorrectionDispatchGithubPreflightRow = typeof acceptanceCorrectionDispatchGithubPreflights.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubFindingPublicationRow = typeof acceptanceCorrectionDispatchGithubFindingPublications.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceCorrectionDispatchGithubActivations.$inferSelect;
+export type AcceptanceDependencyBuilderDeliveryRow = typeof acceptanceDependencyBuilderDeliveries.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow = typeof acceptanceCorrectionDispatchGithubClaudeAckReceipts.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow = typeof acceptanceCorrectionDispatchGithubClaudeRepairObservations.$inferSelect;
 export type AcceptanceGatedGithubIssuePublicationRow = typeof acceptanceGatedGithubIssuePublications.$inferSelect;

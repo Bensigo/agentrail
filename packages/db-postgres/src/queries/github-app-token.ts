@@ -117,6 +117,8 @@ export type GithubCorrectionCarrierCredentialResult =
       reason: "github_unavailable" | "invalid_github_response" | "storage_unavailable";
     };
 
+export type GithubDependencyBuilderCredentialResult = GithubCorrectionCarrierCredentialResult;
+
 const GITHUB_REPOSITORY = /^([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -222,6 +224,19 @@ export async function getGithubCorrectionCarrierCredential(
     kind: "unavailable",
     reason: "installation_or_permission_denied",
   };
+}
+
+/**
+ * Named least-authority credential boundary for the initial dependency Pack
+ * handoff. This is not a new independent credential scope: it reuses the
+ * existing exact-repository installation-token mint with only issues and Pull
+ * Requests write. The delivery capability and lifecycle remain distinct from
+ * correction custody.
+ */
+export async function getGithubDependencyBuilderCredential(
+  input: GithubCorrectionCarrierCredentialInput,
+): Promise<GithubDependencyBuilderCredentialResult> {
+  return getGithubCorrectionCarrierCredential(input);
 }
 
 export async function bindWorkspaceGithubInstallation(

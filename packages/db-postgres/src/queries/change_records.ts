@@ -10,6 +10,7 @@ import {
   acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
+  acceptanceDependencyBuilderDeliveries,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCorrectionDispatchGithubFindingPublications,
@@ -30,6 +31,7 @@ import {
   type AcceptanceBuilderRouteGithubClaudeAckProfileRow,
   type AcceptanceBuilderRouteRow,
   type AcceptanceCompiledContextPackRow,
+  type AcceptanceDependencyBuilderDeliveryRow,
   type AcceptanceCorrectionDispatchRow,
   type AcceptanceCorrectionDispatchGithubPreflightRow,
   type AcceptanceCorrectionDispatchGithubFindingPublicationRow,
@@ -80,6 +82,7 @@ import {
   type AcceptanceGatedGithubIssuePacketIdentity,
   type AcceptanceGatedGithubIssueRenderBinding,
 } from "../acceptance-gated-github-issue-renderer.js";
+import { renderAcceptanceDependencyBuilderHandoff } from "../acceptance-dependency-builder-renderer.js";
 import {
   criterionVisibleTextContainsSecret,
   criterionVisibleValueContainsSecret,
@@ -795,6 +798,7 @@ export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
       previewBootsTornDown: number;
       previousHeadSha: string | null;
       headChanged: boolean;
+      dependencyBuilderReentriesRecorded: number;
     }
   | { kind: "not_found" | "not_confirmed" | "already_attached" }
   | {
@@ -815,6 +819,181 @@ export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
       currentAuthoritative: boolean;
       authorityGeneration: number;
     };
+
+async function recordDependencyBuilderReentriesForHeadAdvanceInTransaction(
+  tx: DbTransaction,
+  input: {
+    workspaceId: string;
+    recordId: string;
+    repo: string;
+    prNumber: number;
+    event: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput["event"];
+    deliveryId: string;
+    deliveryEventId: string;
+    headTransition: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput["headTransition"];
+    previousHeadCycleId: string | null;
+    successorHeadSha: string;
+    successorHeadCycleId: string;
+    successorReviewJobId: string;
+    authorityEventId: string | null;
+    headChanged: boolean;
+    admitReviewJob: boolean;
+  },
+): Promise<number> {
+  if (input.event !== "synchronize" || !input.headChanged || !input.admitReviewJob
+    || !input.headTransition || input.headTransition.afterHeadSha !== input.successorHeadSha
+    || input.headTransition.beforeHeadSha === input.successorHeadSha
+    || !input.previousHeadCycleId || !input.authorityEventId) return 0;
+  const job = (await tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, input.successorReviewJobId),
+    eq(reviewJobs.workspaceId, input.workspaceId),
+    eq(reviewJobs.repo, input.repo),
+    eq(reviewJobs.prNumber, input.prNumber),
+    eq(reviewJobs.headSha, input.successorHeadSha),
+  )).limit(1))[0];
+  if (!job || job.event !== "synchronize" || job.id !== input.successorHeadCycleId) return 0;
+  const deliveryEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.id, input.deliveryEventId),
+    eq(changeRecordEvents.recordId, input.recordId),
+    eq(changeRecordEvents.eventKey, `external-pr:delivery:${input.prNumber}:${input.deliveryId}`),
+  )).limit(1))[0];
+  const authorityEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.id, input.authorityEventId),
+    eq(changeRecordEvents.recordId, input.recordId),
+    eq(changeRecordEvents.eventKey, `external-pr:head-advanced:${input.prNumber}:${input.successorHeadCycleId}`),
+  )).limit(1))[0];
+  if (!deliveryEvent || deliveryEvent.actor !== "github_webhook"
+    || deliveryEvent.payloadRef["kind"] !== "external_pr_delivery"
+    || deliveryEvent.payloadRef["event"] !== "synchronize"
+    || deliveryEvent.payloadRef["deliveryId"] !== input.deliveryId
+    || !isDeepStrictEqual(deliveryEvent.payloadRef["headTransition"], input.headTransition)
+    || !authorityEvent || authorityEvent.actor !== "github_webhook"
+    || authorityEvent.payloadRef["kind"] !== "external_pr_head_advanced"
+    || authorityEvent.payloadRef["previousHeadSha"] !== input.headTransition.beforeHeadSha
+    || authorityEvent.payloadRef["headSha"] !== input.successorHeadSha
+    || authorityEvent.payloadRef["headCycleId"] !== input.successorHeadCycleId) return 0;
+  const deliveries = await tx.select().from(acceptanceDependencyBuilderDeliveries).where(and(
+    eq(acceptanceDependencyBuilderDeliveries.workspaceId, input.workspaceId),
+    eq(acceptanceDependencyBuilderDeliveries.recordId, input.recordId),
+    eq(acceptanceDependencyBuilderDeliveries.repo, input.repo),
+    eq(acceptanceDependencyBuilderDeliveries.prNumber, input.prNumber),
+    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadSha, input.headTransition.beforeHeadSha),
+    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, input.previousHeadCycleId),
+    eq(acceptanceDependencyBuilderDeliveries.status, "carrier_accepted"),
+  )).orderBy(asc(acceptanceDependencyBuilderDeliveries.id));
+  let recorded = 0;
+  for (const delivery of deliveries) {
+    const resultEvent = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, `acceptance-dependency-builder-delivery:result:${delivery.externalBuilderPackEventId}`),
+    )).limit(1))[0];
+    if (!await dependencyBuilderDeliveryHasValidReservationCustody(tx, delivery)
+      || !resultEvent
+      || resultEvent.actor !== ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR
+      || resultEvent.stage !== "builder_handoff"
+      || !isDeepStrictEqual(resultEvent.payloadRef, dependencyBuilderDeliveryEventPayload(delivery, "result"))) {
+      // Re-entry attribution is optional custody. Corruption must fail it
+      // closed without rolling back the authoritative signed head transition
+      // or keeping the reviewer on a stale occurrence.
+      continue;
+    }
+    const now = new Date();
+    const projected = {
+      ...delivery,
+      status: "reentered",
+      githubDeliveryId: input.deliveryId,
+      githubDeliveryEventId: input.deliveryEventId,
+      githubHeadAdvanceEventId: input.authorityEventId,
+      successorHeadSha: input.successorHeadSha,
+      successorHeadCycleId: input.successorHeadCycleId,
+      successorReviewJobId: input.successorReviewJobId,
+      reenteredAt: now,
+      updatedAt: now,
+    } as AcceptanceDependencyBuilderDeliveryRow;
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: `acceptance-dependency-builder-delivery:reentry:${delivery.id}:${input.successorHeadCycleId}`,
+      stage: "builder_reentry",
+      actor: "github_webhook",
+      payloadRef: dependencyBuilderDeliveryEventPayload(projected, "reentry"),
+    }]);
+    if (!event.events[0]!.inserted) throw new Error("Dependency Builder delivery re-entry event unexpectedly replayed");
+    const updated = await tx.update(acceptanceDependencyBuilderDeliveries).set({
+      status: "reentered",
+      githubDeliveryId: input.deliveryId,
+      githubDeliveryEventId: input.deliveryEventId,
+      githubHeadAdvanceEventId: input.authorityEventId,
+      successorHeadSha: input.successorHeadSha,
+      successorHeadCycleId: input.successorHeadCycleId,
+      successorReviewJobId: input.successorReviewJobId,
+      reenteredAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceDependencyBuilderDeliveries.id, delivery.id),
+      eq(acceptanceDependencyBuilderDeliveries.status, "carrier_accepted"),
+      eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, input.previousHeadCycleId),
+    )).returning({ id: acceptanceDependencyBuilderDeliveries.id });
+    if (updated.length !== 1) throw new Error("Dependency Builder delivery re-entry lost its accepted precondition");
+    recorded += 1;
+  }
+  return recorded;
+}
+
+/** Closes the report-vs-webhook race when the signed successor won the PR lock first. */
+async function recordAcceptedDependencyBuilderLateReentryInTransaction(
+  tx: DbTransaction,
+  delivery: AcceptanceDependencyBuilderDeliveryRow,
+): Promise<number> {
+  if (delivery.status !== "carrier_accepted") return 0;
+  const record = (await tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, delivery.recordId),
+    eq(changeRecords.workspaceId, delivery.workspaceId),
+    eq(changeRecords.repo, delivery.repo),
+    eq(changeRecords.prNumber, delivery.prNumber),
+  )).limit(1))[0];
+  if (!record || !record.currentPrHeadAuthoritative || !record.currentPrHeadSha
+    || !record.currentPrHeadCycleId || record.currentPrHeadSha === delivery.deliveredHeadSha
+    || record.currentPrHeadAuthorityGeneration !== delivery.authorityGeneration + 1) return 0;
+  const authorityEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, delivery.recordId),
+    eq(changeRecordEvents.eventKey, `external-pr:head-advanced:${delivery.prNumber}:${record.currentPrHeadCycleId}`),
+  )).limit(1))[0];
+  const payload = authorityEvent?.payloadRef;
+  const githubDeliveryId = payload && typeof payload["deliveryId"] === "string"
+    ? payload["deliveryId"] : null;
+  if (!authorityEvent || !githubDeliveryId || payload["kind"] !== "external_pr_head_advanced"
+    || payload["event"] !== "synchronize" || payload["previousHeadSha"] !== delivery.deliveredHeadSha
+    || payload["headSha"] !== record.currentPrHeadSha
+    || payload["headCycleId"] !== record.currentPrHeadCycleId
+    || !isRecord(payload["headTransition"])
+    || payload["headTransition"]["beforeHeadSha"] !== delivery.deliveredHeadSha
+    || payload["headTransition"]["afterHeadSha"] !== record.currentPrHeadSha) return 0;
+  const deliveryEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, delivery.recordId),
+    eq(changeRecordEvents.eventKey, `external-pr:delivery:${delivery.prNumber}:${githubDeliveryId}`),
+  )).limit(1))[0];
+  if (!deliveryEvent) return 0;
+  return recordDependencyBuilderReentriesForHeadAdvanceInTransaction(tx, {
+    workspaceId: delivery.workspaceId,
+    recordId: delivery.recordId,
+    repo: delivery.repo,
+    prNumber: delivery.prNumber,
+    event: "synchronize",
+    deliveryId: githubDeliveryId,
+    deliveryEventId: deliveryEvent.id,
+    headTransition: {
+      beforeHeadSha: delivery.deliveredHeadSha,
+      afterHeadSha: record.currentPrHeadSha,
+    },
+    previousHeadCycleId: delivery.deliveredHeadCycleId,
+    successorHeadSha: record.currentPrHeadSha,
+    successorHeadCycleId: record.currentPrHeadCycleId,
+    successorReviewJobId: record.currentPrHeadCycleId,
+    authorityEventId: authorityEvent.id,
+    headChanged: true,
+    admitReviewJob: true,
+  });
+}
 
 /**
  * Establish or advance the mutable exact PR tip for one confirmed Acceptance
@@ -1031,6 +1210,7 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       throw new Error("Authoritative PR head is missing its current cycle");
     }
     let authorityEventInserted = false;
+    let authorityEventId: string | null = null;
     if (headChanged || !wasAttached) {
       const eventKey = wasAttached
         ? `external-pr:head-advanced:${input.prNumber}:${cycleId}`
@@ -1055,6 +1235,7 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
         },
       }]);
       authorityEventInserted = provenance.events[0]!.inserted;
+      authorityEventId = provenance.events[0]!.event.id;
     }
 
     let advanced = record;
@@ -1128,6 +1309,24 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       });
     }
 
+    const dependencyBuilderReentriesRecorded = await recordDependencyBuilderReentriesForHeadAdvanceInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      recordId: input.recordId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      event: input.event,
+      deliveryId: input.deliveryId,
+      deliveryEventId: deliveryReceipt.events[0]!.event.id,
+      headTransition: input.headTransition,
+      previousHeadCycleId: record.currentPrHeadCycleId,
+      successorHeadSha: input.headSha,
+      successorHeadCycleId: cycleId,
+      successorReviewJobId: jobId,
+      authorityEventId,
+      headChanged,
+      admitReviewJob: input.admitReviewJob,
+    });
+
     return {
       kind: "advanced",
       record: advanced,
@@ -1139,6 +1338,7 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       previewBootsTornDown,
       previousHeadSha,
       headChanged,
+      dependencyBuilderReentriesRecorded,
     };
   });
 }
@@ -13226,6 +13426,437 @@ export async function approveAcceptanceDependencyObservationAndMintExternalBuild
       approval: pair.approval,
       externalBuilderPack: pair.externalBuilderPack,
     };
+  });
+}
+
+export type AcceptanceDependencyBuilderHandoffCapability = {
+  kind: "acceptance_dependency_builder_handoff_capability";
+  version: 1;
+  adapter: "github_claude";
+  carrier: "github_issue_comment";
+  carrierIdentity: "workspace_github_app_installation";
+  recipient: "claude";
+  activation: "single_initial_vendor_mention";
+  receipt: "exact_github_issue_comment";
+  reentry: "signed_github_synchronize";
+  vendorAvailability: "not_asserted";
+  scopeBoundary: "dependency_initial_builder_handoff_only";
+  authority: {
+    jaceImplementation: "not_granted";
+    merge: "not_granted";
+    deployment: "not_granted";
+  };
+};
+
+export type AcceptanceDependencyBuilderDeliveryOutcome =
+  | { kind: "carrier_accepted"; githubCommentId: string; githubCommentUrl: string; bodySha256: string }
+  | { kind: "bounded_failed"; reason: "credential_unavailable" | "github_rejected" | "invalid_db_issued_body" }
+  | { kind: "unknown_post_outcome"; reason: "github_unavailable" | "ambiguous_response" | "storage_unavailable" };
+
+export type ReserveAcceptanceDependencyBuilderDeliveryResult =
+  | { kind: "reserved"; delivery: AcceptanceDependencyBuilderDeliveryRow; body: string }
+  | { kind: "held"; reason: "reserved" | "ambiguous_hold"; deliveryId: string }
+  | { kind: "terminal"; status: "carrier_accepted" | "bounded_failed" | "reentered"; deliveryId: string }
+  | { kind: "not_found" | "not_current" | "not_authorized" }
+  | { kind: "not_ready"; reason: AcceptanceDependencyExternalBuilderNotReadyReason | "selected_route_not_github_claude" | "github_installation_unavailable" | "invalid_rendering" };
+
+const ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR = "server:dependency-builder-delivery";
+
+function dependencyBuilderDeliveryCapability(): AcceptanceDependencyBuilderHandoffCapability {
+  return {
+    kind: "acceptance_dependency_builder_handoff_capability",
+    version: 1,
+    adapter: "github_claude",
+    carrier: "github_issue_comment",
+    carrierIdentity: "workspace_github_app_installation",
+    recipient: "claude",
+    activation: "single_initial_vendor_mention",
+    receipt: "exact_github_issue_comment",
+    reentry: "signed_github_synchronize",
+    vendorAvailability: "not_asserted",
+    scopeBoundary: "dependency_initial_builder_handoff_only",
+    authority: { jaceImplementation: "not_granted", merge: "not_granted", deployment: "not_granted" },
+  };
+}
+
+function dependencyBuilderDeliveryId(packEventId: string): string {
+  return uuid5Url(`acceptance-dependency-builder-delivery:${packEventId}`);
+}
+
+function dependencyBuilderPackEventIdentity(event: ChangeRecordEventRow): string {
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_dependency_external_builder_pack_event_identity",
+    version: 1,
+    eventId: event.id,
+    eventKey: event.eventKey,
+    stage: event.stage,
+    actor: event.actor,
+    payloadRef: event.payloadRef,
+  });
+}
+
+function dependencyBuilderDeliveryIdentity(values: Record<string, unknown>): string {
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_dependency_builder_delivery",
+    version: 1,
+    ...values,
+  });
+}
+
+function dependencyBuilderDeliveryImmutable(row: AcceptanceDependencyBuilderDeliveryRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    recordId: row.recordId,
+    externalBuilderPackId: row.externalBuilderPackId,
+    externalBuilderPackEventId: row.externalBuilderPackEventId,
+    externalBuilderPackIdentitySha256: row.externalBuilderPackIdentitySha256,
+    observationEventId: row.observationEventId,
+    approvalEventId: row.approvalEventId,
+    candidateFingerprint: row.candidateFingerprint,
+    repo: row.repo,
+    prNumber: row.prNumber,
+    deliveredHeadSha: row.deliveredHeadSha,
+    deliveredHeadCycleId: row.deliveredHeadCycleId,
+    authorityGeneration: row.authorityGeneration,
+    acceptanceContractId: row.acceptanceContractId,
+    acceptanceContractVersion: row.acceptanceContractVersion,
+    acceptanceContractSha256: row.acceptanceContractSha256,
+    compiledPackId: row.compiledPackId,
+    compiledPackSha256: row.compiledPackSha256,
+    sourceCustodyIdentitySha256: row.sourceCustodyIdentitySha256,
+    routeId: row.routeId,
+    routeAdapter: row.routeAdapter,
+    routeConfigurationVersion: row.routeConfigurationVersion,
+    routeSelectionEventId: row.routeSelectionEventId,
+    routeSnapshotSha256: row.routeSnapshotSha256,
+    capabilitySnapshot: row.capabilitySnapshot,
+    capabilitySnapshotSha256: row.capabilitySnapshotSha256,
+    githubInstallationIdentitySha256: row.githubInstallationIdentitySha256,
+    requestedBy: row.requestedBy,
+    requestedRole: row.requestedRole,
+  };
+}
+
+async function dependencyBuilderDeliveryHasValidReservationCustody(
+  tx: DbTransaction,
+  row: AcceptanceDependencyBuilderDeliveryRow,
+): Promise<boolean> {
+  const capability = dependencyBuilderDeliveryCapability();
+  if (row.routeAdapter !== "github_claude"
+    || !isDeepStrictEqual(row.capabilitySnapshot, capability)
+    || row.capabilitySnapshotSha256 !== acceptanceContextPackCanonicalSha256(capability)
+    || row.deliveryIdentitySha256 !== dependencyBuilderDeliveryIdentity(dependencyBuilderDeliveryImmutable(row))
+    || createHash("sha256").update(row.body, "utf8").digest("hex") !== row.bodySha256) return false;
+  const packEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.id, row.externalBuilderPackEventId),
+    eq(changeRecordEvents.recordId, row.recordId),
+  )).limit(1))[0];
+  if (!packEvent || dependencyBuilderPackEventIdentity(packEvent) !== row.externalBuilderPackIdentitySha256) return false;
+  const reserved = {
+    ...row,
+    status: "reserved",
+    githubCommentId: null,
+    githubCommentUrl: null,
+    resultReason: null,
+    githubDeliveryId: null,
+    githubDeliveryEventId: null,
+    githubHeadAdvanceEventId: null,
+    successorHeadSha: null,
+    successorHeadCycleId: null,
+    successorReviewJobId: null,
+    reenteredAt: null,
+  } as AcceptanceDependencyBuilderDeliveryRow;
+  const event = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, row.recordId),
+    eq(changeRecordEvents.eventKey, `acceptance-dependency-builder-delivery:reserved:${row.externalBuilderPackEventId}`),
+  )).limit(1))[0];
+  return !!event && event.stage === "builder_handoff"
+    && event.actor === ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR
+    && isDeepStrictEqual(event.payloadRef, dependencyBuilderDeliveryEventPayload(reserved, "reserved"));
+}
+
+function dependencyBuilderDeliveryEventPayload(
+  row: AcceptanceDependencyBuilderDeliveryRow,
+  event: "reserved" | "result" | "reentry",
+): Record<string, unknown> {
+  return {
+    kind: `acceptance_dependency_builder_delivery_${event}`,
+    version: 1,
+    deliveryId: row.id,
+    deliveryIdentitySha256: row.deliveryIdentitySha256,
+    workspaceId: row.workspaceId,
+    recordId: row.recordId,
+    externalBuilderPack: {
+      id: row.externalBuilderPackId,
+      eventId: row.externalBuilderPackEventId,
+      identitySha256: row.externalBuilderPackIdentitySha256,
+    },
+    observationEventId: row.observationEventId,
+    approvalEventId: row.approvalEventId,
+    candidateFingerprint: row.candidateFingerprint,
+    binding: {
+      repo: row.repo,
+      prNumber: row.prNumber,
+      deliveredHeadSha: row.deliveredHeadSha,
+      deliveredHeadCycleId: row.deliveredHeadCycleId,
+      authorityGeneration: row.authorityGeneration,
+      acceptanceContract: { id: row.acceptanceContractId, version: row.acceptanceContractVersion, sha256: row.acceptanceContractSha256 },
+      compiledPack: { id: row.compiledPackId, sha256: row.compiledPackSha256, sourceCustodyIdentitySha256: row.sourceCustodyIdentitySha256 },
+    },
+    route: {
+      id: row.routeId,
+      adapter: row.routeAdapter,
+      configurationVersion: row.routeConfigurationVersion,
+      selectionEventId: row.routeSelectionEventId,
+      snapshotSha256: row.routeSnapshotSha256,
+    },
+    capability: { snapshot: row.capabilitySnapshot, sha256: row.capabilitySnapshotSha256, githubInstallationIdentitySha256: row.githubInstallationIdentitySha256 },
+    requestedBy: row.requestedBy,
+    requestedRole: row.requestedRole,
+    bodySha256: row.bodySha256,
+    status: row.status,
+    result: event === "reserved" ? null : {
+      githubCommentId: row.githubCommentId,
+      githubCommentUrl: row.githubCommentUrl,
+      reason: row.resultReason,
+    },
+    reentry: event !== "reentry" ? null : {
+      attribution: "head_successor_after_delivery",
+      authorship: "not_independently_proven",
+      proof: "not_proven",
+      reviewRequirement: "exact_head_r7_reentry",
+      githubDeliveryId: row.githubDeliveryId,
+      githubDeliveryEventId: row.githubDeliveryEventId,
+      githubHeadAdvanceEventId: row.githubHeadAdvanceEventId,
+      successorHeadSha: row.successorHeadSha,
+      successorHeadCycleId: row.successorHeadCycleId,
+      successorReviewJobId: row.successorReviewJobId,
+    },
+  };
+}
+
+function parseDependencyBuilderDeliveryActor(input: unknown): { actor: string; userId: string } | null {
+  if (typeof input !== "string") return null;
+  const match = HUMAN_DECISION_ACTOR.exec(input);
+  return match ? { actor: `user:${match[1]!.toLowerCase()}`, userId: match[1]!.toLowerCase() } : null;
+}
+
+/** Reserves the only send claim for one immutable external Builder Pack. */
+export async function reserveAcceptanceDependencyBuilderDelivery(input: {
+  workspaceId: string;
+  recordId: string;
+  externalBuilderPackEventId: string;
+  requestedBy: string;
+}): Promise<ReserveAcceptanceDependencyBuilderDeliveryResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId", "externalBuilderPackEventId", "requestedBy"])
+    || !isUuid(input.workspaceId) || !isUuid(input.recordId) || !isUuid(input.externalBuilderPackEventId)) {
+    throw new Error("Dependency Builder delivery requires exact workspace, Record, Pack event, and user actor");
+  }
+  const requested = parseDependencyBuilderDeliveryActor(input.requestedBy);
+  if (!requested) throw new Error("Dependency Builder delivery requires an exact user actor");
+  const parsed = { workspaceId: input.workspaceId.toLowerCase(), recordId: input.recordId.toLowerCase(), externalBuilderPackEventId: input.externalBuilderPackEventId.toLowerCase() };
+  const candidate = await currentAcceptanceDependencyCandidate(parsed);
+  if (candidate === null) return { kind: "not_found" };
+  if (candidate === "not_current") return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({ ...parsed, ...candidate });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const membership = (Array.from(await tx.execute(sql`
+      SELECT role FROM workspace_memberships
+      WHERE user_id = ${requested.userId} AND workspace_id = ${parsed.workspaceId}
+      FOR SHARE
+    `)) as Array<{ role: string }>)[0];
+    if (!membership || (membership.role !== "owner" && membership.role !== "admin")) return { kind: "not_authorized" as const };
+    const current = await resolveCurrentAcceptanceDependencyContextInTransaction(tx, parsed, candidate);
+    if (current.kind !== "current") return current;
+    const packEvent = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.id, parsed.externalBuilderPackEventId),
+      eq(changeRecordEvents.recordId, parsed.recordId),
+    )).limit(1))[0];
+    const packPayload = packEvent?.payloadRef;
+    const observationEventId = packPayload && isRecord(packPayload["observation"])
+      && typeof packPayload["observation"]["eventId"] === "string"
+      ? packPayload["observation"]["eventId"] as string : null;
+    if (!packEvent || !observationEventId || !isUuid(observationEventId)) return { kind: "not_found" as const };
+    const observationEvent = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.id, observationEventId), eq(changeRecordEvents.recordId, parsed.recordId),
+    )).limit(1))[0];
+    const stored = observationEvent && parseStoredAcceptanceDependencyObservationEvent(observationEvent);
+    if (!stored || !observationBindingMatchesCurrentContext({ binding: stored.binding, context: current.context })) return { kind: "not_current" as const };
+    const validated = await revalidateStoredAcceptanceDependencyObservationInTransaction(tx, { stored, context: current.context });
+    if (validated.kind !== "valid") return validated;
+    const pair = await readAcceptanceDependencyApprovalPackPairInTransaction(tx, { stored, context: current.context });
+    if (pair.kind !== "present" || pair.externalBuilderPack.eventId !== packEvent.id) {
+      return { kind: "not_ready" as const, reason: "invalid_approval_pack_custody" as const };
+    }
+    const pack = pair.externalBuilderPack;
+    if (pack.route.adapter !== "github_claude") return { kind: "not_ready" as const, reason: "selected_route_not_github_claude" as const };
+    const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+      eq(acceptanceBuilderRoutes.id, pack.route.id),
+      eq(acceptanceBuilderRoutes.workspaceId, parsed.workspaceId),
+      eq(acceptanceBuilderRoutes.repo, current.context.binding.repo),
+      eq(acceptanceBuilderRoutes.adapter, "github_claude"),
+      eq(acceptanceBuilderRoutes.status, "active"),
+      eq(acceptanceBuilderRoutes.configurationVersion, pack.route.configurationVersion),
+    )).limit(1))[0];
+    if (!route) return { kind: "not_ready" as const, reason: "selected_route_not_github_claude" as const };
+    const installation = (await tx.select({ installationId: workspaces.githubInstallationId, accountLogin: workspaces.githubInstallationAccountLogin, accountType: workspaces.githubInstallationAccountType })
+      .from(workspaces).where(eq(workspaces.id, parsed.workspaceId)).limit(1))[0];
+    const installationIdentity = installation && githubInstallationIdentitySha256({ workspaceId: parsed.workspaceId, ...installation });
+    if (!installationIdentity) return { kind: "not_ready" as const, reason: "github_installation_unavailable" as const };
+    const id = dependencyBuilderDeliveryId(pack.eventId);
+    const capability = dependencyBuilderDeliveryCapability();
+    const capabilitySnapshotSha256 = acceptanceContextPackCanonicalSha256(capability);
+    const identityInput = {
+      id, workspaceId: parsed.workspaceId, recordId: parsed.recordId,
+      externalBuilderPackId: pack.packId, externalBuilderPackEventId: pack.eventId,
+      externalBuilderPackIdentitySha256: dependencyBuilderPackEventIdentity(packEvent),
+      observationEventId: pack.observationEventId, approvalEventId: pack.approvalEventId,
+      candidateFingerprint: pack.candidateFingerprint,
+      repo: pack.binding.repo, prNumber: pack.binding.prNumber,
+      deliveredHeadSha: pack.binding.headSha, deliveredHeadCycleId: pack.binding.headCycleId,
+      authorityGeneration: pack.binding.authorityGeneration,
+      acceptanceContractId: pack.binding.acceptanceContract.id,
+      acceptanceContractVersion: pack.binding.acceptanceContract.version,
+      acceptanceContractSha256: pack.binding.acceptanceContract.sha256,
+      compiledPackId: pack.binding.compiledPack.id, compiledPackSha256: pack.binding.compiledPack.sha256,
+      sourceCustodyIdentitySha256: pack.binding.compiledPack.sourceCustodyIdentitySha256,
+      routeId: pack.route.id, routeAdapter: "github_claude", routeConfigurationVersion: pack.route.configurationVersion,
+      routeSelectionEventId: pack.route.selectionEventId, routeSnapshotSha256: pack.route.snapshotSha256,
+      capabilitySnapshot: capability, capabilitySnapshotSha256,
+      githubInstallationIdentitySha256: installationIdentity,
+      requestedBy: requested.actor,
+      requestedRole: membership.role as "owner" | "admin",
+    };
+    const deliveryIdentitySha256 = dependencyBuilderDeliveryIdentity(identityInput);
+    const render = (identitySha256: string) => renderAcceptanceDependencyBuilderHandoff({
+      deliveryId: id, deliveryIdentitySha256: identitySha256, recordId: parsed.recordId,
+      repo: pack.binding.repo, prNumber: pack.binding.prNumber,
+      deliveredHeadSha: pack.binding.headSha, deliveredHeadCycleId: pack.binding.headCycleId,
+      authorityGeneration: pack.binding.authorityGeneration,
+      acceptanceContractId: pack.binding.acceptanceContract.id,
+      acceptanceContractVersion: pack.binding.acceptanceContract.version,
+      acceptanceContractSha256: pack.binding.acceptanceContract.sha256,
+      compiledPackId: pack.binding.compiledPack.id, compiledPackSha256: pack.binding.compiledPack.sha256,
+      sourceCustodyIdentitySha256: pack.binding.compiledPack.sourceCustodyIdentitySha256,
+      externalBuilderPackId: pack.packId, externalBuilderPackEventId: pack.eventId,
+      externalBuilderPackIdentitySha256: identityInput.externalBuilderPackIdentitySha256,
+      candidateFingerprint: pack.candidateFingerprint, routeId: pack.route.id,
+      routeConfigurationVersion: pack.route.configurationVersion, capabilitySnapshotSha256,
+      candidate: pack.candidate, packageManager: pack.packageManager,
+      manifest: pack.manifest, lockfile: pack.lockfile,
+    });
+    const rendering = render(deliveryIdentitySha256);
+    if (!rendering.ok) return { kind: "not_ready" as const, reason: "invalid_rendering" as const };
+    const values = { ...identityInput, deliveryIdentitySha256, body: rendering.body, bodySha256: rendering.bodySha256, status: "reserved" as const };
+    const projected = { ...values, githubCommentId: null, githubCommentUrl: null, resultReason: null, githubDeliveryId: null, githubDeliveryEventId: null, githubHeadAdvanceEventId: null, successorHeadSha: null, successorHeadCycleId: null, successorReviewJobId: null, reenteredAt: null, completedAt: null, reservedAt: new Date(), createdAt: new Date(), updatedAt: new Date() } as AcceptanceDependencyBuilderDeliveryRow;
+    const existing = (await tx.select().from(acceptanceDependencyBuilderDeliveries).where(and(
+      eq(acceptanceDependencyBuilderDeliveries.id, id), eq(acceptanceDependencyBuilderDeliveries.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (existing) {
+      // The first authorized requester remains part of immutable custody, but
+      // another current owner/admin must receive the inert reservation rather
+      // than a second send claim or a false identity conflict.
+      const expectedExistingIdentityInput = {
+        ...identityInput,
+        requestedBy: existing.requestedBy,
+        requestedRole: existing.requestedRole,
+      };
+      const expectedExistingIdentitySha256 = dependencyBuilderDeliveryIdentity(expectedExistingIdentityInput);
+      const expectedExistingRendering = render(expectedExistingIdentitySha256);
+      if (!expectedExistingRendering.ok
+        || !isDeepStrictEqual(dependencyBuilderDeliveryImmutable(existing), expectedExistingIdentityInput)
+        || existing.deliveryIdentitySha256 !== expectedExistingIdentitySha256
+        || existing.body !== expectedExistingRendering.body
+        || existing.bodySha256 !== expectedExistingRendering.bodySha256
+        || !await dependencyBuilderDeliveryHasValidReservationCustody(tx, existing)) {
+        throw new Error("Dependency Builder delivery replay custody conflicts");
+      }
+      if (existing.status === "reserved") return { kind: "held" as const, reason: "reserved" as const, deliveryId: existing.id };
+      if (existing.status === "ambiguous_hold") return { kind: "held" as const, reason: "ambiguous_hold" as const, deliveryId: existing.id };
+      return { kind: "terminal" as const, status: existing.status as "carrier_accepted" | "bounded_failed" | "reentered", deliveryId: existing.id };
+    }
+    const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: parsed.recordId,
+      eventKey: `acceptance-dependency-builder-delivery:reserved:${pack.eventId}`,
+      stage: "builder_handoff", actor: ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR,
+      payloadRef: dependencyBuilderDeliveryEventPayload(projected, "reserved"),
+    }]);
+    if (!appended.events[0]!.inserted) throw new Error("Dependency Builder delivery reservation event unexpectedly replayed");
+    const inserted = await tx.insert(acceptanceDependencyBuilderDeliveries).values(values).returning();
+    if (inserted.length !== 1) throw new Error("Dependency Builder delivery reservation was not inserted");
+    return { kind: "reserved" as const, delivery: inserted[0]!, body: rendering.body };
+  });
+}
+
+function isDependencyBuilderDeliveryOutcome(value: unknown): value is AcceptanceDependencyBuilderDeliveryOutcome {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "carrier_accepted") return hasExactKeys(value, ["kind", "githubCommentId", "githubCommentUrl", "bodySha256"])
+    && isPositiveGithubCommentId(value.githubCommentId) && typeof value.githubCommentUrl === "string" && typeof value.bodySha256 === "string" && LOWER_SHA256.test(value.bodySha256);
+  if (value.kind === "bounded_failed") return hasExactKeys(value, ["kind", "reason"])
+    && (value.reason === "credential_unavailable" || value.reason === "github_rejected" || value.reason === "invalid_db_issued_body");
+  return value.kind === "unknown_post_outcome" && hasExactKeys(value, ["kind", "reason"])
+    && (value.reason === "github_unavailable" || value.reason === "ambiguous_response" || value.reason === "storage_unavailable");
+}
+
+/** Closes one reserved external write without ever reopening a send claim. */
+export async function reportAcceptanceDependencyBuilderDelivery(input: {
+  workspaceId: string;
+  deliveryId: string;
+  outcome: AcceptanceDependencyBuilderDeliveryOutcome;
+}): Promise<{ kind: "reported" | "replayed"; delivery: AcceptanceDependencyBuilderDeliveryRow } | { kind: "not_current" }> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "deliveryId", "outcome"])
+    || !isUuid(input.workspaceId) || !isUuid(input.deliveryId) || !isDependencyBuilderDeliveryOutcome(input.outcome)) {
+    throw new Error("Dependency Builder delivery report requires exact workspace, delivery, and closed outcome");
+  }
+  return db.transaction(async (tx) => {
+    const delivery = (await tx.select().from(acceptanceDependencyBuilderDeliveries).where(and(
+      eq(acceptanceDependencyBuilderDeliveries.id, input.deliveryId),
+      eq(acceptanceDependencyBuilderDeliveries.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+    if (!delivery) return { kind: "not_current" as const };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({ workspaceId: delivery.workspaceId, recordId: delivery.recordId, repo: delivery.repo, prNumber: delivery.prNumber })}))`);
+    if (!await dependencyBuilderDeliveryHasValidReservationCustody(tx, delivery)) {
+      return { kind: "not_current" as const };
+    }
+    const status = input.outcome.kind === "carrier_accepted" ? "carrier_accepted" as const
+      : input.outcome.kind === "bounded_failed" ? "bounded_failed" as const : "ambiguous_hold" as const;
+    const githubCommentId = input.outcome.kind === "carrier_accepted" ? input.outcome.githubCommentId : null;
+    const githubCommentUrl = input.outcome.kind === "carrier_accepted" ? input.outcome.githubCommentUrl : null;
+    const resultReason = input.outcome.kind === "carrier_accepted" ? null : input.outcome.reason;
+    if (input.outcome.kind === "carrier_accepted" && (input.outcome.bodySha256 !== delivery.bodySha256
+      || input.outcome.githubCommentUrl !== canonicalGithubCorrectionCommentUrl({ repo: delivery.repo, prNumber: delivery.prNumber, githubCommentId: input.outcome.githubCommentId }))) return { kind: "not_current" as const };
+    if (delivery.status !== "reserved") {
+      if (delivery.status !== status || delivery.githubCommentId !== githubCommentId || delivery.githubCommentUrl !== githubCommentUrl || delivery.resultReason !== resultReason) {
+        throw new Error("Dependency Builder delivery already has a different terminal outcome");
+      }
+      return { kind: "replayed" as const, delivery };
+    }
+    const projected = { ...delivery, status, githubCommentId, githubCommentUrl, resultReason, completedAt: new Date(), updatedAt: new Date() } as AcceptanceDependencyBuilderDeliveryRow;
+    const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: delivery.recordId,
+      eventKey: `acceptance-dependency-builder-delivery:result:${delivery.externalBuilderPackEventId}`,
+      stage: "builder_handoff", actor: ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR,
+      payloadRef: dependencyBuilderDeliveryEventPayload(projected, "result"),
+    }]);
+    if (!appended.events[0]!.inserted) throw new Error("Dependency Builder delivery result event unexpectedly replayed");
+    const rows = await tx.update(acceptanceDependencyBuilderDeliveries).set({ status, githubCommentId, githubCommentUrl, resultReason, completedAt: projected.completedAt, updatedAt: projected.updatedAt })
+      .where(and(eq(acceptanceDependencyBuilderDeliveries.id, delivery.id), eq(acceptanceDependencyBuilderDeliveries.status, "reserved"))).returning();
+    if (rows.length !== 1) throw new Error("Dependency Builder delivery report lost its reserved precondition");
+    if (rows[0]!.status === "carrier_accepted") {
+      const reentered = await recordAcceptedDependencyBuilderLateReentryInTransaction(tx, rows[0]!);
+      if (reentered > 0) {
+        const final = (await tx.select().from(acceptanceDependencyBuilderDeliveries).where(
+          eq(acceptanceDependencyBuilderDeliveries.id, rows[0]!.id),
+        ).limit(1))[0];
+        if (!final || final.status !== "reentered") {
+          throw new Error("Dependency Builder late re-entry did not close atomically");
+        }
+        return { kind: "reported" as const, delivery: final };
+      }
+    }
+    return { kind: "reported" as const, delivery: rows[0]! };
   });
 }
 

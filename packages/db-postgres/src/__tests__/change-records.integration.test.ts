@@ -24,6 +24,7 @@ import {
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
+  acceptanceDependencyBuilderDeliveries,
   acceptanceContextPackSnapshots,
   acceptanceContextPackRegenerationExecutions,
   acceptanceContracts,
@@ -78,6 +79,8 @@ import {
   recordAcceptanceDependencyObservation,
   readCurrentAcceptanceDependencyObservations,
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
+  reserveAcceptanceDependencyBuilderDelivery,
+  reportAcceptanceDependencyBuilderDelivery,
   AcceptanceDependencyObservationConflictError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   type RecordAcceptanceDependencyObservationInput,
@@ -186,6 +189,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages,
                to_regclass('public.acceptance_brief_bindings') AS acceptance_brief_bindings
+               ,to_regclass('public.acceptance_dependency_builder_deliveries') AS acceptance_dependency_builder_deliveries
       `)
     ) as Array<{
       change_records: string | null;
@@ -208,6 +212,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
       acceptance_brief_bindings: string | null;
+      acceptance_dependency_builder_deliveries: string | null;
     }>;
     return (
       rows[0]?.change_records === "change_records" &&
@@ -230,6 +235,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages" &&
       rows[0]?.acceptance_brief_bindings === "acceptance_brief_bindings"
+      && rows[0]?.acceptance_dependency_builder_deliveries === "acceptance_dependency_builder_deliveries"
     );
   } catch {
     return false;
@@ -10452,6 +10458,315 @@ describe.skipIf(!DB_AVAILABLE)(
         eq(changeRecordEvents.recordId, fixture.draft.record.id),
         inArray(changeRecordEvents.stage, ["human_dependency_approval", "external_builder_pack"]),
       ))).toHaveLength(0);
+    });
+
+    it("reserves one github_claude dependency handoff, closes the exact receipt, and records successor re-entry", async () => {
+      const headA = "1".repeat(40);
+      const headB = "2".repeat(40);
+      const ownerId = "12121212-1212-4121-8121-121212121212";
+      await db.update(workspaces).set({
+        githubInstallationId: "88001",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-github-claude-delivery-reentry",
+        prNumber: 288,
+        headSha: headA,
+      });
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_claude",
+        configurationVersion: 7,
+      });
+      const observed = await recordAcceptanceDependencyObservation(acceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha: headA,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      }));
+      if (observed.kind !== "recorded") throw new Error("expected observed dependency candidate");
+      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: observed.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      });
+      if (approved.kind !== "approved") throw new Error("expected external Builder Pack");
+      const command = {
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        externalBuilderPackEventId: approved.externalBuilderPack.eventId,
+        requestedBy: `user:${ownerId}`,
+      };
+      const memberId = "13131313-1313-4131-8131-131313131313";
+      const secondAdminId = "15151515-1515-4151-8151-151515151515";
+      await db.insert(workspaceMemberships).values([
+        { workspaceId: wsId, userId: memberId, role: "member" },
+        { workspaceId: wsId, userId: secondAdminId, role: "admin" },
+      ]);
+      await expect(reserveAcceptanceDependencyBuilderDelivery({ ...command, requestedBy: `user:${memberId}` }))
+        .resolves.toEqual({ kind: "not_authorized" });
+      const foreign = (await db.insert(workspaces).values({
+        name: "foreign delivery tenant", slug: `foreign-delivery-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      await expect(reserveAcceptanceDependencyBuilderDelivery({ ...command, workspaceId: foreign.id }))
+        .resolves.toEqual({ kind: "not_found" });
+      await db.delete(workspaces).where(eq(workspaces.id, foreign.id));
+      const [first, second] = await Promise.all([
+        reserveAcceptanceDependencyBuilderDelivery(command),
+        reserveAcceptanceDependencyBuilderDelivery(command),
+      ]);
+      const reserved = first.kind === "reserved" ? first : second.kind === "reserved" ? second : null;
+      expect(reserved).not.toBeNull();
+      expect([first.kind, second.kind].sort()).toEqual(["held", "reserved"]);
+      await expect(reserveAcceptanceDependencyBuilderDelivery({
+        ...command,
+        requestedBy: `user:${secondAdminId}`,
+      })).resolves.toEqual({ kind: "held", reason: "reserved", deliveryId: reserved!.delivery.id });
+      expect(reserved!.body.match(/@/g)).toHaveLength(1);
+      expect(reserved!.delivery).toMatchObject({
+        routeAdapter: "github_claude",
+        status: "reserved",
+        capabilitySnapshot: {
+          scopeBoundary: "dependency_initial_builder_handoff_only",
+          activation: "single_initial_vendor_mention",
+          authority: { jaceImplementation: "not_granted", merge: "not_granted", deployment: "not_granted" },
+        },
+      });
+      const commentId = "8800123";
+      const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 288,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "signed-delivery-88001",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      expect(advanced).toMatchObject({
+        kind: "advanced", headChanged: true, jobAdmitted: true,
+        dependencyBuilderReentriesRecorded: 0,
+      });
+      const accepted = await reportAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId,
+        deliveryId: reserved!.delivery.id,
+        outcome: {
+          kind: "carrier_accepted",
+          githubCommentId: commentId,
+          githubCommentUrl: `https://github.com/${fixture.repo}/pull/288#issuecomment-${commentId}`,
+          bodySha256: reserved!.delivery.bodySha256,
+        },
+      });
+      expect(accepted).toMatchObject({ kind: "reported", delivery: { status: "reentered" } });
+      await expect(reserveAcceptanceDependencyBuilderDelivery(command)).resolves.toEqual({ kind: "not_current" });
+      const delivery = (await db.select().from(acceptanceDependencyBuilderDeliveries).where(
+        eq(acceptanceDependencyBuilderDeliveries.id, reserved!.delivery.id),
+      ))[0]!;
+      expect(delivery).toMatchObject({
+        status: "reentered",
+        deliveredHeadSha: headA,
+        deliveredHeadCycleId: fixture.advanced.jobId,
+        successorHeadSha: headB,
+        successorReviewJobId: advanced.kind === "advanced" ? advanced.jobId : "",
+        githubDeliveryId: "signed-delivery-88001",
+      });
+      const reentry = (await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-dependency-builder-delivery:reentry:${reserved!.delivery.id}:${advanced.kind === "advanced" ? advanced.jobId : ""}`),
+      )))[0]!;
+      expect(reentry.payloadRef).toMatchObject({
+        kind: "acceptance_dependency_builder_delivery_reentry",
+        reentry: {
+          attribution: "head_successor_after_delivery",
+          authorship: "not_independently_proven",
+          proof: "not_proven",
+          successorReviewJobId: advanced.kind === "advanced" ? advanced.jobId : "",
+        },
+      });
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 288,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "signed-delivery-88001",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      })).resolves.toMatchObject({ kind: "delivery_replayed", currentHeadSha: headB });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "builder_reentry"),
+      ))).toHaveLength(1);
+
+      const staleHead = "3".repeat(40);
+      const staleSuccessor = "4".repeat(40);
+      const stale = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId, workKey: "dependency-delivery-stale-head", prNumber: 289, headSha: staleHead,
+      });
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId, recordId: stale.draft.record.id, repo: stale.repo, adapter: "github_claude",
+      });
+      const staleObservation = await recordAcceptanceDependencyObservation(acceptanceDependencyObservationInput({
+        workspaceId: wsId, recordId: stale.draft.record.id, compiledPackId: stale.pack.id,
+        headSha: staleHead, manifestBlobSha: stale.manifestBlobSha, lockfileBlobSha: stale.lockfileBlobSha,
+      }));
+      if (staleObservation.kind !== "recorded") throw new Error("expected stale delivery observation");
+      const stalePack = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId, recordId: stale.draft.record.id,
+        observationEventId: staleObservation.observation.eventId, approvedBy: `user:${ownerId}`,
+      });
+      if (stalePack.kind !== "approved") throw new Error("expected stale delivery Pack");
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: stale.draft.record.id, repo: stale.repo, prNumber: 289,
+        headSha: staleSuccessor, event: "synchronize", deliveryId: "stale-delivery-successor",
+        admitReviewJob: true, headTransition: { beforeHeadSha: staleHead, afterHeadSha: staleSuccessor },
+        source: "github_webhook",
+      });
+      await expect(reserveAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId, recordId: stale.draft.record.id,
+        externalBuilderPackEventId: stalePack.externalBuilderPack.eventId, requestedBy: `user:${ownerId}`,
+      })).resolves.toEqual({ kind: "not_current" });
+
+      const heldHead = "5".repeat(40);
+      const held = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId, workKey: "dependency-delivery-ambiguous-hold", prNumber: 290, headSha: heldHead,
+      });
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId, recordId: held.draft.record.id, repo: held.repo, adapter: "github_claude",
+      });
+      const heldObservation = await recordAcceptanceDependencyObservation(acceptanceDependencyObservationInput({
+        workspaceId: wsId, recordId: held.draft.record.id, compiledPackId: held.pack.id,
+        headSha: heldHead, manifestBlobSha: held.manifestBlobSha, lockfileBlobSha: held.lockfileBlobSha,
+      }));
+      if (heldObservation.kind !== "recorded") throw new Error("expected held delivery observation");
+      const heldPack = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId, recordId: held.draft.record.id,
+        observationEventId: heldObservation.observation.eventId, approvedBy: `user:${ownerId}`,
+      });
+      if (heldPack.kind !== "approved") throw new Error("expected held delivery Pack");
+      const heldReservation = await reserveAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId, recordId: held.draft.record.id,
+        externalBuilderPackEventId: heldPack.externalBuilderPack.eventId, requestedBy: `user:${ownerId}`,
+      });
+      if (heldReservation.kind !== "reserved") throw new Error("expected held delivery reservation");
+      await expect(reportAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId, deliveryId: heldReservation.delivery.id,
+        outcome: { kind: "unknown_post_outcome", reason: "ambiguous_response" },
+      })).resolves.toMatchObject({ kind: "reported", delivery: { status: "ambiguous_hold" } });
+      await expect(reserveAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId, recordId: held.draft.record.id,
+        externalBuilderPackEventId: heldPack.externalBuilderPack.eventId, requestedBy: `user:${ownerId}`,
+      })).resolves.toEqual({ kind: "held", reason: "ambiguous_hold", deliveryId: heldReservation.delivery.id });
+    });
+
+    it("commits a signed successor head and review job when optional delivery custody is corrupt", async () => {
+      const headA = "6".repeat(40);
+      const headB = "7".repeat(40);
+      const ownerId = "14141414-1414-4141-8141-141414141414";
+      await db.update(workspaces).set({
+        githubInstallationId: "88002",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      await db.insert(workspaceMemberships).values({ workspaceId: wsId, userId: ownerId, role: "owner" });
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-delivery-corrupt-optional-custody",
+        prNumber: 291,
+        headSha: headA,
+      });
+      await selectDependencyExternalBuilderRoute({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        adapter: "github_claude",
+      });
+      const observed = await recordAcceptanceDependencyObservation(acceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha: headA,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      }));
+      if (observed.kind !== "recorded") throw new Error("expected observed dependency candidate");
+      const approved = await approveAcceptanceDependencyObservationAndMintExternalBuilderPack({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        observationEventId: observed.observation.eventId,
+        approvedBy: `user:${ownerId}`,
+      });
+      if (approved.kind !== "approved") throw new Error("expected external Builder Pack");
+      const reserved = await reserveAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        externalBuilderPackEventId: approved.externalBuilderPack.eventId,
+        requestedBy: `user:${ownerId}`,
+      });
+      if (reserved.kind !== "reserved") throw new Error("expected delivery reservation");
+      await expect(reportAcceptanceDependencyBuilderDelivery({
+        workspaceId: wsId,
+        deliveryId: reserved.delivery.id,
+        outcome: {
+          kind: "carrier_accepted",
+          githubCommentId: "8800223",
+          githubCommentUrl: `https://github.com/${fixture.repo}/pull/291#issuecomment-8800223`,
+          bodySha256: reserved.delivery.bodySha256,
+        },
+      })).resolves.toMatchObject({ kind: "reported", delivery: { status: "carrier_accepted" } });
+
+      // Simulate optional handoff-custody corruption without touching the
+      // authoritative signed webhook delivery or head-transition custody.
+      await db.update(acceptanceDependencyBuilderDeliveries).set({
+        bodySha256: "f".repeat(64),
+      }).where(eq(acceptanceDependencyBuilderDeliveries.id, reserved.delivery.id));
+
+      const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 291,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "signed-delivery-88002",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      expect(advanced).toMatchObject({
+        kind: "advanced",
+        headChanged: true,
+        jobAdmitted: true,
+        dependencyBuilderReentriesRecorded: 0,
+        record: { currentPrHeadSha: headB, currentPrHeadAuthoritative: true },
+      });
+      if (advanced.kind !== "advanced") throw new Error("expected authoritative head advance");
+      expect(await db.select().from(reviewJobs).where(and(
+        eq(reviewJobs.id, advanced.jobId),
+        eq(reviewJobs.workspaceId, wsId),
+        eq(reviewJobs.repo, fixture.repo),
+        eq(reviewJobs.prNumber, 291),
+        eq(reviewJobs.headSha, headB),
+      ))).toHaveLength(1);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "builder_reentry"),
+      ))).toHaveLength(0);
+      expect((await db.select().from(acceptanceDependencyBuilderDeliveries).where(
+        eq(acceptanceDependencyBuilderDeliveries.id, reserved.delivery.id),
+      ))[0]).toMatchObject({ status: "carrier_accepted", successorHeadSha: null });
     });
 
     it("fails closed on unavailable, unsupported, drifted route or compiled Pack custody", async () => {

@@ -41,6 +41,7 @@ export {
 export {
   getInstallationToken,
   getGithubCorrectionCarrierCredential,
+  getGithubDependencyBuilderCredential,
   getGithubInstallation,
   bindWorkspaceGithubInstallation,
   mintGithubInstallState,

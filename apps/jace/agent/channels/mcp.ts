@@ -6,11 +6,12 @@ type McpState = {
   workspaceId: string;
   taskContextKey: string;
   mcpCredentialId: string;
+  mcpInboundSourceKey: string;
 };
 
 export default defineChannel<McpState>({
   kindHint: "mcp",
-  state: { workspaceId: "", taskContextKey: "", mcpCredentialId: "" },
+  state: { workspaceId: "", taskContextKey: "", mcpCredentialId: "", mcpInboundSourceKey: "" },
   routes: [
     POST("/eve/v1/mcp-handoff", async () => new Response(null, { status: 404 })),
   ],

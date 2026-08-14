@@ -47,10 +47,15 @@ export async function dispatchMcpJaceTurn(input: {
   const transport = input.transport ?? fetch;
   const url = (env.JACE_HOSTED_INBOUND_URL
     ?? `${env.EVE_HOST || DEFAULT_EVE_HOST}/eve/v1/hosted-inbound`).replace(/\/+$/, "");
+  const token = env.JACE_HOSTED_INBOUND_TOKEN?.trim();
+  if (!token) return { ok: false, reason: "hosted_inbound_not_configured" };
   try {
     const response = await transport(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({
         channel: "mcp",
         message: input.message,
@@ -68,6 +73,7 @@ export async function dispatchMcpJaceTurn(input: {
             channel: "mcp",
             conversationKey: mcpConversationKey(input.credentialId, input.taskContextKey),
             mcpCredentialId: input.credentialId,
+            mcpInboundSourceKey: input.sourceKey,
           },
         },
       }),

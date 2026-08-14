@@ -2862,6 +2862,29 @@ export async function readAcceptanceIntakeMessage(input: {
   return rows[0]?.message ?? null;
 }
 
+/** Read the Jace reply explicitly bound to one MCP inbound turn, never a latest reply. */
+export async function readAcceptanceIntakeMcpReply(input: {
+  workspaceId: string;
+  intakeId: string;
+  replyToSourceKey: string;
+}): Promise<AcceptanceIntakeMessageRow | null> {
+  const rows = await db
+    .select({ message: acceptanceIntakeMessages })
+    .from(acceptanceIntakeMessages)
+    .innerJoin(acceptanceIntakes, and(
+      eq(acceptanceIntakes.id, acceptanceIntakeMessages.intakeId),
+      eq(acceptanceIntakes.workspaceId, input.workspaceId),
+    ))
+    .where(and(
+      eq(acceptanceIntakeMessages.intakeId, input.intakeId),
+      eq(acceptanceIntakeMessages.direction, "outbound"),
+      sql`${acceptanceIntakeMessages.metadata}->>'replyToSourceKey' = ${input.replyToSourceKey}`,
+    ))
+    .orderBy(desc(acceptanceIntakeMessages.createdAt), desc(acceptanceIntakeMessages.id))
+    .limit(1);
+  return rows[0]?.message ?? null;
+}
+
 /** Append the reply that constitutes delivery for the virtual MCP channel. */
 export async function appendAcceptanceOutboundReply(input: {
   workspaceId: string;

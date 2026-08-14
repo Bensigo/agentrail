@@ -202,7 +202,7 @@ context or correction packets. It extends the existing stdio MCP server with:
 
 - `jace_turn`, an idempotent planning, brainstorming, intake, and control turn
   bound to `mcp:<credential>:<task>` identity; and
-- `jace_task_get`, a bounded read of the same task's Jace reply, Intake,
+- `jace_task_get`, a bounded read of one exact `messageKey` reply and the same task's Intake,
   server-linked Acceptance Record, Contract, exact-head Context Pack identities,
   and status.
 

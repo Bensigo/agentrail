@@ -32,13 +32,13 @@ beforeEach(() => {
 });
 
 describe("direct Jace tools", () => {
-  it("registers only task-context input and preserves the no-authority boundary", () => {
+  it("registers only task-context and exact-turn input and preserves the no-authority boundary", () => {
     const turn = registerTool.mock.calls.find(([name]) => name === "jace_turn");
     const read = registerTool.mock.calls.find(([name]) => name === "jace_task_get");
     expect(turn).toBeTruthy();
     expect(read).toBeTruthy();
     expect(Object.keys(turn![1].inputSchema)).toEqual(["taskContextKey", "messageKey", "message"]);
-    expect(Object.keys(read![1].inputSchema)).toEqual(["taskContextKey"]);
+    expect(Object.keys(read![1].inputSchema)).toEqual(["taskContextKey", "messageKey"]);
     expect(turn![1].description).toContain("cannot confirm a Contract");
     expect(turn![1].description).toContain("merge");
     expect(read![1].annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
@@ -55,8 +55,9 @@ describe("direct Jace tools", () => {
     expect(sendJaceTurn).toHaveBeenCalledWith({
       taskContextKey: "task-1", messageKey: "turn-1", message: "Plan this.",
     });
-    await expect(read[2]({ taskContextKey: "task-1" }))
+    await expect(read[2]({ taskContextKey: "task-1", messageKey: "turn-1" }))
       .resolves.toMatchObject({ structuredContent: { acceptance: { record: null } } });
+    expect(fetchJaceTask).toHaveBeenCalledWith({ taskContextKey: "task-1", messageKey: "turn-1" });
   });
 });
 

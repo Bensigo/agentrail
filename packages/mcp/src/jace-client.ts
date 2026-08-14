@@ -116,12 +116,16 @@ export function sendJaceTurn(input: {
 
 export function fetchJaceTask(input: {
   taskContextKey: string;
+  messageKey: string;
   env?: Environment;
   fetchImpl?: typeof fetch;
 }) {
   return callJace({
     method: "GET",
-    query: new URLSearchParams({ taskContextKey: input.taskContextKey }),
+    query: new URLSearchParams({
+      taskContextKey: input.taskContextKey,
+      messageKey: input.messageKey,
+    }),
     env: input.env,
     fetchImpl: input.fetchImpl,
   });

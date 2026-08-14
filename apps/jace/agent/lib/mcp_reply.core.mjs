@@ -16,10 +16,12 @@ export async function recordMcpAcceptanceReply({
   const intakeId = string(attributes?.acceptanceIntakeId);
   const sessionId = string(session?.id);
   const turnId = string(session?.turn?.id);
+  const replyToSourceKey = string(attributes?.mcpInboundSourceKey);
   const message = string(text);
   if (!workspaceId) return { ok: false, reason: "missing_workspace_binding" };
   if (!intakeId) return { ok: false, reason: "missing_intake_binding" };
   if (!sessionId || !turnId) return { ok: false, reason: "missing_turn_binding" };
+  if (!replyToSourceKey) return { ok: false, reason: "missing_inbound_source_binding" };
   if (!message) return { ok: false, reason: "missing_reply_text" };
   const baseUrl = string(env.JACE_CONSOLE_BASE_URL).replace(/\/+$/, "");
   const token = string(env.JACE_CONSOLE_TOKEN);
@@ -36,7 +38,11 @@ export async function recordMcpAcceptanceReply({
           workspaceId,
           sourceKey: `jace-mcp-reply:${sessionId}:${turnId}`,
           text: message,
-          metadata: { kind: "jace_mcp_reply", channel: "mcp" },
+          metadata: {
+            kind: "jace_mcp_reply",
+            channel: "mcp",
+            replyToSourceKey,
+          },
         }),
         signal: AbortSignal.timeout(CONSOLE_TIMEOUT_MS),
       },

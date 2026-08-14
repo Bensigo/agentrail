@@ -36,12 +36,13 @@ describe("Jace MCP client", () => {
   it("URL-encodes task context and rejects unsafe remote configuration", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ acceptance: {} })));
-    await fetchJaceTask({ taskContextKey: "codex / 7&x", env, fetchImpl });
+    await fetchJaceTask({ taskContextKey: "codex / 7&x", messageKey: "turn / 1&x", env, fetchImpl });
     expect(fetchImpl.mock.calls[0]![0]).toBe(
-      "https://console.example.com/api/v1/agent/jace?taskContextKey=codex+%2F+7%26x",
+      "https://console.example.com/api/v1/agent/jace?taskContextKey=codex+%2F+7%26x&messageKey=turn+%2F+1%26x",
     );
     await expect(fetchJaceTask({
       taskContextKey: "task-1",
+      messageKey: "turn-1",
       env: { ...env, AGENTRAIL_SERVER_BASE_URL: "http://console.example.com" },
       fetchImpl,
     })).resolves.toEqual({ ok: false, reason: "config_missing" });

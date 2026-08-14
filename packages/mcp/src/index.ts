@@ -169,15 +169,16 @@ server.registerTool(
     title: "Read Jace task state",
     description:
       "Read the bounded Jace reply and server-linked Intake, Acceptance Record, Contract, exact-head Context Pack, " +
-      "and status for this credential-bound coding task. The tool cannot select another workspace or Record and " +
+      "and status for one exact credential-bound Jace turn. The tool cannot select another workspace or Record and " +
       "does not return raw source artifacts or grant implementation, merge, or deployment authority.",
     inputSchema: {
       taskContextKey: z.string().min(1).max(256).describe("Stable identifier for this Codex task."),
+      messageKey: z.string().min(1).max(256).describe("Exact turn identifier returned from jace_turn."),
     },
     annotations: READ_ONLY,
   },
-  async ({ taskContextKey }) => {
-    const result = await fetchJaceTask({ taskContextKey });
+  async ({ taskContextKey, messageKey }) => {
+    const result = await fetchJaceTask({ taskContextKey, messageKey });
     if (!result.ok) return {
       content: [{ type: "text" as const, text: `Jace task state is unavailable (${result.reason}).` }],
       structuredContent: { available: false, reason: result.reason },

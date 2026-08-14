@@ -11,7 +11,7 @@ the MCP/tool-enforcement level from
 | --- | --- | --- |
 | `acceptance_correction_packets_get` | authenticated AgentRail server read | the complete immutable packet set for one Record's server-derived current exact head |
 | `jace_turn` | authenticated direct Jace turn | one idempotent planning, brainstorming, intake, or control message in the credential-bound task conversation |
-| `jace_task_get` | authenticated direct Jace read | bounded Jace reply plus the task-linked Intake, Record, Contract, exact-head Context Pack, and status |
+| `jace_task_get` | authenticated direct Jace read | the exact `messageKey` reply plus the task-linked Intake, Record, Contract, exact-head Context Pack, and status |
 | `context_search` | `agentrail context search` | ranked path + line range + symbol + bounded snippet + reason + score |
 | `context_get` | `agentrail context get` | only the requested line range / symbol block — never the whole file |
 | `context_build_pack` | `agentrail context build` | a bounded context pack for an issue/PR phase |

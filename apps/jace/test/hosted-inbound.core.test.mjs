@@ -287,6 +287,7 @@ test("MCP inbound preserves only its workspace and task-context target", () => {
       channel: "mcp",
       conversationKey: "mcp:credential-1:codex-task-1",
       mcpCredentialId: "credential-1",
+      mcpInboundSourceKey: "mcp-message-1",
     },
   };
   const out = normalizeHostedInbound({
@@ -322,6 +323,7 @@ test("MCP inbound fails closed when target identity disagrees with authenticated
         channel: "mcp",
         conversationKey: "mcp:credential-1:codex-task-1",
         mcpCredentialId: "credential-1",
+        mcpInboundSourceKey: "mcp-message-1",
       },
     },
   }), /MCP workspace binding mismatch/);

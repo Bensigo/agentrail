@@ -14,7 +14,10 @@ describe("Jace MCP hosted dispatch", () => {
       taskContextKey: "task-1",
       sourceKey: "source-1",
       message: "Plan this.",
-      env: { JACE_HOSTED_INBOUND_URL: "http://jace.internal/eve/v1/hosted-inbound" },
+      env: {
+        JACE_HOSTED_INBOUND_URL: "http://jace.internal/eve/v1/hosted-inbound",
+        JACE_HOSTED_INBOUND_TOKEN: "hosted-secret",
+      },
       transport,
     })).resolves.toEqual({
       ok: true,
@@ -22,6 +25,9 @@ describe("Jace MCP hosted dispatch", () => {
       continuationToken: "continuation-1",
     });
     const body = JSON.parse(transport.mock.calls[0]![1]!.body as string);
+    expect(transport.mock.calls[0]![1]!.headers).toMatchObject({
+      Authorization: "Bearer hosted-secret",
+    });
     expect(body).toEqual({
       channel: "mcp",
       message: "Plan this.",
@@ -36,9 +42,24 @@ describe("Jace MCP hosted dispatch", () => {
           channel: "mcp",
           conversationKey: mcpConversationKey("credential-1", "task-1"),
           mcpCredentialId: "credential-1",
+          mcpInboundSourceKey: "source-1",
         },
       },
     });
     expect(JSON.stringify(body)).not.toMatch(/recordId|contractId|merge|deploy/u);
+  });
+
+  it("fails closed when the Console-to-Jace service credential is absent", async () => {
+    const transport = vi.fn();
+    await expect(dispatchMcpJaceTurn({
+      workspaceId: "workspace-1",
+      credentialId: "credential-1",
+      taskContextKey: "task-1",
+      sourceKey: "source-1",
+      message: "Plan this.",
+      env: { JACE_HOSTED_INBOUND_URL: "http://jace.internal/eve/v1/hosted-inbound" },
+      transport,
+    })).resolves.toEqual({ ok: false, reason: "hosted_inbound_not_configured" });
+    expect(transport).not.toHaveBeenCalled();
   });
 });

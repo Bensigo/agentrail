@@ -3373,6 +3373,7 @@ export {
   createDraftAcceptanceRecordFromIntake,
   recordAcceptanceInboundIntake,
   readAcceptanceIntakeMessage,
+  readAcceptanceIntakeMcpReply,
   appendAcceptanceOutboundReply,
   readAcceptanceIntakeReadback,
   ACCEPTANCE_INTAKE_READBACK_LIMITS,

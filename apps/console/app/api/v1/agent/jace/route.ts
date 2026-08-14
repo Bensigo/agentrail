@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   findEnabledJaceWorkspace,
   readAcceptanceIntakeMessage,
+  readAcceptanceIntakeMcpReply,
   readAcceptanceIntakeReadback,
   readAcceptanceRecordDetail,
 } from "@agentrail/db-postgres";
@@ -115,13 +116,15 @@ function compactRecord(
 export async function GET(request: NextRequest) {
   const authorization = await authorize(request);
   if (authorization instanceof NextResponse) return authorization;
-  const keys = [...request.nextUrl.searchParams.keys()];
+  const keys = [...request.nextUrl.searchParams.keys()].sort();
   const taskContextKey = bounded(
     request.nextUrl.searchParams.get("taskContextKey"),
     MCP_TASK_CONTEXT_KEY_LIMIT,
   );
-  if (!taskContextKey || keys.length !== 1 || keys[0] !== "taskContextKey") {
-    return NextResponse.json({ error: "taskContextKey is required" }, { status: 400 });
+  const messageKey = bounded(request.nextUrl.searchParams.get("messageKey"), MCP_MESSAGE_KEY_LIMIT);
+  if (!taskContextKey || !messageKey || keys.length !== 2
+    || keys[0] !== "messageKey" || keys[1] !== "taskContextKey") {
+    return NextResponse.json({ error: "taskContextKey and messageKey are required" }, { status: 400 });
   }
   const intakeId = mcpIntakeId({
     workspaceId: authorization.workspaceId,
@@ -135,6 +138,12 @@ export async function GET(request: NextRequest) {
   if (!intake || intake.intake.originChannel !== "mcp") {
     return NextResponse.json({ error: "Jace task not found" }, { status: 404 });
   }
+  const replyToSourceKey = mcpMessageSourceKey(authorization.apiKeyId, taskContextKey, messageKey);
+  const reply = await readAcceptanceIntakeMcpReply({
+    workspaceId: authorization.workspaceId,
+    intakeId,
+    replyToSourceKey,
+  });
   const detail = intake.intake.recordId
     ? await readAcceptanceRecordDetail({
         workspaceId: authorization.workspaceId,
@@ -142,7 +151,10 @@ export async function GET(request: NextRequest) {
       })
     : null;
   return NextResponse.json({
-    task: { taskContextKey, intakeId },
+    task: { taskContextKey, messageKey, intakeId },
+    reply: reply
+      ? { status: "available", id: reply.id, text: reply.text.slice(0, 2_000), textTruncated: reply.text.length > 2_000 }
+      : { status: "pending" },
     acceptance: {
       intake: intake.intake,
       messages: {

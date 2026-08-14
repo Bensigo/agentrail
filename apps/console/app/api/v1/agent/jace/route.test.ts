@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   findEnabledJaceWorkspace: vi.fn(),
   readAcceptanceIntakeMessage: vi.fn(),
+  readAcceptanceIntakeMcpReply: vi.fn(),
   readAcceptanceIntakeReadback: vi.fn(),
   readAcceptanceRecordDetail: vi.fn(),
 }));
@@ -23,6 +24,7 @@ vi.mock("../../../../../lib/agent-jace-mcp", () => ({
 import {
   findEnabledJaceWorkspace,
   readAcceptanceIntakeMessage,
+  readAcceptanceIntakeMcpReply,
   readAcceptanceIntakeReadback,
   readAcceptanceRecordDetail,
 } from "@agentrail/db-postgres";
@@ -170,9 +172,13 @@ describe("direct Jace MCP task state", () => {
         }],
       },
     } as never);
+    vi.mocked(readAcceptanceIntakeMcpReply).mockResolvedValue({
+      id: "reply-1",
+      text: "This is the reply to turn one.",
+    } as never);
 
     const response = await GET(new NextRequest(
-      "http://localhost/api/v1/agent/jace?taskContextKey=codex-task-7",
+      "http://localhost/api/v1/agent/jace?taskContextKey=codex-task-7&messageKey=turn-1",
       { headers: { Authorization: "Bearer workspace-key" } },
     ));
 
@@ -181,8 +187,14 @@ describe("direct Jace MCP task state", () => {
       workspaceId: WORKSPACE_ID,
       recordId: "00000000-0000-4000-8000-000000000005",
     });
+    expect(readAcceptanceIntakeMcpReply).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      intakeId: "00000000-0000-4000-8000-000000000004",
+      replyToSourceKey: `mcp-inbound:${API_KEY_ID}:codex-task-7:turn-1`,
+    });
     await expect(response.json()).resolves.toMatchObject({
-      task: { taskContextKey: "codex-task-7" },
+      task: { taskContextKey: "codex-task-7", messageKey: "turn-1" },
+      reply: { status: "available", text: "This is the reply to turn one." },
       acceptance: {
         intake: { originChannel: "mcp", recordId: "00000000-0000-4000-8000-000000000005" },
         contract: { id: "contract-1", status: "confirmed" },

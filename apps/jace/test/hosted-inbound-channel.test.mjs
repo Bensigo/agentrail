@@ -30,6 +30,18 @@ test("imports the pure validator from agent/lib", () => {
   );
 });
 
+test("fails closed unless the Console-to-Jace service hop authenticates", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*authorizeHostedInbound\s*\}\s*from\s*["']\.\.\/lib\/hosted_inbound_auth\.core\.mjs["']/,
+  );
+  const authAt = code.indexOf("authorizeHostedInbound(req.headers, process.env)");
+  const receiveAt = code.indexOf("args.receive(channelModule");
+  assert.ok(authAt >= 0 && receiveAt > authAt, "authenticate MCP before recording or dispatching it");
+  assert.match(code, /normalized\.channel\s*===\s*["']mcp["']/);
+  assert.match(code, /unauthorized/);
+});
+
 test("imports telegram/discord/slack channel modules (#1284/#1285: multi-channel CHANNELS map, mirroring run-outcome.ts)", () => {
   assert.match(code, /import\s+telegram\s+from\s*["']\.\/telegram\.js["']/);
   assert.match(code, /import\s+discord\s+from\s*["']\.\/discord\.js["']/);

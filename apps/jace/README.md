@@ -132,6 +132,7 @@ to migrate an existing self-hosted workspace onto the shared bot.
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
 | `AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE` | Arc E rejected-approach admission gate: `off` (default), `warn`, or `block`. In `block`, missing console configuration or an unavailable/malformed check fails closed before filing. |
 | `EVE_HOST` | Base URL used by the round-trip harness. Defaults to `http://127.0.0.1:2000`. |
+| `JACE_HOSTED_INBOUND_TOKEN` | Shared service credential set to the same value on Console and Jace. Required for direct MCP turns at Jace's hosted-inbound door; unset fails that channel closed. It is never an MCP tool argument. |
 | `TELEGRAM_BOT_USERNAME` | The Telegram bot's @username (without `@`) for the native `telegram` channel. |
 | `TELEGRAM_BOT_TOKEN` | BotFather token for proactive Telegram sends. |
 | `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Secret token Telegram signs inbound updates with (set on `setWebhook`). |

@@ -172,6 +172,8 @@ export function normalizeHostedInbound(raw) {
     }
     const credentialId = typeof attributes.mcpCredentialId === "string"
       ? attributes.mcpCredentialId.trim() : "";
+    const inboundSourceKey = typeof attributes.mcpInboundSourceKey === "string"
+      ? attributes.mcpInboundSourceKey.trim() : "";
     const authenticatedWorkspaceId = typeof attributes.workspaceId === "string"
       ? attributes.workspaceId.trim() : "";
     const expectedConversationKey = credentialId
@@ -180,7 +182,8 @@ export function normalizeHostedInbound(raw) {
       || auth.principalType !== "agent_mcp"
       || auth.principalId !== `agent-mcp:${credentialId}`
       || attributes.channel !== MCP_CHANNEL
-      || !credentialId) {
+      || !credentialId
+      || inboundSourceKey !== sourceKey) {
       throw new Error("hosted-inbound: MCP principal binding is invalid.");
     }
     if (authenticatedWorkspaceId !== normalizedTarget.workspaceId) {

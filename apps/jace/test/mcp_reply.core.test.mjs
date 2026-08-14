@@ -11,6 +11,7 @@ test("MCP reply custody derives workspace and Intake from the bound session", as
       auth: { current: { attributes: {
         workspaceId: "workspace-1",
         acceptanceIntakeId: "intake-1",
+        mcpInboundSourceKey: "mcp-inbound:credential-1:task-1:turn-1",
       } } },
     },
     text: "Which repository should this plan target?",
@@ -27,6 +28,10 @@ test("MCP reply custody derives workspace and Intake from the bound session", as
     workspaceId: "workspace-1",
     sourceKey: "jace-mcp-reply:session-1:turn-1",
     text: "Which repository should this plan target?",
-    metadata: { kind: "jace_mcp_reply", channel: "mcp" },
+    metadata: {
+      kind: "jace_mcp_reply",
+      channel: "mcp",
+      replyToSourceKey: "mcp-inbound:credential-1:task-1:turn-1",
+    },
   });
 });

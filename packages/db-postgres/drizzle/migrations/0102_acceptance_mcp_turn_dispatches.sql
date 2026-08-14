@@ -54,6 +54,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_mcp_turn_dispatches_turn_key"
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_mcp_turn_dispatches_message_key"
   ON "acceptance_mcp_turn_dispatches" ("inbound_message_id");
---> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "acceptance_mcp_turn_dispatches_task_idx"
-  ON "acceptance_mcp_turn_dispatches" ("workspace_id", "credential_id", "task_context_key", "created_at");

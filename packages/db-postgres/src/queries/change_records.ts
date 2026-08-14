@@ -3119,49 +3119,6 @@ export async function readAcceptanceMcpTurnDispatch(
   });
 }
 
-export type ListAcceptanceMcpTurnDispatchesInput = Omit<
-  AcceptanceMcpTurnDispatchIdentity,
-  "messageKey"
->;
-
-/** Returns bounded task-level dispatch state without message content or continuation tokens. */
-export async function listAcceptanceMcpTurnDispatches(
-  input: ListAcceptanceMcpTurnDispatchesInput,
-): Promise<AcceptanceMcpTurnDispatchRow[]> {
-  if (!isRecord(input) || !hasExactKeys(input, [
-    "workspaceId", "credentialId", "taskContextKey",
-  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["credentialId"])
-    || !safeMcpTurnKey(input["taskContextKey"], 256)) {
-    throw new Error("Invalid Acceptance MCP task dispatch read");
-  }
-  const now = new Date();
-  return db.transaction(async (tx) => {
-    await tx.update(acceptanceMcpTurnDispatches).set({
-      status: "held",
-      resultReason: "stale_reserved_claim",
-      completedAt: now,
-      updatedAt: now,
-    }).where(and(
-      eq(acceptanceMcpTurnDispatches.workspaceId, input["workspaceId"]),
-      eq(acceptanceMcpTurnDispatches.credentialId, input["credentialId"]),
-      eq(acceptanceMcpTurnDispatches.taskContextKey, input["taskContextKey"]),
-      eq(acceptanceMcpTurnDispatches.status, "reserved"),
-      lte(
-        acceptanceMcpTurnDispatches.reservedAt,
-        new Date(now.getTime() - ACCEPTANCE_MCP_TURN_RESERVATION_STALE_MS),
-      ),
-    ));
-    return tx.select().from(acceptanceMcpTurnDispatches).where(and(
-      eq(acceptanceMcpTurnDispatches.workspaceId, input["workspaceId"]),
-      eq(acceptanceMcpTurnDispatches.credentialId, input["credentialId"]),
-      eq(acceptanceMcpTurnDispatches.taskContextKey, input["taskContextKey"]),
-    )).orderBy(
-      desc(acceptanceMcpTurnDispatches.createdAt),
-      desc(acceptanceMcpTurnDispatches.id),
-    ).limit(32);
-  });
-}
-
 export type CompleteAcceptanceMcpTurnDispatchInput = AcceptanceMcpTurnDispatchIdentity & {
   sessionId: string;
   continuationToken: string;

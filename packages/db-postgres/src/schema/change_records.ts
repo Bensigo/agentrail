@@ -1320,12 +1320,6 @@ export const acceptanceMcpTurnDispatches = pgTable(
       t.messageKey,
     ),
     inboundMessage: uniqueIndex("acceptance_mcp_turn_dispatches_message_key").on(t.inboundMessageId),
-    task: index("acceptance_mcp_turn_dispatches_task_idx").on(
-      t.workspaceId,
-      t.credentialId,
-      t.taskContextKey,
-      t.createdAt,
-    ),
     bindingCheck: check(
       "acceptance_mcp_turn_dispatches_binding_check",
       sql`char_length(${t.taskContextKey}) BETWEEN 1 AND 256

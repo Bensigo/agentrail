@@ -68,8 +68,9 @@ export const HOSTED_INBOUND_CHANNELS = Object.freeze([
  * - `auth` is REQUIRED (unlike run-outcome's optional auth) and must be an
  *   object — the door's whole point is carrying `chatIdentityId`/
  *   `workspaceId` attribution into the session's `auth.initiator`, so a
- *   turn with no auth would be unattributable. Forwarded through UNCHANGED;
- *   this file does not interpret its contents.
+ *   turn with no auth would be unattributable. Existing hosted channels are
+ *   forwarded unchanged; MCP additionally proves its service-supplied
+ *   workspace, credential, task, conversation, and inbound-source bindings.
  *
  * @param {unknown} raw parsed JSON body from the console dispatcher
  */

@@ -16,9 +16,8 @@ export interface BearerAuthResult {
   apiKeyId: string;
   workspaceId: string;
   teamId: string | null;
-  /** 'self_hosted' (default — an operator's own runner) or 'fleet' (minted by
-   * POST /api/v1/fleet/workspace-tokens/sync, #1267 PR ①). Additive: every
-   * pre-#1267 caller that ignores this field is unaffected. */
+  /** Credential class resolved from storage. `agent_mcp` is denied by the
+   * default route policy and must be explicitly admitted by a narrow caller. */
   kind: ApiKeyKind;
 }
 

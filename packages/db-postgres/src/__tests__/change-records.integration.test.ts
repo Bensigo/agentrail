@@ -28,6 +28,7 @@ import {
   acceptanceContextPackSnapshots,
   acceptanceContextPackRegenerationExecutions,
   acceptanceContracts,
+  acceptanceDependencyObservationClaims,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -82,6 +83,7 @@ import {
   reserveAcceptanceDependencyBuilderDelivery,
   reportAcceptanceDependencyBuilderDelivery,
   AcceptanceDependencyObservationConflictError,
+  AcceptanceDependencyObservationClaimError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   type RecordAcceptanceDependencyObservationInput,
   AcceptanceDependencyExternalBuilderPackConflictError,
@@ -130,6 +132,11 @@ import {
   readAcceptanceRecordSummaries,
   readAcceptanceRecordDetail,
 } from "../queries/change_records.js";
+import { claimAcceptanceDependencyObservationWork } from "../queries/acceptance_dependency_observation_work.js";
+import {
+  dependencyObservationProposalCustodyIdentity,
+  pnpmObservationCandidateFingerprint,
+} from "../queries/dependency_observation_acceptance_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
 import {
@@ -268,11 +275,15 @@ function exactCorrectionPacket(input: {
   acceptanceContractId: string;
   acceptanceContractVersion?: number;
   observed?: string;
+  criterionId?: string;
+  criterionText?: string;
 }) {
+  const criterionId = input.criterionId ?? "AC-1";
+  const criterionText = input.criterionText ?? "A user can save a filter";
   const acceptanceContractVersion = input.acceptanceContractVersion ?? 1;
   const packetId = reviewJobCorrectionPacketId({
     jobId: input.jobId,
-    criterionId: "AC-1",
+    criterionId,
     headSha: input.headSha,
     recordId: input.recordId,
     acceptanceContractId: input.acceptanceContractId,
@@ -289,10 +300,10 @@ function exactCorrectionPacket(input: {
     recordId: input.recordId,
     jobId: input.jobId,
     acceptanceContract: { id: input.acceptanceContractId, version: acceptanceContractVersion },
-    criterion: { id: "AC-1", snapshot: "A user can save a filter" },
+    criterion: { id: criterionId, snapshot: criterionText },
     basis: "acceptance_contract",
     state: "failed",
-    expected: "A user can save a filter",
+    expected: criterionText,
     observed: input.observed ?? "The saved filter was not retained.",
     affectedContext: {
       modality: "ui",
@@ -313,7 +324,7 @@ function exactCorrectionPacket(input: {
       executionId: "execution-1",
       previewBootId: "preview-boot-1",
     },
-    scopeBoundary: `Only AC-1 for ${input.repo}#${input.prNumber} at ${input.headSha}.`,
+    scopeBoundary: `Only ${criterionId} for ${input.repo}#${input.prNumber} at ${input.headSha}.`,
     impact: "The server-attested UI receipt shows this confirmed criterion failed on the exact head.",
     requiredCorrection: "Make the persisted UI flow retain the saved filter.",
     reverification: "Rerun the persisted UI plan against the next exact head.",
@@ -331,7 +342,7 @@ async function appendExactCurrentCorrectionPacket(input: Parameters<typeof exact
     prNumber: input.prNumber,
     headSha: input.headSha,
     events: [{
-      eventKey: `review:correction:${input.jobId}:AC-1`,
+      eventKey: `review:correction:${input.jobId}:${input.criterionId ?? "AC-1"}`,
       stage: "review",
       actor: "reviewer-of-record",
       payloadRef: packet,
@@ -489,6 +500,10 @@ async function createAcceptanceDependencyObservationFixture(input: {
   compiledPackCompilerVersion?: string;
   compiledPackPolicyVersion?: string;
   contractOverrides?: Record<string, unknown>;
+  originChannel?: string;
+  sourceReferences?: Record<string, unknown>[];
+  criterionId?: string;
+  criterionText?: string;
 }) {
   const repoName = "acme/widgets";
   const contractInput = completeContract(input.contractOverrides);
@@ -496,7 +511,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
     workspaceId: input.workspaceId,
     repo: repoName,
     workKey: input.workKey,
-    originChannel: "codex_mcp",
+    originChannel: input.originChannel ?? "codex_mcp",
+    sourceReferences: input.sourceReferences,
     contract: contractInput,
     createdBy: "user:lead",
   });
@@ -526,6 +542,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
     prNumber: input.prNumber,
     headSha: input.headSha,
     acceptanceContractId: draft.contract.id,
+    criterionId: input.criterionId,
+    criterionText: input.criterionText,
   });
 
   let repository = (await db.select().from(repositories).where(and(
@@ -888,8 +906,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
   };
   const manifest = {
     version: 1,
-    acceptanceCriterionIds: ["AC-1"],
-    unresolvedQuestionIds: [],
+    acceptanceCriterionIds: (contractInput["acceptanceCriteria"] as Array<{ id: string }>).map(({ id }) => id).sort(),
+    unresolvedQuestionIds: (contractInput["unresolvedQuestions"] as Array<{ id: string }>).map(({ id }) => id).sort(),
     packetIds,
     sources: exactSources,
     architectureBoundaries: [
@@ -1005,6 +1023,111 @@ async function recordCompilerOnlyRegenerationPack(input: {
     })),
     exactGitTreeInclusionProofs: [],
   });
+}
+
+function pnpmProposalFixtureCustody(headSha: string) {
+  const manifestContent = JSON.stringify({
+    packageManager: "pnpm@11.19.0",
+    engines: { node: ">=22.0.0" },
+    dependencies: { lodash: "^4.17.20" },
+  });
+  const lockfileContent = "lockfileVersion: '9.0'\npackages:\n  lodash@4.17.21: {}\n";
+  const candidateBase = {
+    package: "lodash",
+    ecosystem: "node" as const,
+    package_manager: "pnpm" as const,
+    package_manager_version: null,
+    dependency_kind: "dependencies",
+    specifier: "^4.17.20",
+    current_version: "4.17.20",
+    target_version: "4.17.21",
+    manifest_path: "package.json",
+    lockfile_path: "pnpm-lock.yaml",
+    baseline_sha: headSha,
+    verification_commands: ["pnpm install --frozen-lockfile", "pnpm test"] as [string, string],
+    manager_commands: {
+      version: "pnpm --version",
+      install: "pnpm install --frozen-lockfile",
+      update: "pnpm update --lockfile-only --ignore-scripts lodash@4.17.21",
+    },
+  };
+  const candidate = {
+    ...candidateBase,
+    fingerprint: pnpmObservationCandidateFingerprint(candidateBase),
+  };
+  const profile = {
+    ecosystem: "node",
+    manager: "pnpm",
+    profile: "pnpm_lockfile_only_v1",
+    capability: "proposal_observation_only",
+  };
+  const selectedFileHashes = {
+    "package.json": createHash("sha256").update(manifestContent, "utf8").digest("hex"),
+    "pnpm-lock.yaml": createHash("sha256").update(lockfileContent, "utf8").digest("hex"),
+  };
+  const sourceCore = {
+    repositoryId: randomUUID(),
+    repositoryName: "acme/widgets",
+    watchId: randomUUID(),
+    observationId: randomUUID(),
+    observationKey: `observation:${randomUUID()}`,
+    candidateFingerprint: candidate.fingerprint,
+    candidate,
+    baselineSha: headSha,
+    manifestPath: "package.json" as const,
+    lockfilePath: "pnpm-lock.yaml" as const,
+    selectedFileHashes,
+    profile,
+    repositorySourceVerification: "watch_observation_only" as const,
+    independentSourceProof: "not_proven" as const,
+  };
+  const proposalCustodyIdentity = dependencyObservationProposalCustodyIdentity(sourceCore);
+  if (!proposalCustodyIdentity) throw new Error("expected pnpm proposal custody identity");
+  const source = {
+    kind: "dependency_watch_observation_proposal",
+    version: 1,
+    ...sourceCore,
+    proposalCustodyIdentity,
+  };
+  const unresolved = [
+    "release", "usage", "runtime", "target-lock", "security", "human-confirmation",
+    "approval", "context-pack", "builder-handoff",
+  ];
+  const criterionText = "Watch-observation proposal custody remains exact and grants no delivery authority.";
+  const contract = {
+    originalRequest: "Assess observed dependency candidate lodash from 4.17.20 to 4.17.21.",
+    normalizedRequirements: [
+      "This is a draft-only dependency proposal with server-derived observation custody.",
+      "No confirmation, approval, Context Pack, route, issue, pull request, queue, execution, or delivery is authorized.",
+    ],
+    acceptanceCriteria: [{ id: "DEP-PROPOSAL-CUSTODY", text: criterionText, userVisible: false }],
+    nonGoals: ["No dependency change or operational handoff."],
+    risks: unresolved.map((kind) => `${kind} evidence is unresolved and blocking.`),
+    environment: {
+      kind: source.kind,
+      admission: "draft_only",
+      profile,
+      repositoryId: source.repositoryId,
+      repositoryName: source.repositoryName,
+      watchId: source.watchId,
+      observationId: source.observationId,
+      observationKey: source.observationKey,
+      candidateFingerprint: source.candidateFingerprint,
+      proposalCustodyIdentity,
+      candidate,
+      baselineSha: headSha,
+      manifestPath: source.manifestPath,
+      lockfilePath: source.lockfilePath,
+      selectedFileHashes,
+      repositorySourceVerification: source.repositorySourceVerification,
+      independentSourceProof: source.independentSourceProof,
+    },
+    stops: unresolved.map((kind) => `${kind} evidence remains unresolved.`),
+    unresolvedQuestions: unresolved.map((kind) => ({
+      id: `dependency-${kind}-evidence`, text: `${kind} evidence has not been admitted.`,
+    })),
+  };
+  return { source, contract, criterionText, manifestContent, lockfileContent };
 }
 
 function acceptanceDependencyObservationInput(input: {
@@ -7483,6 +7606,163 @@ describe.skipIf(!DB_AVAILABLE)(
       const rows = await db.select().from(acceptanceContextPackSnapshots)
         .where(eq(acceptanceContextPackSnapshots.id, first.snapshot.id));
       expect(rows).toHaveLength(1);
+    });
+
+    it("claims current pnpm evidence work and consumes only an exact live custody token", async () => {
+      const headSha = "7".repeat(40);
+      const proposal = pnpmProposalFixtureCustody(headSha);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-pnpm-producer-claim",
+        prNumber: 179,
+        headSha,
+        manifestContent: proposal.manifestContent,
+        lockfileContent: proposal.lockfileContent,
+        contractOverrides: proposal.contract,
+        originChannel: "dependency_watch",
+        sourceReferences: [proposal.source],
+        criterionId: "DEP-PROPOSAL-CUSTODY",
+        criterionText: proposal.criterionText,
+      });
+      if (fixture.lockfileBlobSha === null) throw new Error("expected pnpm lockfile custody");
+
+      const claimed = await claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-integration",
+      });
+      expect(claimed).toMatchObject({
+        binding: {
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          repo: fixture.repo,
+          prNumber: 179,
+          headSha,
+          headCycleId: fixture.advanced.jobId,
+          authorityGeneration: fixture.advanced.record.currentPrHeadAuthorityGeneration,
+          acceptanceContract: { id: fixture.draft.contract.id, version: 1 },
+          compiledPack: { id: fixture.pack.id, sha256: fixture.pack.packSha256 },
+        },
+        candidate: {
+          identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
+          package: "lodash",
+          currentVersion: "4.17.20",
+          targetVersion: "4.17.21",
+          proposalFingerprint: proposal.source.candidateFingerprint,
+        },
+        source: {
+          manifest: { path: "package.json", blobSha: fixture.manifestBlobSha },
+          lockfile: { path: "pnpm-lock.yaml", blobSha: fixture.lockfileBlobSha },
+        },
+        operation: { authority: "observe_or_refuse_only" },
+      });
+      if (!claimed) throw new Error("expected pnpm producer claim");
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-other",
+      })).resolves.toBeNull();
+
+      const evidence = acceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+      evidence.packageManager.version = "11.19.0";
+
+      const expectClaimDrift = async (field: "headSha" | "acceptanceContractSha256" | "compiledPackSha256", value: string) => {
+        const original = field === "headSha"
+          ? claimed.binding.headSha
+          : field === "acceptanceContractSha256"
+            ? claimed.binding.acceptanceContract.sha256
+            : claimed.binding.compiledPack.sha256;
+        await db.update(acceptanceDependencyObservationClaims).set({ [field]: value })
+          .where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id));
+        await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+          .rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+        await db.update(acceptanceDependencyObservationClaims).set({ [field]: original })
+          .where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id));
+      };
+      await expectClaimDrift("headSha", "8".repeat(40));
+      await expectClaimDrift("acceptanceContractSha256", "8".repeat(64));
+      await expectClaimDrift("compiledPackSha256", "8".repeat(64));
+
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: "x".repeat(43) }))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      const oldClaimedAt = new Date(Date.now() - 120_000);
+      await db.update(acceptanceDependencyObservationClaims).set({
+        claimedAt: oldClaimedAt,
+        leaseExpiresAt: new Date(oldClaimedAt.valueOf() + 30_000),
+      }).where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id));
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+
+      const reclaimed = await claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-reclaim",
+      });
+      expect(reclaimed).toMatchObject({ claim: { id: claimed.claim.id } });
+      if (!reclaimed) throw new Error("expected expired pnpm claim to be reclaimed");
+      expect(reclaimed.claim.token).not.toBe(claimed.claim.token);
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+
+      const foreignWorkspace = (await db.insert(workspaces).values({
+        name: "foreign pnpm claim workspace",
+        slug: `foreign-pnpm-claim-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: foreignWorkspace.id,
+        workerId: "worker:r10-pnpm-foreign",
+      })).resolves.toBeNull();
+
+      const liveClaim = (await db.select().from(acceptanceDependencyObservationClaims)
+        .where(eq(acceptanceDependencyObservationClaims.id, reclaimed.claim.id)))[0]!;
+      const competingClaimId = randomUUID();
+      const competingClaimToken = "competing_candidate_claim_token_1234567890abcd";
+      await db.insert(acceptanceDependencyObservationClaims).values({
+        ...liveClaim,
+        id: competingClaimId,
+        candidateFingerprint: `sha256:${"f".repeat(64)}`,
+        candidate: { ...liveClaim.candidate, package: "underscore" },
+        claimedBy: "worker:r10-pnpm-competing-candidate",
+        claimTokenSha256: createHash("sha256").update(competingClaimToken, "utf8").digest("hex"),
+        consumedAt: null,
+        observationEventId: null,
+        updatedAt: new Date(),
+      });
+
+      const recorded = await recordAcceptanceDependencyObservation(evidence, {
+        claimToken: reclaimed.claim.token,
+      });
+      expect(recorded).toMatchObject({ kind: "recorded", observation: { status: "observed" } });
+      if (recorded.kind !== "recorded") throw new Error("expected claimed observation record");
+      const consumed = (await db.select().from(acceptanceDependencyObservationClaims)
+        .where(eq(acceptanceDependencyObservationClaims.id, claimed.claim.id)))[0]!;
+      expect(consumed).toMatchObject({
+        observationEventId: recorded.observation.eventId,
+        consumedAt: expect.any(Date),
+      });
+      const competing = (await db.select().from(acceptanceDependencyObservationClaims)
+        .where(eq(acceptanceDependencyObservationClaims.id, competingClaimId)))[0]!;
+      expect(competing).toMatchObject({ consumedAt: null, observationEventId: null });
+      await expect(recordAcceptanceDependencyObservation(evidence, {
+        claimToken: reclaimed.claim.token,
+      })).resolves.toMatchObject({
+        kind: "replayed",
+        observation: { eventId: recorded.observation.eventId },
+      });
+      await expect(recordAcceptanceDependencyObservation({
+        ...evidence,
+        security: { ...evidence.security, reportSha256: "9".repeat(64) },
+      }, { claimToken: reclaimed.claim.token }))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationConflictError);
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-after-observation",
+      })).resolves.toBeNull();
+      await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
     });
 
     it("records one exact-head dependency observation and replays only exact normalized evidence", async () => {

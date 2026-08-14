@@ -3,11 +3,13 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptanceDependencyObservation: vi.fn(),
+  AcceptanceDependencyObservationClaimError: class AcceptanceDependencyObservationClaimError extends Error {},
   AcceptanceDependencyObservationConflictError: class AcceptanceDependencyObservationConflictError extends Error {},
   AcceptanceDependencyObservationInvalidEvidenceError: class AcceptanceDependencyObservationInvalidEvidenceError extends Error {},
 }));
 
 import {
+  AcceptanceDependencyObservationClaimError,
   AcceptanceDependencyObservationConflictError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
@@ -15,6 +17,7 @@ import {
 import { POST } from "./route";
 
 const SECRET = "jace-shared-secret-abc123";
+const CLAIM_TOKEN = "claim-token-abcdefghijklmnopqrstuvwxyz123456";
 const ORIGINAL_SECRET = process.env.JACE_CONSOLE_TOKEN;
 const OBSERVED_AT = new Date("2026-08-11T08:00:00.000Z");
 const VALID = {
@@ -98,11 +101,12 @@ function dbResult(kind: "recorded" | "replayed", status = "observed", reasons: s
   };
 }
 
-function request(body: unknown, options?: { auth?: boolean; contentType?: string }): NextRequest {
+function request(body: unknown, options?: { auth?: boolean; claim?: boolean; contentType?: string }): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/acceptance-dependency-observations", {
     method: "POST",
     headers: {
       "content-type": options?.contentType ?? "application/json",
+      ...(options?.claim === false ? {} : { "x-agentrail-dependency-claim-token": CLAIM_TOKEN }),
       ...(options?.auth === false ? {} : { authorization: `Bearer ${SECRET}` }),
     },
     body: JSON.stringify(body),
@@ -309,7 +313,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(raw));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledTimes(1);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(VALID);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(VALID, { claimToken: CLAIM_TOKEN });
     const json = await response.json();
     expect(json).toEqual({
       kind: "recorded",
@@ -327,7 +331,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(npm));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm, { claimToken: CLAIM_TOKEN });
     expect(JSON.stringify(await response.json())).not.toMatch(/install|save-prod|security|approv/iu);
   });
 
@@ -336,7 +340,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(yarn));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(yarn);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(yarn, { claimToken: CLAIM_TOKEN });
     expect(yarn).not.toHaveProperty("yarnConfiguration");
     expect(JSON.stringify(await response.json())).not.toMatch(/yarnrc|update-lockfile|security|approv/iu);
   });
@@ -346,7 +350,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(uv));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(uv);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(uv, { claimToken: CLAIM_TOKEN });
     expect(JSON.stringify(await response.json())).not.toMatch(/upgrade-package|security|approv|execute/iu);
   });
 
@@ -359,7 +363,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
 
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(cargo);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(cargo, { claimToken: CLAIM_TOKEN });
     const body = await response.json();
     expect(body).toEqual(expect.objectContaining({
       kind: "recorded",
@@ -375,7 +379,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(composer));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer, { claimToken: CLAIM_TOKEN });
     expect(JSON.stringify(await response.json()))
       .not.toMatch(/composer update|Packagist|security|approv|execute|deliver/iu);
   });
@@ -391,7 +395,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(composer));
 
     expect(response.status).toBe(201);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
     });
@@ -407,7 +411,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(historical));
 
     expect(response.status).toBe(200);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       kind: "replayed",
       status: "refused_unsupported_profile",
@@ -434,7 +438,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
 
     expect(response.status).toBe(400);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(composer, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toEqual({ error: "Invalid dependency observation" });
   });
 
@@ -450,7 +454,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
 
     expect(response.status).toBe(200);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       kind: "replayed",
       status: "refused_unsupported_profile",
@@ -470,7 +474,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
 
     expect(response.status).toBe(200);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       kind: "replayed",
       status: "refused_unsupported_profile",
@@ -490,7 +494,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(npm));
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
     });
@@ -506,7 +510,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
 
     expect(response.status).toBe(200);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical, { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       kind: "replayed",
       status: "refused_unsupported_profile",
@@ -565,7 +569,7 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
       manifest: expect.objectContaining({ path: "pyproject.toml" }),
       lockfile: expect.objectContaining({ path: "poetry.lock" }),
       security: expect.objectContaining({ identity, provider: "opaque" }),
-    }));
+    }), { claimToken: CLAIM_TOKEN });
     await expect(response.json()).resolves.toMatchObject({
       status: "refused_unsupported_profile", reasons: ["unsupported_manager_profile"],
     });
@@ -613,6 +617,20 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     const response = await POST(request(VALID));
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ kind: "conflict" });
+  });
+
+  it("requires a lease token and maps a forged or stale claim to 409", async () => {
+    const missing = await POST(request(VALID, { claim: false }));
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toEqual({ kind: "invalid_claim" });
+    expect(recordAcceptanceDependencyObservation).not.toHaveBeenCalled();
+
+    vi.mocked(recordAcceptanceDependencyObservation).mockRejectedValue(
+      new AcceptanceDependencyObservationClaimError()
+    );
+    const invalid = await POST(request(VALID));
+    expect(invalid.status).toBe(409);
+    expect(await invalid.json()).toEqual({ kind: "invalid_claim" });
   });
 
   it("maps storage failure to a sanitized 503 without raw details", async () => {

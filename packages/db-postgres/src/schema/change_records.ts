@@ -621,6 +621,62 @@ export const acceptanceCompiledContextPacks = pgTable(
 );
 
 /**
+ * Short-lived worker leases for the only dependency evidence producer that is
+ * operational in R10. The descriptor fields are copied from server-owned
+ * current custody at claim time; callers never enqueue or choose this work.
+ * A revisited SHA receives a different head-cycle row, preserving A-B-A
+ * semantics instead of reviving an expired occurrence.
+ */
+export const acceptanceDependencyObservationClaims = pgTable(
+  "acceptance_dependency_observation_claims",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    compiledPackId: uuid("compiled_pack_id").notNull().references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
+    compiledPackSha256: text("compiled_pack_sha256").notNull(),
+    candidateFingerprint: text("candidate_fingerprint").notNull(),
+    candidate: jsonb("candidate").$type<Record<string, unknown>>().notNull(),
+    profile: jsonb("profile").$type<Record<string, unknown>>().notNull(),
+    claimedBy: text("claimed_by").notNull(),
+    claimTokenSha256: text("claim_token_sha256").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    observationEventId: uuid("observation_event_id").references(() => changeRecordEvents.id, { onDelete: "restrict" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    occurrence: uniqueIndex("acceptance_dependency_observation_claims_occurrence_key").on(
+      t.recordId, t.headCycleId, t.candidateFingerprint,
+    ),
+    workspaceLease: index("acceptance_dependency_observation_claims_workspace_lease_idx").on(
+      t.workspaceId, t.leaseExpiresAt,
+    ),
+    custodyCheck: check(
+      "acceptance_dependency_observation_claims_custody_check",
+      sql`${t.headSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.acceptanceContractVersion} > 0
+        AND ${t.acceptanceContractSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.compiledPackSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.candidateFingerprint} ~ '^sha256:[a-f0-9]{64}$'
+        AND ${t.claimTokenSha256} ~ '^[a-f0-9]{64}$'
+        AND jsonb_typeof(${t.candidate}) = 'object'
+        AND jsonb_typeof(${t.profile}) = 'object'
+        AND ${t.leaseExpiresAt} > ${t.claimedAt}
+        AND ((${t.consumedAt} IS NULL) = (${t.observationEventId} IS NULL))`,
+    ),
+  }),
+);
+
+/**
  * One server-derived delivery aggregate for one immutable occurrence of a PR
  * head.  This deliberately contains no vendor task locator or credential: a
  * later worker may use the selected route snapshot, but cannot reinterpret

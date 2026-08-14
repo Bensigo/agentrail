@@ -512,6 +512,27 @@ pip/requirements, Poetry, Maven, Gradle, NuGet/dotnet, and Go Modules remain
 required R10 work; detected-only or source-only observer support is not
 operational support.
 
+The current pnpm producer slice makes one accepted profile operational in
+source/test without widening its authority. An authenticated runner can claim
+only server-selected `dependency_watch` work for one current authoritative
+Record occurrence. The short lease and final write are bound to the exact
+workspace, Record/head cycle and authority generation, confirmed Contract,
+compiled Pack, candidate fingerprint/body, and pnpm profile. The worker reads
+only the exact-head root `package.json` and `pnpm-lock.yaml` blobs, runs only
+`node --version` and `pnpm --version`, performs one bounded OSV query, and
+submits the result to the existing canonical v2 observation route. That route
+requires the opaque claim token, revalidates every binding, and atomically
+consumes only the matching claim; forged, stale, replayed-with-different-
+evidence, cross-workspace, and competing-candidate custody fail closed.
+
+This is not full manager coverage and does not close R10.1. It performs no
+install, update, build, test, package script, approval, external-builder Pack
+delivery, pull-request mutation, merge, or deployment. No live GitHub or OSV
+request, deployed worker pickup, approved builder re-entry, or customer path
+has been observed. The claim migration is reserved as `0105` behind #1735's
+`0101`/`0102`, builder re-entry's `0103`, and Context Pack regeneration's
+`0104`; it must be rebased or renumbered if that merge order changes.
+
 Every manager without a bounded safe profile must return the explicit
 fail-closed `refused_unsupported_profile` capability/evidence result. Such a
 result cannot become `observed`, receive approval, or mint an R10.2 Pack, and

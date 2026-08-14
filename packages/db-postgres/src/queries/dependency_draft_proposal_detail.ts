@@ -25,7 +25,7 @@ const BASE_UNRESOLVED = [
   "approval", "context-pack", "builder-handoff",
 ] as const;
 
-type Source = {
+export type DependencyObservationProposalSourceCustody = {
   repositoryId: string;
   repositoryName: string;
   watchId: string;
@@ -91,7 +91,9 @@ function safeText(value: unknown, max = 512): value is string {
     && value === value.trim() && !/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value);
 }
 
-function source(value: unknown): Source | null {
+export function resolveDependencyObservationProposalSourceCustody(
+  value: unknown,
+): DependencyObservationProposalSourceCustody | null {
   if (!object(value) || !exactKeys(value, [
     "kind", "version", "repositoryId", "repositoryName", "watchId", "observationId", "observationKey",
     "candidateFingerprint", "proposalCustodyIdentity", "candidate", "baselineSha", "manifestPath", "lockfilePath",
@@ -145,7 +147,7 @@ function source(value: unknown): Source | null {
   };
 }
 
-function sameSourceFields(value: Record<string, unknown>, parsed: Source): boolean {
+function sameSourceFields(value: Record<string, unknown>, parsed: DependencyObservationProposalSourceCustody): boolean {
   return value.repositoryId === parsed.repositoryId && value.repositoryName === parsed.repositoryName
     && value.watchId === parsed.watchId && value.observationId === parsed.observationId
     && value.observationKey === parsed.observationKey && value.candidateFingerprint === parsed.candidateFingerprint
@@ -158,19 +160,22 @@ function sameSourceFields(value: Record<string, unknown>, parsed: Source): boole
     && value.independentSourceProof === "not_proven";
 }
 
-function unresolvedFor(parsed: Source): readonly string[] {
+function unresolvedFor(parsed: DependencyObservationProposalSourceCustody): readonly string[] {
   return parsed.profile.manager === "npm"
     ? [...BASE_UNRESOLVED, "delivery", "pull-request", "merge"]
     : BASE_UNRESOLVED;
 }
 
-function lockfileSha(parsed: Source): string {
+function lockfileSha(parsed: DependencyObservationProposalSourceCustody): string {
   return parsed.lockfilePath === "pnpm-lock.yaml"
     ? (parsed.selectedFileHashes as { "pnpm-lock.yaml": string })["pnpm-lock.yaml"]
     : (parsed.selectedFileHashes as { "package-lock.json": string })["package-lock.json"];
 }
 
-function exactContract(value: unknown, parsed: Source): boolean {
+export function dependencyObservationProposalContractMatches(
+  value: unknown,
+  parsed: DependencyObservationProposalSourceCustody,
+): boolean {
   if (!object(value) || !exactKeys(value, [
     "originalRequest", "normalizedRequirements", "acceptanceCriteria", "nonGoals", "risks", "environment", "stops", "unresolvedQuestions",
   ])) return false;
@@ -199,7 +204,7 @@ function exactContract(value: unknown, parsed: Source): boolean {
     })));
 }
 
-function exactEventPayload(value: unknown, parsed: Source, recordId: string, contractId: string): boolean {
+function exactEventPayload(value: unknown, parsed: DependencyObservationProposalSourceCustody, recordId: string, contractId: string): boolean {
   if (!object(value) || !exactKeys(value, [
     "kind", "version", "recordId", "acceptanceContractId", "acceptanceContractVersion", "repositoryId", "repositoryName",
     "watchId", "observationId", "observationKey", "candidateFingerprint", "proposalCustodyIdentity", "candidate", "profile",
@@ -228,7 +233,7 @@ export async function readDependencyDraftProposalDetail(input: {
   if (record.originChannel !== "dependency_watch" || record.sourceReferences.length !== 1 || !record.workKey) {
     return { kind: "not_draft_proposal" };
   }
-  const parsed = source(record.sourceReferences[0]);
+  const parsed = resolveDependencyObservationProposalSourceCustody(record.sourceReferences[0]);
   if (!parsed || record.repo !== parsed.repositoryName
     || record.workKey !== `dependency-observation-proposal:${parsed.proposalCustodyIdentity}`
     || record.id !== changeRecordId({ workspaceId: input.workspaceId, repo: record.repo, workKey: record.workKey })) {
@@ -245,7 +250,7 @@ export async function readDependencyDraftProposalDetail(input: {
   if (contract.id !== acceptanceContractId({ recordId: record.id, version: 1 })
     || contract.version !== 1 || contract.status !== "draft" || contract.createdBy !== ACTOR
     || contract.confirmedBy !== null || contract.confirmedAt !== null
-    || !exactContract(contract.contract, parsed)
+    || !dependencyObservationProposalContractMatches(contract.contract, parsed)
     || event.eventKey !== expectedEventKey || event.id !== changeRecordEventId({ recordId: record.id, eventKey: expectedEventKey })
     || event.stage !== "dependency_observation_proposal" || event.actor !== ACTOR
     || !exactEventPayload(event.payloadRef, parsed, record.id, contract.id)) return { kind: "invalid_custody" };

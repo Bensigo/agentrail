@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  AcceptanceDependencyObservationClaimError,
   AcceptanceDependencyObservationConflictError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
@@ -28,9 +29,13 @@ export async function POST(request: NextRequest) {
   if (!parsed) {
     return NextResponse.json({ error: "Invalid dependency observation" }, { status: 400 });
   }
+  const claimToken = request.headers.get("x-agentrail-dependency-claim-token");
+  if (!claimToken) {
+    return NextResponse.json({ kind: "invalid_claim" }, { status: 409 });
+  }
 
   try {
-    const result = await recordAcceptanceDependencyObservation(parsed.input);
+    const result = await recordAcceptanceDependencyObservation(parsed.input, { claimToken });
     switch (result.kind) {
       case "recorded":
       case "replayed":
@@ -55,6 +60,9 @@ export async function POST(request: NextRequest) {
     }
     if (error instanceof AcceptanceDependencyObservationConflictError) {
       return NextResponse.json({ kind: "conflict" }, { status: 409 });
+    }
+    if (error instanceof AcceptanceDependencyObservationClaimError) {
+      return NextResponse.json({ kind: "invalid_claim" }, { status: 409 });
     }
     console.error("Acceptance dependency observation storage unavailable");
     return NextResponse.json({ error: "Dependency observation unavailable" }, { status: 503 });

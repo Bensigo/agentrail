@@ -27,9 +27,9 @@
 // (`bindEveSession`), which is the entire reason this route awaits rather
 // than fires-and-forgets.
 //
-// Auth posture: same internal-trust level as run-outcome.ts (no header check)
-// — EVE_HOST is an internal-network-only address, never exposed publicly;
-// hardening this boundary is explicitly deferred to a later wave.
+// Auth posture: the entire door requires Console's independent hosted-inbound
+// bearer before it reads a bounded body. Channel auth still supplies the
+// tenant/conversation binding; it is not a substitute for service auth.
 //
 // Kept thin on purpose: no DB, no parsing beyond validation, no
 // channel-specific logic besides selecting the module and passing `target`
@@ -49,6 +49,7 @@
 import { defineChannel, POST } from "eve/channels";
 import { normalizeHostedInbound } from "../lib/hosted_inbound.core.mjs";
 import { authorizeHostedInbound } from "../lib/hosted_inbound_auth.core.mjs";
+import { HOSTED_INBOUND_BODY_BYTES, readBoundedRequestJson } from "../lib/bounded_request_json.core.mjs";
 import { recordHostedAcceptanceIntake } from "../lib/acceptance_intake.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
@@ -86,12 +87,8 @@ export default defineChannel({
       if (!authorizeHostedInbound(req.headers, process.env)) {
         return json({ error: "hosted-inbound: unauthorized." }, 401);
       }
-      let raw: unknown;
-      try {
-        raw = await req.json();
-      } catch {
-        return json({ error: "hosted-inbound: body is not valid JSON." }, 400);
-      }
+      const raw = await readBoundedRequestJson(req, HOSTED_INBOUND_BODY_BYTES);
+      if (!raw) return json({ error: "hosted-inbound: body is invalid or too large." }, 400);
 
       let normalized: ReturnType<typeof normalizeHostedInbound>;
       try {

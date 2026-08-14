@@ -19,6 +19,23 @@ beforeEach(() => {
 });
 
 describe("MCP Acceptance Intake reply custody", () => {
+  it("rejects a declared oversized machine body before DB custody", async () => {
+    const request = new NextRequest("http://localhost", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+        "Content-Length": String(32 * 1024 + 1),
+      },
+      body: JSON.stringify({ workspaceId, sourceKey: "reply-1", text: "small" }),
+    });
+
+    const response = await POST(request, { params: Promise.resolve({ intakeId }) });
+
+    expect(response.status).toBe(400);
+    expect(appendAcceptanceOutboundReply).not.toHaveBeenCalled();
+  });
+
   it("requires Jace auth and records only an outbound Intake message", async () => {
     const request = new NextRequest("http://localhost", {
       method: "POST",

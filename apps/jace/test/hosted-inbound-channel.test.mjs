@@ -36,9 +36,17 @@ test("fails closed unless the Console-to-Jace service hop authenticates", () => 
     /import\s*\{\s*authorizeHostedInbound\s*\}\s*from\s*["']\.\.\/lib\/hosted_inbound_auth\.core\.mjs["']/,
   );
   const authAt = code.indexOf("authorizeHostedInbound(req.headers, process.env)");
-  const parseAt = code.indexOf("await req.json()");
+  const parseAt = code.indexOf("readBoundedRequestJson(req, HOSTED_INBOUND_BODY_BYTES)");
   assert.ok(authAt >= 0 && parseAt > authAt, "authenticate before reading an inbound body");
   assert.match(code, /unauthorized/);
+});
+
+test("reads the authenticated machine body through an explicit byte bound", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*HOSTED_INBOUND_BODY_BYTES,\s*readBoundedRequestJson\s*\}\s*from\s*["']\.\.\/lib\/bounded_request_json\.core\.mjs["']/,
+  );
+  assert.doesNotMatch(code, /await\s+req\.json\(\)/);
 });
 
 test("imports telegram/discord/slack channel modules (#1284/#1285: multi-channel CHANNELS map, mirroring run-outcome.ts)", () => {

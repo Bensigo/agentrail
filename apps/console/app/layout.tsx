@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Jace — reviewable pull requests for engineering teams",
+  title: "Jace — evidence and control for AI coding agents",
   description:
-    "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
+    "Jace connects human-confirmed Acceptance Contracts, bounded Context Packs, exact-head evidence, corrections, and human decisions around external coding agents.",
 };
 
 export default function RootLayout({

@@ -32,18 +32,18 @@ import { TierCards } from "./pricing/tier-cards";
 const HOW_WE_WORK = [
   {
     role: "YOUR TEAM",
-    name: "Define the work",
-    line: "Your team turns a request into scope, planned checks, and acceptance criteria. You confirm it before work starts.",
+    name: "Plan and confirm the Acceptance Contract",
+    line: "Your team turns a request into planned scope and criteria. A human on your team confirms the Acceptance Contract before work starts.",
   },
   {
     role: "JACE + CODING AGENT",
-    name: "Give the coding agent focused context",
-    line: "Jace connects the confirmed agreement and relevant repository context to the external coding agent. The coding agent writes the code.",
+    name: "Hand off through MCP",
+    line: "Jace hands off the confirmed Acceptance Contract and a bounded Context Pack through MCP to the selected external coding agent. The coding agent writes the code.",
   },
   {
     role: "JACE",
-    name: "Verify and correct",
-    line: "Jace checks the exact change against the agreed criteria, keeps the evidence, and sends a correction path when a claim is not proven.",
+    name: "Review the exact head",
+    line: "Jace reviews the exact PR head against the confirmed intent, records criterion evidence or refuses success, and provides a correction path when required.",
   },
   {
     role: "YOUR TEAM",
@@ -150,6 +150,7 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
+              <span className="font-bold text-[var(--gray-12)]">Illustrative example.</span>{" "}
               Before work starts, a request becomes planned scope and criteria for human confirmation.
             </p>
           </Reveal>

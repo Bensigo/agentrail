@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  AcceptanceMcpTurnDispatchConflictError,
+  completeAcceptanceMcpTurnDispatch,
   findEnabledJaceWorkspace,
-  readAcceptanceIntakeMessage,
+  holdAcceptanceMcpTurnDispatch,
   readAcceptanceIntakeMcpReply,
   readAcceptanceIntakeReadback,
+  readAcceptanceMcpTurnDispatch,
   readAcceptanceRecordDetail,
+  reserveAcceptanceMcpTurnDispatch,
 } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import {
@@ -12,6 +16,7 @@ import {
   MCP_MESSAGE_KEY_LIMIT,
   MCP_MESSAGE_LIMIT,
   MCP_TASK_CONTEXT_KEY_LIMIT,
+  mcpConversationKey,
   mcpIntakeId,
   mcpMessageSourceKey,
 } from "../../../../../lib/agent-jace-mcp";
@@ -150,6 +155,12 @@ export async function GET(request: NextRequest) {
         recordId: intake.intake.recordId,
       })
     : null;
+  const dispatch = await readAcceptanceMcpTurnDispatch({
+    workspaceId: authorization.workspaceId,
+    credentialId: authorization.apiKeyId,
+    taskContextKey,
+    messageKey,
+  });
   return NextResponse.json({
     task: { taskContextKey, messageKey, intakeId },
     reply: reply
@@ -165,6 +176,14 @@ export async function GET(request: NextRequest) {
       contract: intake.contract,
       record: detail ? compactRecord(detail) : null,
     },
+    dispatch: dispatch ? {
+      messageKey: dispatch.messageKey,
+      status: dispatch.status,
+      sessionId: dispatch.sessionId,
+      resultReason: dispatch.resultReason,
+      reservedAt: dispatch.reservedAt,
+      completedAt: dispatch.completedAt,
+    } : null,
     authority: AUTHORITY,
   }, { headers: { "Cache-Control": "no-store" } });
 }
@@ -192,41 +211,128 @@ export async function POST(request: NextRequest) {
     taskContextKey,
   });
   const sourceKey = mcpMessageSourceKey(authorization.apiKeyId, taskContextKey, messageKey);
-  const existing = await readAcceptanceIntakeMessage({
-    workspaceId: authorization.workspaceId,
-    intakeId,
-    sourceKey,
-  });
-  if (existing) {
-    if (existing.direction !== "inbound" || existing.text !== message) {
+  let reservation: Awaited<ReturnType<typeof reserveAcceptanceMcpTurnDispatch>>;
+  try {
+    reservation = await reserveAcceptanceMcpTurnDispatch({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      messageKey,
+      conversationKey: mcpConversationKey(authorization.apiKeyId, taskContextKey),
+      sourceKey,
+      message,
+    });
+  } catch (error) {
+    if (error instanceof AcceptanceMcpTurnDispatchConflictError) {
       return NextResponse.json(
-        { error: "messageKey is already bound to different task-context content" },
+        { error: "Jace turn key is already bound to different content" },
         { status: 409 },
       );
     }
+    return NextResponse.json(
+      { error: "Jace turn custody is unavailable" },
+      { status: 503 },
+    );
+  }
+  if (reservation.kind !== "claimed") {
+    const accepted = reservation.dispatch.status === "accepted";
     return NextResponse.json({
-      task: { taskContextKey, intakeId },
-      accepted: true,
+      task: { taskContextKey, messageKey, intakeId },
+      accepted,
       duplicate: true,
+      dispatch: {
+        status: reservation.dispatch.status,
+        reason: reservation.dispatch.resultReason,
+      },
+      session: accepted ? {
+        id: reservation.dispatch.sessionId,
+        continuationToken: reservation.dispatch.continuationToken,
+      } : null,
       authority: AUTHORITY,
+    }, {
+      status: reservation.dispatch.status === "held"
+        ? 409
+        : reservation.dispatch.status === "reserved" ? 202 : 200,
     });
   }
-  const result = await dispatchMcpJaceTurn({
-    workspaceId: authorization.workspaceId,
-    credentialId: authorization.apiKeyId,
-    taskContextKey,
-    sourceKey,
-    message,
-  });
+  let result: Awaited<ReturnType<typeof dispatchMcpJaceTurn>>;
+  try {
+    result = await dispatchMcpJaceTurn({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      sourceKey,
+      message,
+    });
+  } catch {
+    await holdAcceptanceMcpTurnDispatch({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      messageKey,
+      reason: "hosted_inbound_ambiguous_error",
+    });
+    return NextResponse.json({
+      error: "Jace turn delivery custody is held",
+      accepted: false,
+      dispatch: { status: "held" },
+      authority: AUTHORITY,
+    }, { status: 503 });
+  }
   if (!result.ok) {
+    await holdAcceptanceMcpTurnDispatch({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      messageKey,
+      reason: result.reason,
+    });
     return NextResponse.json(
-      { error: "Jace did not accept the task-context turn", reason: result.reason },
+      {
+        error: "Jace did not accept the task-context turn",
+        reason: result.reason,
+        accepted: false,
+        dispatch: { status: "held" },
+        authority: AUTHORITY,
+      },
       { status: 502 },
     );
   }
+  let completed: Awaited<ReturnType<typeof completeAcceptanceMcpTurnDispatch>>;
+  try {
+    completed = await completeAcceptanceMcpTurnDispatch({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      messageKey,
+      sessionId: result.sessionId,
+      continuationToken: result.continuationToken,
+    });
+  } catch {
+    await holdAcceptanceMcpTurnDispatch({
+      workspaceId: authorization.workspaceId,
+      credentialId: authorization.apiKeyId,
+      taskContextKey,
+      messageKey,
+      reason: "result_custody_ambiguous",
+    });
+    return NextResponse.json({
+      error: "Jace turn result custody is held",
+      accepted: false,
+      dispatch: { status: "held" },
+      authority: AUTHORITY,
+    }, { status: 503 });
+  }
+  if (completed.kind !== "accepted") {
+    return NextResponse.json(
+      { error: "Jace turn result custody is held" },
+      { status: 503 },
+    );
+  }
   return NextResponse.json({
-    task: { taskContextKey, intakeId },
+    task: { taskContextKey, messageKey, intakeId },
     accepted: true,
+    dispatch: { status: completed.dispatch.status },
     session: { id: result.sessionId, continuationToken: result.continuationToken },
     authority: AUTHORITY,
   }, { status: 202 });

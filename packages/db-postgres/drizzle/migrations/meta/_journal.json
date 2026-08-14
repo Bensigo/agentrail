@@ -716,6 +716,13 @@
       "when": 1793200000000,
       "tag": "0101_agent_mcp_api_key_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1793300000000,
+      "tag": "0102_acceptance_mcp_turn_dispatches",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,7 @@ import {
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
+  acceptanceMcpTurnDispatches,
   type AcceptanceContractRow,
   type AcceptanceBriefBindingRow,
   type AcceptanceBuilderRouteCapabilityProfileRow,
@@ -39,10 +40,12 @@ import {
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
+  type AcceptanceMcpTurnDispatchRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
 import { workspaces } from "../schema/workspaces.js";
+import { apiKeys } from "../schema/api_keys.js";
 import { workspaceMemberships } from "../schema/workspace_memberships.js";
 import { chatIdentities } from "../schema/chat_identities.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
@@ -2883,6 +2886,402 @@ export async function readAcceptanceIntakeMcpReply(input: {
     .orderBy(desc(acceptanceIntakeMessages.createdAt), desc(acceptanceIntakeMessages.id))
     .limit(1);
   return rows[0]?.message ?? null;
+}
+
+export const ACCEPTANCE_MCP_TURN_RESERVATION_STALE_MS = 2 * 60 * 1000;
+
+export type AcceptanceMcpTurnDispatchIdentity = {
+  workspaceId: string;
+  credentialId: string;
+  taskContextKey: string;
+  messageKey: string;
+};
+
+export type ReserveAcceptanceMcpTurnDispatchInput = AcceptanceMcpTurnDispatchIdentity & {
+  conversationKey: string;
+  sourceKey: string;
+  message: string;
+};
+
+export type ReserveAcceptanceMcpTurnDispatchResult = {
+  kind: "claimed" | "replayed";
+  dispatch: AcceptanceMcpTurnDispatchRow;
+};
+
+export class AcceptanceMcpTurnDispatchConflictError extends Error {
+  readonly code = "ACCEPTANCE_MCP_TURN_DISPATCH_CONFLICT" as const;
+
+  constructor() {
+    super("MCP turn identity is already bound to different content");
+    this.name = "AcceptanceMcpTurnDispatchConflictError";
+  }
+}
+
+function safeMcpTurnKey(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function parseAcceptanceMcpTurnIdentity(
+  input: unknown,
+): AcceptanceMcpTurnDispatchIdentity | null {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "credentialId", "taskContextKey", "messageKey",
+  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["credentialId"])
+    || !safeMcpTurnKey(input["taskContextKey"], 256)
+    || !safeMcpTurnKey(input["messageKey"], 256)) return null;
+  return input as AcceptanceMcpTurnDispatchIdentity;
+}
+
+function parseReserveAcceptanceMcpTurnDispatchInput(
+  input: unknown,
+): ReserveAcceptanceMcpTurnDispatchInput | null {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "credentialId", "taskContextKey", "messageKey",
+    "conversationKey", "sourceKey", "message",
+  ])) return null;
+  const identity = parseAcceptanceMcpTurnIdentity({
+    workspaceId: input["workspaceId"],
+    credentialId: input["credentialId"],
+    taskContextKey: input["taskContextKey"],
+    messageKey: input["messageKey"],
+  });
+  if (!identity || !safeMcpTurnKey(input["conversationKey"], 1024)
+    || !safeMcpTurnKey(input["sourceKey"], 1024)
+    || !safeMcpTurnKey(input["message"], 8_000)) return null;
+  const conversationKey = `mcp:${identity.credentialId}:${identity.taskContextKey}`;
+  const sourceKey = `mcp-inbound:${identity.credentialId}:${identity.taskContextKey}:${identity.messageKey}`;
+  if (input["conversationKey"] !== conversationKey || input["sourceKey"] !== sourceKey) return null;
+  return { ...identity, conversationKey, sourceKey, message: input["message"] };
+}
+
+export function acceptanceMcpTurnDispatchId(input: AcceptanceMcpTurnDispatchIdentity): string {
+  return uuid5Url(`acceptance-mcp-turn-dispatch:${JSON.stringify([
+    input.workspaceId,
+    input.credentialId,
+    input.taskContextKey,
+    input.messageKey,
+  ])}`);
+}
+
+function mcpTurnDispatchComparable(row: AcceptanceMcpTurnDispatchRow) {
+  return {
+    workspaceId: row.workspaceId,
+    credentialId: row.credentialId,
+    taskContextKey: row.taskContextKey,
+    messageKey: row.messageKey,
+    intakeId: row.intakeId,
+    inboundMessageId: row.inboundMessageId,
+    sourceKey: row.sourceKey,
+    messageSha256: row.messageSha256,
+  };
+}
+
+type ChangeRecordTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function holdStaleAcceptanceMcpTurnDispatch(
+  tx: ChangeRecordTransaction,
+  dispatch: AcceptanceMcpTurnDispatchRow,
+  now = new Date(),
+): Promise<AcceptanceMcpTurnDispatchRow> {
+  if (dispatch.status !== "reserved"
+    || dispatch.reservedAt.getTime() > now.getTime() - ACCEPTANCE_MCP_TURN_RESERVATION_STALE_MS) {
+    return dispatch;
+  }
+  const rows = await tx.update(acceptanceMcpTurnDispatches).set({
+    status: "held",
+    resultReason: "stale_reserved_claim",
+    completedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(acceptanceMcpTurnDispatches.id, dispatch.id),
+    eq(acceptanceMcpTurnDispatches.status, "reserved"),
+    lte(
+      acceptanceMcpTurnDispatches.reservedAt,
+      new Date(now.getTime() - ACCEPTANCE_MCP_TURN_RESERVATION_STALE_MS),
+    ),
+  )).returning();
+  if (rows.length !== 1) throw new Error("Acceptance MCP stale reservation lost its custody");
+  return rows[0]!;
+}
+
+/**
+ * Atomically records the canonical MCP Intake/message and reserves its one
+ * external Eve delivery. Only `kind: claimed` grants the caller permission to
+ * dispatch. An exact replay returns stored state and never grants authority.
+ */
+export async function reserveAcceptanceMcpTurnDispatch(
+  input: ReserveAcceptanceMcpTurnDispatchInput,
+): Promise<ReserveAcceptanceMcpTurnDispatchResult> {
+  const parsed = parseReserveAcceptanceMcpTurnDispatchInput(input);
+  if (!parsed) throw new Error("Invalid Acceptance MCP turn reservation");
+  const intakeId = acceptanceIntakeId({
+    workspaceId: parsed.workspaceId,
+    originChannel: "mcp",
+    conversationKey: parsed.conversationKey,
+  });
+  const inboundMessageId = acceptanceIntakeMessageId({ intakeId, sourceKey: parsed.sourceKey });
+  const id = acceptanceMcpTurnDispatchId(parsed);
+  const messageSha256 = createHash("sha256").update(parsed.message, "utf8").digest("hex");
+  const comparable = {
+    workspaceId: parsed.workspaceId,
+    credentialId: parsed.credentialId,
+    taskContextKey: parsed.taskContextKey,
+    messageKey: parsed.messageKey,
+    intakeId,
+    inboundMessageId,
+    sourceKey: parsed.sourceKey,
+    messageSha256,
+  };
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${id}))`);
+    const credential = (await tx.select({ id: apiKeys.id }).from(apiKeys).where(and(
+      eq(apiKeys.id, parsed.credentialId),
+      eq(apiKeys.workspaceId, parsed.workspaceId),
+      eq(apiKeys.kind, "agent_mcp"),
+      isNull(apiKeys.revokedAt),
+    )).limit(1))[0];
+    if (!credential) throw new Error("Acceptance MCP credential is not current");
+
+    await tx.insert(acceptanceIntakes).values({
+      id: intakeId,
+      workspaceId: parsed.workspaceId,
+      originChannel: "mcp",
+      conversationKey: parsed.conversationKey,
+      sourceReferences: [{
+        kind: "hosted_channel_message",
+        channel: "mcp",
+        conversationKey: parsed.conversationKey,
+        sourceKey: parsed.sourceKey,
+      }],
+    }).onConflictDoNothing();
+    const intake = (await tx.select().from(acceptanceIntakes).where(and(
+      eq(acceptanceIntakes.id, intakeId),
+      eq(acceptanceIntakes.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!intake || intake.originChannel !== "mcp"
+      || intake.conversationKey !== parsed.conversationKey) {
+      throw new AcceptanceMcpTurnDispatchConflictError();
+    }
+
+    const insertedMessages = await tx.insert(acceptanceIntakeMessages).values({
+      id: inboundMessageId,
+      intakeId,
+      sourceKey: parsed.sourceKey,
+      direction: "inbound",
+      text: parsed.message,
+      metadata: { target: { workspaceId: parsed.workspaceId, taskContextKey: parsed.taskContextKey } },
+    }).onConflictDoNothing().returning();
+    const message = insertedMessages[0] ?? (await tx.select().from(acceptanceIntakeMessages)
+      .where(eq(acceptanceIntakeMessages.id, inboundMessageId)).limit(1))[0];
+    if (!message || message.intakeId !== intakeId || message.sourceKey !== parsed.sourceKey
+      || message.direction !== "inbound" || message.text !== parsed.message) {
+      throw new AcceptanceMcpTurnDispatchConflictError();
+    }
+
+    const inserted = await tx.insert(acceptanceMcpTurnDispatches).values({
+      id,
+      ...comparable,
+      status: insertedMessages.length === 1 ? "reserved" : "held",
+      ...(insertedMessages.length === 1 ? {} : {
+        resultReason: "preexisting_message_without_dispatch_custody",
+        completedAt: new Date(),
+      }),
+    }).onConflictDoNothing().returning();
+    const storedDispatch = inserted[0] ?? (await tx.select().from(acceptanceMcpTurnDispatches).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.workspaceId, parsed.workspaceId),
+    )).limit(1))[0];
+    if (!storedDispatch || !isDeepStrictEqual(mcpTurnDispatchComparable(storedDispatch), comparable)) {
+      throw new AcceptanceMcpTurnDispatchConflictError();
+    }
+    const dispatch = await holdStaleAcceptanceMcpTurnDispatch(tx, storedDispatch);
+    await tx.update(acceptanceIntakes).set({ updatedAt: new Date() })
+      .where(eq(acceptanceIntakes.id, intakeId));
+    return { kind: inserted.length === 1 && dispatch.status === "reserved" ? "claimed" : "replayed", dispatch };
+  });
+}
+
+export async function readAcceptanceMcpTurnDispatch(
+  input: AcceptanceMcpTurnDispatchIdentity,
+): Promise<AcceptanceMcpTurnDispatchRow | null> {
+  const parsed = parseAcceptanceMcpTurnIdentity(input);
+  if (!parsed) throw new Error("Invalid Acceptance MCP turn identity");
+  const id = acceptanceMcpTurnDispatchId(parsed);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${id}))`);
+    const dispatch = (await tx.select().from(acceptanceMcpTurnDispatches).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.workspaceId, parsed.workspaceId),
+      eq(acceptanceMcpTurnDispatches.credentialId, parsed.credentialId),
+    )).limit(1))[0];
+    return dispatch ? holdStaleAcceptanceMcpTurnDispatch(tx, dispatch) : null;
+  });
+}
+
+export type ListAcceptanceMcpTurnDispatchesInput = Omit<
+  AcceptanceMcpTurnDispatchIdentity,
+  "messageKey"
+>;
+
+/** Returns bounded task-level dispatch state without message content or continuation tokens. */
+export async function listAcceptanceMcpTurnDispatches(
+  input: ListAcceptanceMcpTurnDispatchesInput,
+): Promise<AcceptanceMcpTurnDispatchRow[]> {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "credentialId", "taskContextKey",
+  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["credentialId"])
+    || !safeMcpTurnKey(input["taskContextKey"], 256)) {
+    throw new Error("Invalid Acceptance MCP task dispatch read");
+  }
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    await tx.update(acceptanceMcpTurnDispatches).set({
+      status: "held",
+      resultReason: "stale_reserved_claim",
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceMcpTurnDispatches.workspaceId, input["workspaceId"]),
+      eq(acceptanceMcpTurnDispatches.credentialId, input["credentialId"]),
+      eq(acceptanceMcpTurnDispatches.taskContextKey, input["taskContextKey"]),
+      eq(acceptanceMcpTurnDispatches.status, "reserved"),
+      lte(
+        acceptanceMcpTurnDispatches.reservedAt,
+        new Date(now.getTime() - ACCEPTANCE_MCP_TURN_RESERVATION_STALE_MS),
+      ),
+    ));
+    return tx.select().from(acceptanceMcpTurnDispatches).where(and(
+      eq(acceptanceMcpTurnDispatches.workspaceId, input["workspaceId"]),
+      eq(acceptanceMcpTurnDispatches.credentialId, input["credentialId"]),
+      eq(acceptanceMcpTurnDispatches.taskContextKey, input["taskContextKey"]),
+    )).orderBy(
+      desc(acceptanceMcpTurnDispatches.createdAt),
+      desc(acceptanceMcpTurnDispatches.id),
+    ).limit(32);
+  });
+}
+
+export type CompleteAcceptanceMcpTurnDispatchInput = AcceptanceMcpTurnDispatchIdentity & {
+  sessionId: string;
+  continuationToken: string;
+};
+
+export type CompleteAcceptanceMcpTurnDispatchResult =
+  | { kind: "accepted"; dispatch: AcceptanceMcpTurnDispatchRow }
+  | { kind: "held"; dispatch: AcceptanceMcpTurnDispatchRow }
+  | { kind: "not_found" };
+
+function parseCompleteAcceptanceMcpTurnDispatchInput(
+  input: unknown,
+): CompleteAcceptanceMcpTurnDispatchInput | null {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "credentialId", "taskContextKey", "messageKey",
+    "sessionId", "continuationToken",
+  ])) return null;
+  const identity = parseAcceptanceMcpTurnIdentity({
+    workspaceId: input["workspaceId"],
+    credentialId: input["credentialId"],
+    taskContextKey: input["taskContextKey"],
+    messageKey: input["messageKey"],
+  });
+  if (!identity || !safeMcpTurnKey(input["sessionId"], 512)
+    || typeof input["continuationToken"] !== "string"
+    || input["continuationToken"].length > 1024
+    || /[\u0000-\u001f\u007f]/u.test(input["continuationToken"])) return null;
+  return {
+    ...identity,
+    sessionId: input["sessionId"],
+    continuationToken: input["continuationToken"],
+  };
+}
+
+/** Records the one durable Eve acceptance result for a reserved MCP turn. */
+export async function completeAcceptanceMcpTurnDispatch(
+  input: CompleteAcceptanceMcpTurnDispatchInput,
+): Promise<CompleteAcceptanceMcpTurnDispatchResult> {
+  const parsed = parseCompleteAcceptanceMcpTurnDispatchInput(input);
+  if (!parsed) throw new Error("Invalid Acceptance MCP turn completion");
+  const id = acceptanceMcpTurnDispatchId(parsed);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${id}))`);
+    const existing = (await tx.select().from(acceptanceMcpTurnDispatches).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.workspaceId, parsed.workspaceId),
+      eq(acceptanceMcpTurnDispatches.credentialId, parsed.credentialId),
+    )).limit(1))[0];
+    if (!existing) return { kind: "not_found" as const };
+    if (existing.status === "held") return { kind: "held" as const, dispatch: existing };
+    if (existing.status === "accepted") {
+      if (existing.sessionId !== parsed.sessionId
+        || existing.continuationToken !== parsed.continuationToken) {
+        throw new AcceptanceMcpTurnDispatchConflictError();
+      }
+      return { kind: "accepted" as const, dispatch: existing };
+    }
+    const rows = await tx.update(acceptanceMcpTurnDispatches).set({
+      status: "accepted",
+      sessionId: parsed.sessionId,
+      continuationToken: parsed.continuationToken,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.status, "reserved"),
+    )).returning();
+    if (rows.length !== 1) throw new Error("Acceptance MCP turn completion lost its reservation");
+    return { kind: "accepted" as const, dispatch: rows[0]! };
+  });
+}
+
+export type HoldAcceptanceMcpTurnDispatchInput = AcceptanceMcpTurnDispatchIdentity & {
+  reason: string;
+};
+
+export type HoldAcceptanceMcpTurnDispatchResult =
+  | { kind: "accepted"; dispatch: AcceptanceMcpTurnDispatchRow }
+  | { kind: "held"; dispatch: AcceptanceMcpTurnDispatchRow }
+  | { kind: "not_found" };
+
+/** Makes an ambiguous reserved turn terminal. Held turns are never claimable. */
+export async function holdAcceptanceMcpTurnDispatch(
+  input: HoldAcceptanceMcpTurnDispatchInput,
+): Promise<HoldAcceptanceMcpTurnDispatchResult> {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "workspaceId", "credentialId", "taskContextKey", "messageKey", "reason",
+  ])) throw new Error("Invalid Acceptance MCP turn hold");
+  const identity = parseAcceptanceMcpTurnIdentity({
+    workspaceId: input["workspaceId"],
+    credentialId: input["credentialId"],
+    taskContextKey: input["taskContextKey"],
+    messageKey: input["messageKey"],
+  });
+  if (!identity || !safeMcpTurnKey(input["reason"], 256)) {
+    throw new Error("Invalid Acceptance MCP turn hold");
+  }
+  const id = acceptanceMcpTurnDispatchId(identity);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${id}))`);
+    const existing = (await tx.select().from(acceptanceMcpTurnDispatches).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.workspaceId, identity.workspaceId),
+      eq(acceptanceMcpTurnDispatches.credentialId, identity.credentialId),
+    )).limit(1))[0];
+    if (!existing) return { kind: "not_found" as const };
+    if (existing.status === "accepted") return { kind: "accepted" as const, dispatch: existing };
+    if (existing.status === "held") return { kind: "held" as const, dispatch: existing };
+    const rows = await tx.update(acceptanceMcpTurnDispatches).set({
+      status: "held",
+      resultReason: input["reason"],
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceMcpTurnDispatches.id, id),
+      eq(acceptanceMcpTurnDispatches.status, "reserved"),
+    )).returning();
+    if (rows.length !== 1) throw new Error("Acceptance MCP turn hold lost its reservation");
+    return { kind: "held" as const, dispatch: rows[0]! };
+  });
 }
 
 /** Append the reply that constitutes delivery for the virtual MCP channel. */

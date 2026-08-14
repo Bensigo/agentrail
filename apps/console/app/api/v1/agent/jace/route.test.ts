@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  AcceptanceMcpTurnDispatchConflictError: class AcceptanceMcpTurnDispatchConflictError extends Error {},
+  completeAcceptanceMcpTurnDispatch: vi.fn(),
   findEnabledJaceWorkspace: vi.fn(),
-  readAcceptanceIntakeMessage: vi.fn(),
+  holdAcceptanceMcpTurnDispatch: vi.fn(),
   readAcceptanceIntakeMcpReply: vi.fn(),
   readAcceptanceIntakeReadback: vi.fn(),
+  readAcceptanceMcpTurnDispatch: vi.fn(),
   readAcceptanceRecordDetail: vi.fn(),
+  reserveAcceptanceMcpTurnDispatch: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({ requireBearer: vi.fn() }));
 vi.mock("../../../../../lib/agent-jace-mcp", () => ({
@@ -22,11 +26,15 @@ vi.mock("../../../../../lib/agent-jace-mcp", () => ({
 }));
 
 import {
+  AcceptanceMcpTurnDispatchConflictError,
+  completeAcceptanceMcpTurnDispatch,
   findEnabledJaceWorkspace,
-  readAcceptanceIntakeMessage,
+  holdAcceptanceMcpTurnDispatch,
   readAcceptanceIntakeMcpReply,
   readAcceptanceIntakeReadback,
+  readAcceptanceMcpTurnDispatch,
   readAcceptanceRecordDetail,
+  reserveAcceptanceMcpTurnDispatch,
 } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { dispatchMcpJaceTurn } from "../../../../../lib/agent-jace-mcp";
@@ -71,7 +79,19 @@ beforeEach(() => {
     kind: "agent_mcp",
   });
   vi.mocked(findEnabledJaceWorkspace).mockResolvedValue(WORKSPACE_ID);
-  vi.mocked(readAcceptanceIntakeMessage).mockResolvedValue(null);
+  vi.mocked(reserveAcceptanceMcpTurnDispatch).mockResolvedValue({
+    kind: "claimed",
+    dispatch: { status: "reserved" },
+  } as never);
+  vi.mocked(completeAcceptanceMcpTurnDispatch).mockResolvedValue({
+    kind: "accepted",
+    dispatch: { status: "accepted", sessionId: "session-1", continuationToken: "continuation-1" },
+  } as never);
+  vi.mocked(holdAcceptanceMcpTurnDispatch).mockResolvedValue({
+    kind: "held",
+    dispatch: { status: "held", resultReason: "hosted_inbound_unreachable" },
+  } as never);
+  vi.mocked(readAcceptanceMcpTurnDispatch).mockResolvedValue(null);
   vi.mocked(dispatchMcpJaceTurn).mockResolvedValue({
     ok: true,
     sessionId: "session-1",
@@ -94,6 +114,35 @@ describe("direct Jace MCP turn", () => {
     expect((await POST(declared)).status).toBe(400);
     expect((await POST(streamedRequest(16 * 1024 + 1))).status).toBe(400);
     expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
+  });
+
+  it("reserves the canonical Intake turn before dispatch and persists Eve acceptance", async () => {
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-1",
+      message: "Help me plan the smallest safe fix.",
+    }));
+
+    expect(reserveAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-1",
+      conversationKey: `mcp:${API_KEY_ID}:codex-task-7`,
+      sourceKey: `mcp-inbound:${API_KEY_ID}:codex-task-7:turn-1`,
+      message: "Help me plan the smallest safe fix.",
+    });
+    expect(dispatchMcpJaceTurn).toHaveBeenCalledOnce();
+    expect(completeAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-1",
+      sessionId: "session-1",
+      continuationToken: "continuation-1",
+    });
+    expect(holdAcceptanceMcpTurnDispatch).not.toHaveBeenCalled();
+    expect(response.status).toBe(202);
   });
 
   it("rejects runner/fleet credentials and workspaces without an enabled Jace connector", async () => {
@@ -191,9 +240,13 @@ describe("direct Jace MCP turn", () => {
   });
 
   it("replays the same message key without invoking Jace twice", async () => {
-    vi.mocked(readAcceptanceIntakeMessage).mockResolvedValue({
-      direction: "inbound",
-      text: "Use the existing Acceptance spine.",
+    vi.mocked(reserveAcceptanceMcpTurnDispatch).mockResolvedValueOnce({
+      kind: "replayed",
+      dispatch: {
+        status: "accepted",
+        sessionId: "stored-session",
+        continuationToken: "stored-continuation",
+      },
     } as never);
     const response = await POST(request({
       taskContextKey: "codex-task-7",
@@ -203,7 +256,126 @@ describe("direct Jace MCP turn", () => {
 
     expect(response.status).toBe(200);
     expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({ accepted: true, duplicate: true });
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      duplicate: true,
+      session: { id: "stored-session", continuationToken: "stored-continuation" },
+    });
+  });
+
+  it("reports a turn key/content collision without dispatching", async () => {
+    vi.mocked(reserveAcceptanceMcpTurnDispatch).mockRejectedValueOnce(
+      new AcceptanceMcpTurnDispatchConflictError(),
+    );
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-collision",
+      message: "Changed content under the same key.",
+    }));
+
+    expect(response.status).toBe(409);
+    expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Jace turn key is already bound to different content",
+    });
+  });
+
+  it("surfaces an in-flight reservation without dispatching the turn again", async () => {
+    vi.mocked(reserveAcceptanceMcpTurnDispatch).mockResolvedValueOnce({
+      kind: "replayed",
+      dispatch: { status: "reserved" },
+    } as never);
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-concurrent",
+      message: "Keep this turn single-delivery.",
+    }));
+
+    expect(response.status).toBe(202);
+    expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
+    expect(completeAcceptanceMcpTurnDispatch).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: false,
+      duplicate: true,
+      dispatch: { status: "reserved" },
+    });
+  });
+
+  it("persists an ambiguous Eve result as held and never reports acceptance", async () => {
+    vi.mocked(dispatchMcpJaceTurn).mockResolvedValueOnce({
+      ok: false,
+      reason: "hosted_inbound_unreachable",
+    });
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-held",
+      message: "Do not redeliver an ambiguous turn.",
+    }));
+
+    expect(holdAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-held",
+      reason: "hosted_inbound_unreachable",
+    });
+    expect(completeAcceptanceMcpTurnDispatch).not.toHaveBeenCalled();
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: false,
+      dispatch: { status: "held" },
+    });
+  });
+
+  it("holds the reservation when Eve dispatch throws ambiguously", async () => {
+    vi.mocked(dispatchMcpJaceTurn).mockRejectedValueOnce(new Error("connection reset"));
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-thrown",
+      message: "Treat a thrown delivery as ambiguous.",
+    }));
+
+    expect(holdAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-thrown",
+      reason: "hosted_inbound_ambiguous_error",
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: false,
+      dispatch: { status: "held" },
+    });
+  });
+
+  it("holds the reservation when Eve acceptance cannot be durably completed", async () => {
+    vi.mocked(completeAcceptanceMcpTurnDispatch).mockRejectedValueOnce(
+      new Error("database completion unavailable"),
+    );
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-result-held",
+      message: "Keep result custody fail-closed.",
+    }));
+
+    expect(holdAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-result-held",
+      reason: "result_custody_ambiguous",
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: false,
+      dispatch: { status: "held" },
+    });
   });
 
   it("rejects caller-selected workspace or Record authority", async () => {
@@ -221,6 +393,14 @@ describe("direct Jace MCP turn", () => {
 
 describe("direct Jace MCP task state", () => {
   it("derives the linked Record and returns only bounded Contract and Pack status", async () => {
+    vi.mocked(readAcceptanceMcpTurnDispatch).mockResolvedValue({
+      messageKey: "turn-1",
+      status: "accepted",
+      sessionId: "session-1",
+      resultReason: null,
+      reservedAt: new Date("2026-08-14T00:00:00.000Z"),
+      completedAt: new Date("2026-08-14T00:00:01.000Z"),
+    } as never);
     vi.mocked(readAcceptanceIntakeReadback).mockResolvedValue({
       intake: {
         id: "00000000-0000-4000-8000-000000000004",
@@ -266,6 +446,12 @@ describe("direct Jace MCP task state", () => {
       intakeId: "00000000-0000-4000-8000-000000000004",
       replyToSourceKey: `mcp-inbound:${API_KEY_ID}:codex-task-7:turn-1`,
     });
+    expect(readAcceptanceMcpTurnDispatch).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      credentialId: API_KEY_ID,
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-1",
+    });
     await expect(response.json()).resolves.toMatchObject({
       task: { taskContextKey: "codex-task-7", messageKey: "turn-1" },
       reply: { status: "available", text: "This is the reply to turn one." },
@@ -277,6 +463,11 @@ describe("direct Jace MCP task state", () => {
           repo: "acme/web",
           contextPacks: [{ compiledPacks: [{ id: "pack-1" }] }],
         },
+      },
+      dispatch: {
+        messageKey: "turn-1",
+        status: "accepted",
+        sessionId: "session-1",
       },
       authority: { implementation: "not_granted", merge: "not_granted" },
     });

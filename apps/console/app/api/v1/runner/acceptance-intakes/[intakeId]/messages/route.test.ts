@@ -36,6 +36,27 @@ describe("MCP Acceptance Intake reply custody", () => {
     expect(appendAcceptanceOutboundReply).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized streamed machine body without content-length", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(32 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const init = {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body,
+    };
+    Object.assign(init, { duplex: "half" });
+    const request = new NextRequest("http://localhost", init);
+
+    const response = await POST(request, { params: Promise.resolve({ intakeId }) });
+
+    expect(response.status).toBe(400);
+    expect(appendAcceptanceOutboundReply).not.toHaveBeenCalled();
+  });
+
   it("requires Jace auth and records only an outbound Intake message", async () => {
     const request = new NextRequest("http://localhost", {
       method: "POST",

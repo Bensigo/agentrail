@@ -46,6 +46,22 @@ function request(body: unknown) {
   });
 }
 
+function streamedRequest(bytes: number) {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(bytes));
+      controller.close();
+    },
+  });
+  const init = {
+    method: "POST",
+    headers: { Authorization: "Bearer workspace-key", "Content-Type": "application/json" },
+    body,
+  };
+  Object.assign(init, { duplex: "half" });
+  return new NextRequest("http://localhost/api/v1/agent/jace", init);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(requireBearer).mockResolvedValue({
@@ -64,6 +80,22 @@ beforeEach(() => {
 });
 
 describe("direct Jace MCP turn", () => {
+  it("rejects declared and streamed bodies beyond the machine byte budget", async () => {
+    const declared = new NextRequest("http://localhost/api/v1/agent/jace", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer workspace-key",
+        "Content-Type": "application/json",
+        "Content-Length": String(16 * 1024 + 1),
+      },
+      body: JSON.stringify({ taskContextKey: "task", messageKey: "turn", message: "small" }),
+    });
+
+    expect((await POST(declared)).status).toBe(400);
+    expect((await POST(streamedRequest(16 * 1024 + 1))).status).toBe(400);
+    expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
+  });
+
   it("rejects runner/fleet credentials and workspaces without an enabled Jace connector", async () => {
     vi.mocked(requireBearer).mockResolvedValueOnce({
       apiKeyId: API_KEY_ID,

@@ -227,6 +227,7 @@ describe("direct Jace MCP turn", () => {
     await expect(response.json()).resolves.toMatchObject({
       task: {
         taskContextKey: "codex-task-7",
+        messageKey: "turn-1",
         intakeId: "00000000-0000-4000-8000-000000000004",
       },
       accepted: true,
@@ -257,6 +258,7 @@ describe("direct Jace MCP turn", () => {
     expect(response.status).toBe(200);
     expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
+      task: { taskContextKey: "codex-task-7", messageKey: "turn-2" },
       accepted: true,
       duplicate: true,
       session: { id: "stored-session", continuationToken: "stored-continuation" },

@@ -2871,6 +2871,13 @@ export async function readAcceptanceIntakeMcpReply(input: {
   intakeId: string;
   replyToSourceKey: string;
 }): Promise<AcceptanceIntakeMessageRow | null> {
+  const replyToSourceKey = input.replyToSourceKey.trim();
+  if (!replyToSourceKey || replyToSourceKey !== input.replyToSourceKey) return null;
+  const metadata = JSON.stringify({
+    kind: "jace_mcp_reply",
+    channel: "mcp",
+    replyToSourceKey,
+  });
   const rows = await db
     .select({ message: acceptanceIntakeMessages })
     .from(acceptanceIntakeMessages)
@@ -2881,7 +2888,10 @@ export async function readAcceptanceIntakeMcpReply(input: {
     .where(and(
       eq(acceptanceIntakeMessages.intakeId, input.intakeId),
       eq(acceptanceIntakeMessages.direction, "outbound"),
-      sql`${acceptanceIntakeMessages.metadata}->>'replyToSourceKey' = ${input.replyToSourceKey}`,
+      sql`${acceptanceIntakeMessages.metadata}->>'kind' = 'jace_mcp_reply'`,
+      sql`${acceptanceIntakeMessages.metadata}->>'channel' = 'mcp'`,
+      sql`${acceptanceIntakeMessages.metadata}->>'replyToSourceKey' = ${replyToSourceKey}`,
+      sql`${acceptanceIntakeMessages.metadata} = ${metadata}::jsonb`,
     ))
     .orderBy(desc(acceptanceIntakeMessages.createdAt), desc(acceptanceIntakeMessages.id))
     .limit(1);
@@ -3241,17 +3251,37 @@ export async function holdAcceptanceMcpTurnDispatch(
   });
 }
 
+function isExactMcpReplyMetadata(
+  value: unknown,
+  expected: { kind: "jace_mcp_reply"; channel: "mcp"; replyToSourceKey: string },
+): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === 3 && keys[0] === "channel" && keys[1] === "kind"
+    && keys[2] === "replyToSourceKey" && value.kind === expected.kind
+    && value.channel === expected.channel
+    && value.replyToSourceKey === expected.replyToSourceKey;
+}
+
 /** Append the reply that constitutes delivery for the virtual MCP channel. */
 export async function appendAcceptanceOutboundReply(input: {
   workspaceId: string;
   intakeId: string;
   sourceKey: string;
   text: string;
-  metadata?: Record<string, unknown>;
+  replyToSourceKey: string;
 }): Promise<{ message: AcceptanceIntakeMessageRow; inserted: boolean } | null> {
   const sourceKey = input.sourceKey.trim();
   const text = input.text.trim();
-  if (!sourceKey || !text) throw new Error("Acceptance Intake reply requires source key and text");
+  const replyToSourceKey = input.replyToSourceKey.trim();
+  if (!sourceKey || !text || !replyToSourceKey || replyToSourceKey !== input.replyToSourceKey) {
+    throw new Error("Acceptance Intake reply requires source key, text, and linked inbound turn");
+  }
+  const metadata = {
+    kind: "jace_mcp_reply",
+    channel: "mcp",
+    replyToSourceKey,
+  } as const;
   return db.transaction(async (tx) => {
     const intake = (await tx.select({ id: acceptanceIntakes.id })
       .from(acceptanceIntakes)
@@ -3261,6 +3291,17 @@ export async function appendAcceptanceOutboundReply(input: {
       ))
       .limit(1))[0];
     if (!intake) return null;
+    const linkedInbound = (await tx.select({ id: acceptanceIntakeMessages.id })
+      .from(acceptanceIntakeMessages)
+      .where(and(
+        eq(acceptanceIntakeMessages.intakeId, input.intakeId),
+        eq(acceptanceIntakeMessages.sourceKey, replyToSourceKey),
+        eq(acceptanceIntakeMessages.direction, "inbound"),
+      ))
+      .limit(1))[0];
+    if (!linkedInbound) {
+      throw new Error("Acceptance Intake reply requires a linked inbound turn in the same Intake");
+    }
     const messageId = acceptanceIntakeMessageId({ intakeId: input.intakeId, sourceKey });
     const insertedRows = await tx.insert(acceptanceIntakeMessages).values({
       id: messageId,
@@ -3268,13 +3309,14 @@ export async function appendAcceptanceOutboundReply(input: {
       sourceKey,
       direction: "outbound",
       text,
-      metadata: input.metadata ?? {},
+      metadata,
     }).onConflictDoNothing().returning();
     const message = insertedRows[0] ?? (await tx.select()
       .from(acceptanceIntakeMessages)
       .where(eq(acceptanceIntakeMessages.id, messageId))
       .limit(1))[0];
-    if (!message || message.direction !== "outbound" || message.text !== text) {
+    if (!message || message.direction !== "outbound" || message.text !== text
+      || !isExactMcpReplyMetadata(message.metadata, metadata)) {
       throw new Error("Acceptance Intake reply source key is already bound to different content");
     }
     await tx.update(acceptanceIntakes).set({ updatedAt: new Date() })

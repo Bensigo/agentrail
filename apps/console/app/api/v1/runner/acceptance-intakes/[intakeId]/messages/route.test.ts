@@ -65,7 +65,11 @@ describe("MCP Acceptance Intake reply custody", () => {
         workspaceId,
         sourceKey: "reply-1",
         text: "Which repository should this plan target?",
-        metadata: { channel: "mcp" },
+        metadata: {
+          kind: "jace_mcp_reply",
+          channel: "mcp",
+          replyToSourceKey: "mcp-inbound:credential-1:task-1:turn-1",
+        },
       }),
     });
     const response = await POST(request, { params: Promise.resolve({ intakeId }) });
@@ -75,7 +79,25 @@ describe("MCP Acceptance Intake reply custody", () => {
       intakeId,
       sourceKey: "reply-1",
       text: "Which repository should this plan target?",
-      metadata: { channel: "mcp" },
+      replyToSourceKey: "mcp-inbound:credential-1:task-1:turn-1",
     });
+  });
+
+  it("rejects reply metadata that is not the exact MCP correlation contract", async () => {
+    const request = new NextRequest("http://localhost", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspaceId,
+        sourceKey: "reply-1",
+        text: "Which repository should this plan target?",
+        metadata: { channel: "mcp" },
+      }),
+    });
+
+    const response = await POST(request, { params: Promise.resolve({ intakeId }) });
+
+    expect(response.status).toBe(400);
+    expect(appendAcceptanceOutboundReply).not.toHaveBeenCalled();
   });
 });

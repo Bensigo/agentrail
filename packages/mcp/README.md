@@ -42,7 +42,7 @@ The server resolves:
 - the repo to operate on from the per-call `target` argument, else
   `AGENTRAIL_TARGET`, else the server's working directory.
 
-`acceptance_correction_packets_get` instead uses fixed process configuration:
+The authenticated Console-backed tools use fixed process configuration:
 
 - `AGENTRAIL_SERVER_BASE_URL` — the AgentRail Console base URL;
 - `AGENTRAIL_MCP_CORRECTION_API_KEY` — a workspace-scoped AgentRail API key
@@ -51,6 +51,22 @@ The server resolves:
   key used only for direct Jace turns and bounded task-state reads. Generic
   self-hosted runner and fleet keys are rejected; `agent_mcp` keys are denied
   by default from legacy bearer routes.
+
+An AgentRail workspace owner or admin issues the Jace key through the
+session-authenticated Console API. From an authenticated same-origin client,
+send:
+
+```http
+POST /api/v1/workspaces/<workspace-id>/api-keys
+Content-Type: application/json
+
+{"name":"Codex to Jace","kind":"agent_mcp"}
+```
+
+The response returns `secret` once. Store that value only in
+`AGENTRAIL_MCP_JACE_API_KEY`; do not reuse a runner key, add `team_id`, or place
+the secret in a tool argument or prompt. The endpoint refuses non-owner/admin
+members and any team-scoped `agent_mcp` request.
 
 The tool accepts only a Change Record id. The key supplies workspace authority;
 the server derives and revalidates the Record's current PR head, head cycle,

@@ -93,6 +93,7 @@ import {
   SignedAcceptanceRecordMergeConflictError,
   recordAcceptanceInboundIntake,
   readAcceptanceIntakeMessage,
+  readAcceptanceIntakeMcpReply,
   appendAcceptanceOutboundReply,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -11077,6 +11078,7 @@ describe.skipIf(!DB_AVAILABLE)(
         intakeId: first.intake.id,
         sourceKey: "jace-reply-1",
         text: "Which repository should this target?",
+        replyToSourceKey: "event-1",
       });
       expect(reply).toMatchObject({
         inserted: true,
@@ -11087,12 +11089,14 @@ describe.skipIf(!DB_AVAILABLE)(
         intakeId: first.intake.id,
         sourceKey: "jace-reply-1",
         text: "Which repository should this target?",
+        replyToSourceKey: "event-1",
       })).resolves.toMatchObject({ inserted: false, message: { id: reply!.message.id } });
       await expect(appendAcceptanceOutboundReply({
         workspaceId: wsId,
         intakeId: first.intake.id,
         sourceKey: "jace-reply-1",
         text: "Changed reply",
+        replyToSourceKey: "event-1",
       })).rejects.toThrow("source key is already bound to different content");
 
       const foreignWorkspace = (await db.insert(workspaces).values({
@@ -11109,8 +11113,133 @@ describe.skipIf(!DB_AVAILABLE)(
         intakeId: first.intake.id,
         sourceKey: "foreign-reply",
         text: "Cross-tenant write",
+        replyToSourceKey: "event-1",
       })).resolves.toBeNull();
       await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
+    });
+
+    it("refuses an MCP reply without its linked inbound turn in the same Intake", async () => {
+      const intake = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "mcp",
+        conversationKey: "mcp:credential-1:task-1",
+        sourceKey: "mcp-inbound:credential-1:task-1:turn-1",
+        text: "Plan the smallest safe fix.",
+      });
+
+      await expect(appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: intake.intake.id,
+        sourceKey: "jace-mcp-reply:session-1:turn-2",
+        text: "Here is the plan.",
+        replyToSourceKey: "mcp-inbound:credential-1:task-1:missing-turn",
+      })).rejects.toThrow("linked inbound turn");
+
+      await expect(readAcceptanceIntakeMcpReply({
+        workspaceId: wsId,
+        intakeId: intake.intake.id,
+        replyToSourceKey: "mcp-inbound:credential-1:task-1:missing-turn",
+      })).resolves.toBeNull();
+    });
+
+    it("reads only the canonical MCP reply bound to the requested inbound turn", async () => {
+      const firstInbound = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "mcp",
+        conversationKey: "mcp:credential-1:task-exact",
+        sourceKey: "mcp-inbound:credential-1:task-exact:turn-1",
+        text: "Brainstorm the acceptance criteria.",
+      });
+      const secondInbound = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "mcp",
+        conversationKey: "mcp:credential-1:task-exact",
+        sourceKey: "mcp-inbound:credential-1:task-exact:turn-2",
+        text: "Now make the plan concrete.",
+      });
+      expect(secondInbound.intake.id).toBe(firstInbound.intake.id);
+
+      const firstReply = await appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: firstInbound.intake.id,
+        sourceKey: "jace-mcp-reply:session-exact:turn-1",
+        text: "First exact reply.",
+        replyToSourceKey: firstInbound.message.sourceKey,
+      });
+      const secondReply = await appendAcceptanceOutboundReply({
+        workspaceId: wsId,
+        intakeId: firstInbound.intake.id,
+        sourceKey: "jace-mcp-reply:session-exact:turn-2",
+        text: "Second exact reply.",
+        replyToSourceKey: secondInbound.message.sourceKey,
+      });
+      await db.insert(acceptanceIntakeMessages).values({
+        id: randomUUID(),
+        intakeId: firstInbound.intake.id,
+        sourceKey: "legacy-outbound-with-copied-correlation",
+        direction: "outbound",
+        text: "Not an MCP reply.",
+        metadata: {
+          kind: "legacy_reply",
+          channel: "slack",
+          replyToSourceKey: firstInbound.message.sourceKey,
+        },
+        createdAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+
+      await expect(readAcceptanceIntakeMcpReply({
+        workspaceId: wsId,
+        intakeId: firstInbound.intake.id,
+        replyToSourceKey: firstInbound.message.sourceKey,
+      })).resolves.toMatchObject({ id: firstReply!.message.id, text: "First exact reply." });
+      await expect(readAcceptanceIntakeMcpReply({
+        workspaceId: wsId,
+        intakeId: firstInbound.intake.id,
+        replyToSourceKey: secondInbound.message.sourceKey,
+      })).resolves.toMatchObject({ id: secondReply!.message.id, text: "Second exact reply." });
+
+      const foreignWorkspace = (await db.insert(workspaces).values({
+        name: "foreign exact MCP reply reader",
+        slug: `foreign-mcp-reply-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      await expect(readAcceptanceIntakeMcpReply({
+        workspaceId: foreignWorkspace.id,
+        intakeId: firstInbound.intake.id,
+        replyToSourceKey: firstInbound.message.sourceKey,
+      })).resolves.toBeNull();
+      await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
+    });
+
+    it("refuses to rebind a reply source key to a different inbound turn", async () => {
+      const firstInbound = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "mcp",
+        conversationKey: "mcp:credential-1:task-collision",
+        sourceKey: "mcp-inbound:credential-1:task-collision:turn-1",
+        text: "First turn.",
+      });
+      const secondInbound = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "mcp",
+        conversationKey: "mcp:credential-1:task-collision",
+        sourceKey: "mcp-inbound:credential-1:task-collision:turn-2",
+        text: "Second turn.",
+      });
+      const reply = {
+        workspaceId: wsId,
+        intakeId: firstInbound.intake.id,
+        sourceKey: "jace-mcp-reply:session-collision:turn-1",
+        text: "Same reply text.",
+      };
+
+      await expect(appendAcceptanceOutboundReply({
+        ...reply,
+        replyToSourceKey: firstInbound.message.sourceKey,
+      })).resolves.toMatchObject({ inserted: true });
+      await expect(appendAcceptanceOutboundReply({
+        ...reply,
+        replyToSourceKey: secondInbound.message.sourceKey,
+      })).rejects.toThrow("source key is already bound to different content");
     });
 
     it("binds an Intake to one provenance-preserving draft and refuses changed re-drafts", async () => {

@@ -8,6 +8,19 @@ function object(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
+function mcpReplySourceKey(metadata: unknown): string | null {
+  if (!object(metadata)) return null;
+  const keys = Object.keys(metadata).sort();
+  if (keys.length !== 3 || keys[0] !== "channel" || keys[1] !== "kind"
+    || keys[2] !== "replyToSourceKey" || metadata.kind !== "jace_mcp_reply"
+    || metadata.channel !== "mcp" || typeof metadata.replyToSourceKey !== "string") {
+    return null;
+  }
+  const sourceKey = metadata.replyToSourceKey.trim();
+  return sourceKey && sourceKey === metadata.replyToSourceKey && sourceKey.length <= 1024
+    && !/[\u0000-\u001f\u007f]/u.test(sourceKey) ? sourceKey : null;
+}
+
 async function readBoundedJson(request: Request): Promise<Record<string, unknown> | null> {
   const declared = request.headers.get("content-length");
   if ((declared !== null
@@ -57,9 +70,9 @@ export async function POST(
   const workspaceId = typeof body?.workspaceId === "string" ? body.workspaceId.trim() : "";
   const sourceKey = typeof body?.sourceKey === "string" ? body.sourceKey.trim() : "";
   const text = typeof body?.text === "string" ? body.text.trim() : "";
-  const metadata = object(body?.metadata) ? body.metadata : {};
+  const replyToSourceKey = mcpReplySourceKey(body?.metadata);
   if (!workspaceId || !intakeId.trim() || !sourceKey || sourceKey.length > 512
-    || !text || text.length > 20_000) {
+    || !text || text.length > 20_000 || !replyToSourceKey) {
     return NextResponse.json({ error: "Invalid Acceptance Intake reply" }, { status: 400 });
   }
   try {
@@ -68,7 +81,7 @@ export async function POST(
       intakeId: intakeId.trim(),
       sourceKey,
       text,
-      metadata,
+      replyToSourceKey,
     });
     if (!result) return NextResponse.json({ error: "Acceptance Intake not found" }, { status: 404 });
     return NextResponse.json({

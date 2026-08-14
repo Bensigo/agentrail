@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { isDeepStrictEqual } from "util";
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
@@ -19,6 +19,7 @@ import {
   acceptanceGatedGithubIssueRequests,
   acceptanceGatedGithubIssuePublications,
   acceptanceContextPackSnapshots,
+  acceptanceContextPackRegenerationExecutions,
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
@@ -38,6 +39,7 @@ import {
   type AcceptanceGatedGithubIssueRequestRow,
   type AcceptanceGatedGithubIssuePublicationRow,
   type AcceptanceContextPackSnapshotRow,
+  type AcceptanceContextPackRegenerationExecutionRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
   type AcceptanceMcpTurnDispatchRow,
@@ -8821,7 +8823,11 @@ function receiptMatchesCustody(receipt: Record<string, unknown>, custody: Accept
   return receipt["manifestSha256"] === v1ManifestSha256;
 }
 
-function sourcesMatchCustody(pack: ParsedCompiledPack, custody: AcceptanceContextPackCustodyResolution): boolean {
+function sourcesMatchCustody(
+  pack: ParsedCompiledPack,
+  custody: AcceptanceContextPackCustodyResolution,
+  wikiVerification: "current_body" | "snapshot_identity_only" = "current_body",
+): boolean {
   const manifest = pack.manifest;
   const receipt = pack.sourceCustodyReceipt;
   const overlay = custody.sourceSnapshot.overlay!;
@@ -8857,6 +8863,7 @@ function sourcesMatchCustody(pack: ParsedCompiledPack, custody: AcceptanceContex
     if (!page || source["slug"] !== page.slug || source["commitSha"] !== page.commitSha
       || source["inputsHashSha256"] !== page.inputsHashSha256 || source["pageBodySha256"] !== page.pageBodySha256
       || source["stale"] !== false) return false;
+    if (wikiVerification === "snapshot_identity_only") continue;
     const range = sourceRangeText(page.bodyMd, source["startLine"] as number, source["endLine"] as number);
     if (Buffer.byteLength(range, "utf8") !== source["byteCount"] || wikiPageBodySha256(range) !== source["rangeSha256"]) return false;
   }
@@ -8882,7 +8889,11 @@ function receiptExclusionsMatchManifest(pack: ParsedCompiledPack, custody: Accep
   ));
 }
 
-function manifestMatchesCustody(pack: ParsedCompiledPack, custody: AcceptanceContextPackCustodyResolution): boolean {
+function manifestMatchesCustody(
+  pack: ParsedCompiledPack,
+  custody: AcceptanceContextPackCustodyResolution,
+  wikiVerification: "current_body" | "snapshot_identity_only" = "current_body",
+): boolean {
   const manifest = pack.manifest;
   const sortedUnique = (values: readonly string[]) => [...new Set(values)].sort(compareUtf8Text);
   const contractCriterionIds = sortedUnique(custody.contract.acceptanceCriteria.map((criterion) => criterion.id));
@@ -8902,7 +8913,7 @@ function manifestMatchesCustody(pack: ParsedCompiledPack, custody: AcceptanceCon
     && isDeepStrictEqual(manifest["tests"], expectedTests)
     && isDeepStrictEqual(manifest["decisions"], [])
     && (manifest["sourceCustody"] as Record<string, unknown>)["identitySha256"] === pack.sourceCustodyReceipt["identitySha256"]
-    && sourcesMatchCustody(pack, custody)
+    && sourcesMatchCustody(pack, custody, wikiVerification)
     && receiptExclusionsMatchManifest(pack, custody);
 }
 
@@ -9141,6 +9152,7 @@ export type RecordAcceptanceContextPackRegenerationRequestResult =
   | {
       kind: "recorded" | "replayed";
       request: AcceptanceContextPackRegenerationRequest;
+      execution: AcceptanceContextPackRegenerationExecution;
     }
   | { kind: "not_found" }
   | { kind: "not_current" }
@@ -9159,6 +9171,55 @@ const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND =
   "acceptance_context_pack_regeneration_request";
 const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION = 1;
 const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE = "human_context_request";
+
+export type AcceptanceContextPackRegenerationExecution = Pick<
+  AcceptanceContextPackRegenerationExecutionRow,
+  | "id"
+  | "requestEventId"
+  | "workspaceId"
+  | "recordId"
+  | "priorCompiledPackId"
+  | "headSha"
+  | "headCycleId"
+  | "status"
+  | "attemptCount"
+  | "maxAttempts"
+  | "replacementCompiledPackId"
+  | "outcomeReason"
+  | "completedAt"
+  | "createdAt"
+  | "updatedAt"
+> & { humanRetryable: boolean };
+
+export function acceptanceContextPackRegenerationExecutionId(input: {
+  requestEventId: string;
+}): string {
+  return uuid5Url(`acceptance-context-pack-regeneration-execution:${input.requestEventId}`);
+}
+
+function contextPackRegenerationExecutionReceipt(
+  row: AcceptanceContextPackRegenerationExecutionRow,
+  humanRetryable = canHumanRetryAcceptanceContextPackRegenerationExecution(row),
+): AcceptanceContextPackRegenerationExecution {
+  return {
+    id: row.id,
+    requestEventId: row.requestEventId,
+    workspaceId: row.workspaceId,
+    recordId: row.recordId,
+    priorCompiledPackId: row.priorCompiledPackId,
+    headSha: row.headSha,
+    headCycleId: row.headCycleId,
+    status: row.status,
+    attemptCount: row.attemptCount,
+    maxAttempts: row.maxAttempts,
+    replacementCompiledPackId: row.replacementCompiledPackId,
+    outcomeReason: row.outcomeReason,
+    completedAt: row.completedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    humanRetryable,
+  };
+}
 
 function parseAcceptanceContextPackRegenerationRequestInput(
   input: unknown,
@@ -9253,10 +9314,54 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
   };
 }
 
+async function acceptanceContextPackRegenerationPriorCustodyIsProvenInTransaction(input: {
+  tx: DbTransaction;
+  workspaceId: string;
+  record: ChangeRecordRow;
+  snapshot: AcceptanceContextPackSnapshotRow;
+  pack: AcceptanceCompiledContextPackRow;
+  confirmed: AcceptanceRecordSummaryConfirmedContract;
+}): Promise<boolean> {
+  const { tx, workspaceId, record, snapshot, pack, confirmed } = input;
+  const rawCorrectionEvents = Array.from(await tx.execute(sql`
+    SELECT *
+    FROM change_record_events AS events
+    WHERE events.record_id = ${record.id}::uuid
+      AND events.event_key LIKE ${`review:correction:${snapshot.reviewJobId}:%`}
+    ORDER BY events.at ASC, events.id ASC
+    LIMIT 101
+  `)) as Array<Record<string, unknown>>;
+  if (rawCorrectionEvents.length > 100) return false;
+  const job = (await tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, snapshot.reviewJobId),
+    eq(reviewJobs.workspaceId, workspaceId),
+  )).limit(1))[0];
+  const repositoryRows = await tx.select().from(repositories).where(and(
+    eq(repositories.workspaceId, workspaceId),
+    eq(repositories.name, record.repo),
+  )).orderBy(asc(repositories.createdAt), asc(repositories.id)).limit(2);
+  const custody = acceptanceRecordSummaryContextCustody({
+    snapshot,
+    record,
+    focus: { headSha: snapshot.expectedHeadSha, headCycleId: snapshot.reviewJobId },
+    contract: confirmed,
+    job,
+    events: rawCorrectionEvents.map(mapChangeRecordEventRow),
+    repositoryRows,
+    wikiPagesById: new Map(),
+    wikiVerification: "snapshot_identity_only",
+  });
+  return custody !== null && acceptanceRecordSummaryCompiledPack({
+    row: pack,
+    custody,
+    wikiVerification: "snapshot_identity_only",
+  }) !== null;
+}
+
 /**
- * Records a human request against one exact current compiled Pack. This is an
- * append-only request receipt only: it does not compile, enqueue, dispatch,
- * deliver, mutate a pull request, or grant implementation/merge authority.
+ * Records a human request against one exact current compiled Pack and creates
+ * its deterministic execution row in the same transaction. It does not
+ * compile, contact a builder, mutate a pull request, or grant merge authority.
  */
 export async function recordAcceptanceContextPackRegenerationRequest(
   input: RecordAcceptanceContextPackRegenerationRequestInput,
@@ -9336,45 +9441,11 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       || snapshot.acceptanceContractId !== confirmed.identity.id
       || snapshot.acceptanceContractVersion !== confirmed.identity.version
       || snapshot.acceptanceContractSha256 !== confirmed.identity.sha256) return { kind: "not_current" };
-    // Reuse the same full custody proof as the canonical Record detail. A
-    // syntactically valid or self-consistent Pack row is not enough: its
-    // snapshot, packets, Wiki revision, exact head, manifest, receipt, and
-    // dependency-tree proofs must all still resolve together.
-    const rawCorrectionEvents = Array.from(await tx.execute(sql`
-      SELECT *
-      FROM change_record_events AS events
-      WHERE events.record_id = ${parsed.recordId}::uuid
-        AND events.event_key LIKE ${`review:correction:${snapshot.reviewJobId}:%`}
-      ORDER BY events.at ASC, events.id ASC
-      LIMIT 101
-    `)) as Array<Record<string, unknown>>;
-    if (rawCorrectionEvents.length > 100) return { kind: "not_current" };
-    const job = (await tx.select().from(reviewJobs).where(and(
-      eq(reviewJobs.id, snapshot.reviewJobId),
-      eq(reviewJobs.workspaceId, parsed.workspaceId),
-    )).limit(1))[0];
-    const repositoryRows = await tx.select().from(repositories).where(and(
-      eq(repositories.workspaceId, parsed.workspaceId),
-      eq(repositories.name, record.repo),
-    )).orderBy(asc(repositories.createdAt), asc(repositories.id)).limit(2);
-    const wikiPageIds = snapshotInput.status === "admitted" && snapshotInput.baseIndex
-      ? snapshotInput.baseIndex.pages.map((page) => page.id)
-      : [];
-    const wikiRows = wikiPageIds.length === 0 ? [] : await tx.select().from(wikiPages).where(and(
-      eq(wikiPages.workspaceId, parsed.workspaceId),
-      inArray(wikiPages.id, wikiPageIds),
-    ));
-    const custody = acceptanceRecordSummaryContextCustody({
-      snapshot,
-      record,
-      focus: { headSha: record.currentPrHeadSha, headCycleId: record.currentPrHeadCycleId },
-      contract: confirmed,
-      job,
-      events: rawCorrectionEvents.map(mapChangeRecordEventRow),
-      repositoryRows,
-      wikiPagesById: new Map(wikiRows.map((page) => [page.id, page])),
-    });
-    if (!custody || !acceptanceRecordSummaryCompiledPack({ row: pack, custody })) {
+    // A stale Pack proves its immutable old Wiki identity, not equality with
+    // mutable current Wiki rows. Current Wiki is derived only by execution.
+    if (!await acceptanceContextPackRegenerationPriorCustodyIsProvenInTransaction({
+      tx, workspaceId: parsed.workspaceId, record, snapshot, pack, confirmed,
+    })) {
       return { kind: "not_current" };
     }
     const eventKey = acceptanceContextPackRegenerationRequestEventKey({
@@ -9430,8 +9501,642 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContract: confirmed.identity,
     });
     if (!request) throw new AcceptanceContextPackRegenerationRequestConflictError();
-    return { kind: appended.events[0]!.inserted ? "recorded" : "replayed", request };
+    const executionIdentity = {
+      id: acceptanceContextPackRegenerationExecutionId({ requestEventId: request.eventId }),
+      workspaceId: parsed.workspaceId,
+      recordId: parsed.recordId,
+      requestEventId: request.eventId,
+      requestEventKey: request.eventKey,
+      sourceSnapshotId: snapshot.id,
+      priorCompiledPackId: pack.id,
+      repo: record.repo,
+      prNumber: record.prNumber,
+      headSha: record.currentPrHeadSha,
+      headCycleId: record.currentPrHeadCycleId,
+      authorityGeneration: record.currentPrHeadAuthorityGeneration,
+      acceptanceContractId: confirmed.identity.id,
+      acceptanceContractVersion: confirmed.identity.version,
+      acceptanceContractSha256: confirmed.identity.sha256,
+      reason: parsed.reason,
+    };
+    const insertedExecutions = await tx.insert(acceptanceContextPackRegenerationExecutions)
+      .values(executionIdentity).onConflictDoNothing().returning();
+    const execution = insertedExecutions[0] ?? (await tx.select()
+      .from(acceptanceContextPackRegenerationExecutions)
+      .where(eq(acceptanceContextPackRegenerationExecutions.id, executionIdentity.id))
+      .limit(1))[0];
+    if (!execution || !isDeepStrictEqual({
+      id: execution.id,
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      requestEventId: execution.requestEventId,
+      requestEventKey: execution.requestEventKey,
+      sourceSnapshotId: execution.sourceSnapshotId,
+      priorCompiledPackId: execution.priorCompiledPackId,
+      repo: execution.repo,
+      prNumber: execution.prNumber,
+      headSha: execution.headSha,
+      headCycleId: execution.headCycleId,
+      authorityGeneration: execution.authorityGeneration,
+      acceptanceContractId: execution.acceptanceContractId,
+      acceptanceContractVersion: execution.acceptanceContractVersion,
+      acceptanceContractSha256: execution.acceptanceContractSha256,
+      reason: execution.reason,
+    }, executionIdentity)) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    return {
+      kind: appended.events[0]!.inserted ? "recorded" : "replayed",
+      request,
+      execution: contextPackRegenerationExecutionReceipt(execution),
+    };
   });
+}
+
+export type RetryAcceptanceContextPackRegenerationExecutionResult =
+  | { kind: "retried" | "replayed"; execution: AcceptanceContextPackRegenerationExecution }
+  | { kind: "not_found" | "not_current" | "not_authorized" | "not_retryable" };
+
+export function canHumanRetryAcceptanceContextPackRegenerationExecution(input: {
+  status: AcceptanceContextPackRegenerationExecutionRow["status"];
+  outcomeReason: string | null;
+}): boolean {
+  return (input.status === "held" && input.outcomeReason === "github_credential_unavailable")
+    || (input.status === "not_proven" && (
+      input.outcomeReason === "exact_content_github_unavailable"
+      || input.outcomeReason === "exact_content_github_rejected"
+    ));
+}
+
+export async function retryAcceptanceContextPackRegenerationExecution(input: {
+  workspaceId: string;
+  recordId: string;
+  executionId: string;
+  requestedBy: string;
+}): Promise<RetryAcceptanceContextPackRegenerationExecutionResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId", "executionId", "requestedBy"])
+    || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"]) || !isUuid(input["executionId"])
+    || typeof input["requestedBy"] !== "string") throw new Error("Invalid Context Pack regeneration retry input");
+  const actor = HUMAN_DECISION_ACTOR.exec(input["requestedBy"]);
+  if (!actor) throw new Error("Invalid Context Pack regeneration retry actor");
+  const userId = actor[1]!.toLowerCase();
+  const requestedBy = `user:${userId}`;
+  const candidate = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+    eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+    eq(acceptanceContextPackRegenerationExecutions.workspaceId, input["workspaceId"]),
+    eq(acceptanceContextPackRegenerationExecutions.recordId, input["recordId"]),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_found" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const membership = (Array.from(await tx.execute(sql`
+      SELECT role
+      FROM workspace_memberships
+      WHERE user_id = ${userId}
+        AND workspace_id = ${input["workspaceId"]}
+      FOR SHARE
+    `)) as Array<{ role: string }>)[0];
+    if (!membership || (membership.role !== "owner" && membership.role !== "admin")) {
+      return { kind: "not_authorized" as const };
+    }
+    const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+      eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+      eq(acceptanceContextPackRegenerationExecutions.workspaceId, input["workspaceId"]),
+      eq(acceptanceContextPackRegenerationExecutions.recordId, input["recordId"]),
+    )).limit(1).for("update"))[0];
+    if (!execution) return { kind: "not_found" as const };
+    if (!canHumanRetryAcceptanceContextPackRegenerationExecution(execution)) {
+      return { kind: "not_retryable" as const };
+    }
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, execution.recordId),
+      eq(changeRecords.workspaceId, execution.workspaceId),
+    )).limit(1))[0];
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, execution.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    const confirmed = acceptanceRecordSummaryConfirmedContract(confirmedRows);
+    if (!record || !record.currentPrHeadAuthoritative || record.state !== "open" || record.mergedSha !== null
+      || record.repo !== execution.repo || record.prNumber !== execution.prNumber
+      || record.currentPrHeadSha !== execution.headSha || record.currentPrHeadCycleId !== execution.headCycleId
+      || record.currentPrHeadAuthorityGeneration !== execution.authorityGeneration
+      || !confirmed || confirmed === "invalid"
+      || confirmed.identity.id !== execution.acceptanceContractId
+      || confirmed.identity.version !== execution.acceptanceContractVersion
+      || confirmed.identity.sha256 !== execution.acceptanceContractSha256) {
+      return { kind: "not_current" as const };
+    }
+    const snapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.id, execution.sourceSnapshotId),
+      eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+      eq(acceptanceContextPackSnapshots.recordId, execution.recordId),
+    )).limit(1))[0];
+    const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.id, execution.priorCompiledPackId),
+      eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, execution.sourceSnapshotId),
+    )).limit(1))[0];
+    const snapshotInput = snapshot ? acceptanceRecordSummarySnapshotInput(snapshot) : null;
+    if (!snapshot || !pack || !snapshotInput || !validateAcceptanceContextPackSnapshotInput(snapshotInput)
+      || snapshot.id !== acceptanceContextPackSnapshotId(snapshotInput)
+      || snapshot.reviewJobId !== execution.headCycleId || snapshot.expectedHeadSha !== execution.headSha
+      || snapshot.acceptanceContractId !== execution.acceptanceContractId
+      || snapshot.acceptanceContractVersion !== execution.acceptanceContractVersion
+      || snapshot.acceptanceContractSha256 !== execution.acceptanceContractSha256
+      || !await acceptanceContextPackRegenerationPriorCustodyIsProvenInTransaction({
+        tx, workspaceId: execution.workspaceId, record, snapshot, pack, confirmed,
+      })) return { kind: "not_current" as const };
+
+    const retryEventPrefix = `context-pack-regeneration-retry:${execution.id}:`;
+    const eventKey = `${retryEventPrefix}${userId}`;
+    const existingRetry = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(
+      sql`${acceptanceContextPackRegenerationExecutions.requestEventKey} LIKE ${`${retryEventPrefix}%`}`,
+    ).orderBy(asc(acceptanceContextPackRegenerationExecutions.createdAt)).limit(1))[0];
+    if (existingRetry) {
+      return existingRetry.requestEventKey === eventKey
+        ? { kind: "replayed" as const, execution: contextPackRegenerationExecutionReceipt(existingRetry) }
+        : { kind: "not_retryable" as const };
+    }
+    const payloadRef = {
+      kind: "acceptance_context_pack_regeneration_retry",
+      version: 1,
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      terminalExecutionId: execution.id,
+      priorCompiledPackId: execution.priorCompiledPackId,
+      headSha: execution.headSha,
+      headCycleId: execution.headCycleId,
+      authorityGeneration: execution.authorityGeneration,
+      acceptanceContract: {
+        id: execution.acceptanceContractId,
+        version: execution.acceptanceContractVersion,
+        sha256: execution.acceptanceContractSha256,
+      },
+      terminalStatus: execution.status,
+      terminalReason: execution.outcomeReason,
+      requestedBy,
+      requestedRole: membership.role,
+      authority: "human_retry_only",
+      status: "retry_recorded",
+    };
+    let appended: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: execution.recordId,
+        eventKey,
+        stage: ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE,
+        actor: requestedBy,
+        payloadRef,
+      }]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("event key is already bound")) {
+        throw new AcceptanceContextPackRegenerationRequestConflictError();
+      }
+      throw error;
+    }
+    if (!isDeepStrictEqual(appended.events[0]!.event.payloadRef, payloadRef)) {
+      throw new AcceptanceContextPackRegenerationRequestConflictError();
+    }
+    const nextIdentity = {
+      id: acceptanceContextPackRegenerationExecutionId({ requestEventId: appended.events[0]!.event.id }),
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      requestEventId: appended.events[0]!.event.id,
+      requestEventKey: eventKey,
+      sourceSnapshotId: execution.sourceSnapshotId,
+      priorCompiledPackId: execution.priorCompiledPackId,
+      repo: execution.repo,
+      prNumber: execution.prNumber,
+      headSha: execution.headSha,
+      headCycleId: execution.headCycleId,
+      authorityGeneration: execution.authorityGeneration,
+      acceptanceContractId: execution.acceptanceContractId,
+      acceptanceContractVersion: execution.acceptanceContractVersion,
+      acceptanceContractSha256: execution.acceptanceContractSha256,
+      reason: execution.reason,
+    };
+    const inserted = await tx.insert(acceptanceContextPackRegenerationExecutions)
+      .values(nextIdentity).onConflictDoNothing().returning();
+    const next = inserted[0] ?? (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(eq(acceptanceContextPackRegenerationExecutions.id, nextIdentity.id)).limit(1))[0];
+    if (!next || !isDeepStrictEqual({
+      id: next.id, workspaceId: next.workspaceId, recordId: next.recordId,
+      requestEventId: next.requestEventId, requestEventKey: next.requestEventKey,
+      sourceSnapshotId: next.sourceSnapshotId, priorCompiledPackId: next.priorCompiledPackId,
+      repo: next.repo, prNumber: next.prNumber, headSha: next.headSha, headCycleId: next.headCycleId,
+      authorityGeneration: next.authorityGeneration, acceptanceContractId: next.acceptanceContractId,
+      acceptanceContractVersion: next.acceptanceContractVersion,
+      acceptanceContractSha256: next.acceptanceContractSha256, reason: next.reason,
+    }, nextIdentity)) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    return {
+      kind: appended.events[0]!.inserted ? "retried" as const : "replayed" as const,
+      execution: contextPackRegenerationExecutionReceipt(next),
+    };
+  });
+}
+
+export const ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS = 2 * 60 * 1000;
+
+const ACCEPTANCE_CONTEXT_PACK_REGENERATION_OUTCOME_STAGE = "context_pack_regeneration";
+
+async function terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+  tx: DbTransaction,
+  execution: AcceptanceContextPackRegenerationExecutionRow,
+  status: "replaced" | "unchanged" | "not_current" | "not_proven" | "held",
+  outcomeReason: string,
+  replacementCompiledPackId: string | null = null,
+): Promise<AcceptanceContextPackRegenerationExecution> {
+  const now = new Date();
+  const eventKey = `context-pack-regeneration-outcome:${execution.id}`;
+  const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+    recordId: execution.recordId,
+    eventKey,
+    stage: ACCEPTANCE_CONTEXT_PACK_REGENERATION_OUTCOME_STAGE,
+    actor: "jace:context-pack-regeneration-worker",
+    payloadRef: {
+      kind: "acceptance_context_pack_regeneration_outcome",
+      version: 1,
+      executionId: execution.id,
+      requestEventId: execution.requestEventId,
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      priorCompiledPackId: execution.priorCompiledPackId,
+      replacementCompiledPackId,
+      headSha: execution.headSha,
+      headCycleId: execution.headCycleId,
+      status,
+      outcomeReason,
+      attemptCount: execution.attemptCount,
+    },
+  }]);
+  const existing = event.events[0]!.event.payloadRef;
+  if (!isDeepStrictEqual(existing, {
+    kind: "acceptance_context_pack_regeneration_outcome",
+    version: 1,
+    executionId: execution.id,
+    requestEventId: execution.requestEventId,
+    workspaceId: execution.workspaceId,
+    recordId: execution.recordId,
+    priorCompiledPackId: execution.priorCompiledPackId,
+    replacementCompiledPackId,
+    headSha: execution.headSha,
+    headCycleId: execution.headCycleId,
+    status,
+    outcomeReason,
+    attemptCount: execution.attemptCount,
+  })) throw new Error("Context Pack regeneration outcome conflicts with immutable custody");
+  const rows = await tx.update(acceptanceContextPackRegenerationExecutions).set({
+    status,
+    replacementCompiledPackId,
+    outcomeReason,
+    claimedBy: null,
+    leaseTokenSha256: null,
+    leaseExpiresAt: null,
+    completedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(acceptanceContextPackRegenerationExecutions.id, execution.id),
+    eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+  )).returning();
+  if (rows.length !== 1) throw new Error("Context Pack regeneration terminal custody was lost");
+  return contextPackRegenerationExecutionReceipt(rows[0]!);
+}
+
+export type ClaimAcceptanceContextPackRegenerationExecutionResult = {
+  executionId: string;
+  workerId: string;
+  leaseToken: string;
+  attemptCount: number;
+  leaseExpiresAt: Date;
+};
+
+/**
+ * Claims the oldest eligible regeneration execution without releasing tenant,
+ * Record, head, Contract, Pack, or source coordinates to the worker.
+ */
+export async function claimAcceptanceContextPackRegenerationExecution(input: {
+  workerId: string;
+}): Promise<ClaimAcceptanceContextPackRegenerationExecutionResult | null> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workerId"])
+    || typeof input["workerId"] !== "string"
+    || input["workerId"].length < 1 || input["workerId"].length > 128
+    || input["workerId"] !== input["workerId"].trim()
+    || /[\u0000-\u001f\u007f]/u.test(input["workerId"])) {
+    throw new Error("Invalid Context Pack regeneration worker identity");
+  }
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    const exhausted = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(and(
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        lte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, now),
+        gte(
+          acceptanceContextPackRegenerationExecutions.attemptCount,
+          acceptanceContextPackRegenerationExecutions.maxAttempts,
+        ),
+      )).orderBy(
+        asc(acceptanceContextPackRegenerationExecutions.createdAt),
+        asc(acceptanceContextPackRegenerationExecutions.id),
+      ).limit(1).for("update", { skipLocked: true }))[0];
+    if (exhausted) {
+      await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+        tx, exhausted, "held", "lease_attempts_exhausted",
+      );
+    }
+    const candidate = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(or(
+        eq(acceptanceContextPackRegenerationExecutions.status, "queued"),
+        and(
+          eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+          lte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, now),
+          lt(
+            acceptanceContextPackRegenerationExecutions.attemptCount,
+            acceptanceContextPackRegenerationExecutions.maxAttempts,
+          ),
+        ),
+      ))
+      .orderBy(
+        asc(acceptanceContextPackRegenerationExecutions.createdAt),
+        asc(acceptanceContextPackRegenerationExecutions.id),
+      )
+      .limit(1)
+      .for("update", { skipLocked: true }))[0];
+    if (!candidate) return null;
+    const leaseToken = randomBytes(32).toString("base64url");
+    const leaseExpiresAt = new Date(now.getTime() + ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS);
+    const rows = await tx.update(acceptanceContextPackRegenerationExecutions).set({
+      status: "running",
+      attemptCount: candidate.attemptCount + 1,
+      claimedBy: input["workerId"],
+      leaseTokenSha256: createHash("sha256").update(leaseToken, "utf8").digest("hex"),
+      leaseExpiresAt,
+      updatedAt: now,
+    }).where(eq(acceptanceContextPackRegenerationExecutions.id, candidate.id)).returning();
+    if (rows.length !== 1) throw new Error("Context Pack regeneration claim lost custody");
+    return {
+      executionId: candidate.id,
+      workerId: input["workerId"],
+      leaseToken,
+      attemptCount: candidate.attemptCount + 1,
+      leaseExpiresAt,
+    };
+  });
+}
+
+export type PrepareAcceptanceContextPackRegenerationExecutionResult =
+  | {
+      kind: "ready";
+      executionId: string;
+      workspaceId: string;
+      recordId: string;
+      sourceSnapshotId: string;
+      priorCompiledPackId: string;
+      priorSourceSnapshot: AcceptanceContextPackSnapshotInput & { id: string };
+      priorCompilerVersion: string;
+      priorPolicyVersion: string;
+    }
+  | { kind: "not_owned" | "not_current" | "not_proven" };
+
+/** Re-derives exact execution custody from one opaque, currently-owned lease. */
+export async function prepareAcceptanceContextPackRegenerationExecution(input: {
+  executionId: string;
+  workerId: string;
+  leaseToken: string;
+}): Promise<PrepareAcceptanceContextPackRegenerationExecutionResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["executionId", "workerId", "leaseToken"])
+    || !isUuid(input["executionId"])
+    || typeof input["workerId"] !== "string" || input["workerId"].length < 1
+    || input["workerId"].length > 128 || input["workerId"] !== input["workerId"].trim()
+    || /[\u0000-\u001f\u007f]/u.test(input["workerId"])
+    || typeof input["leaseToken"] !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(input["leaseToken"])) {
+    return { kind: "not_owned" };
+  }
+  const leaseTokenSha256 = createHash("sha256").update(input["leaseToken"], "utf8").digest("hex");
+  return db.transaction(async (tx) => {
+    const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(and(
+        eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+        eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
+        gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+      )).limit(1).for("update"))[0];
+    if (!execution) return { kind: "not_owned" as const };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      repo: execution.repo,
+      prNumber: execution.prNumber,
+    })}))`);
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, execution.recordId),
+      eq(changeRecords.workspaceId, execution.workspaceId),
+    )).limit(1))[0];
+    if (!record || !record.currentPrHeadAuthoritative || record.state !== "open"
+      || record.mergedSha !== null || record.repo !== execution.repo
+      || record.prNumber !== execution.prNumber
+      || record.currentPrHeadSha !== execution.headSha
+      || record.currentPrHeadCycleId !== execution.headCycleId
+      || record.currentPrHeadAuthorityGeneration !== execution.authorityGeneration) {
+      await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+        tx, execution, "not_current", "record_head_or_authority_not_current",
+      );
+      return { kind: "not_current" as const };
+    }
+    const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, execution.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    const confirmed = acceptanceRecordSummaryConfirmedContract(confirmedRows);
+    if (!confirmed || confirmed === "invalid"
+      || confirmed.identity.id !== execution.acceptanceContractId
+      || confirmed.identity.version !== execution.acceptanceContractVersion
+      || confirmed.identity.sha256 !== execution.acceptanceContractSha256) {
+      await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+        tx, execution, "not_current", "confirmed_contract_not_current",
+      );
+      return { kind: "not_current" as const };
+    }
+    const priorPack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.id, execution.priorCompiledPackId),
+      eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, execution.sourceSnapshotId),
+    )).limit(1))[0];
+    if (!priorPack) {
+      await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+        tx, execution, "not_proven", "prior_pack_not_proven",
+      );
+      return { kind: "not_proven" as const };
+    }
+    const priorSourceSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.id, execution.sourceSnapshotId),
+      eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+      eq(acceptanceContextPackSnapshots.recordId, execution.recordId),
+    )).limit(1))[0];
+    const priorSnapshotInput = priorSourceSnapshot ? snapshotComparable(priorSourceSnapshot) : null;
+    if (!priorSourceSnapshot || !priorSnapshotInput || priorSourceSnapshot.reviewJobId !== execution.headCycleId
+      || priorSourceSnapshot.expectedHeadSha !== execution.headSha
+      || priorSourceSnapshot.acceptanceContractId !== execution.acceptanceContractId
+      || priorSourceSnapshot.acceptanceContractVersion !== execution.acceptanceContractVersion
+      || priorSourceSnapshot.acceptanceContractSha256 !== execution.acceptanceContractSha256
+      || !validateAcceptanceContextPackSnapshotInput(priorSnapshotInput)
+      || priorSourceSnapshot.id !== acceptanceContextPackSnapshotId(priorSnapshotInput)) {
+      await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+        tx, execution, "not_proven", "source_binding_not_proven",
+      );
+      return { kind: "not_proven" as const };
+    }
+    return {
+      kind: "ready" as const,
+      executionId: execution.id,
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      sourceSnapshotId: execution.sourceSnapshotId,
+      priorCompiledPackId: execution.priorCompiledPackId,
+      priorSourceSnapshot: { ...priorSnapshotInput, id: priorSourceSnapshot.id },
+      priorCompilerVersion: priorPack.compilerVersion,
+      priorPolicyVersion: priorPack.policyVersion,
+    };
+  });
+}
+
+export async function completeAcceptanceContextPackRegenerationExecution(input: {
+  executionId: string;
+  workerId: string;
+  leaseToken: string;
+  outcome: "replaced" | "unchanged" | "not_proven" | "held";
+  replacementCompiledPackId?: string;
+  reason: string;
+}): Promise<{ kind: "completed"; execution: AcceptanceContextPackRegenerationExecution } | { kind: "not_owned" }> {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "executionId", "workerId", "leaseToken", "outcome", "replacementCompiledPackId", "reason",
+  ]) || !isUuid(input["executionId"]) || typeof input["workerId"] !== "string"
+    || input["workerId"].length < 1 || input["workerId"].length > 128
+    || typeof input["leaseToken"] !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(input["leaseToken"])
+    || !["replaced", "unchanged", "not_proven", "held"].includes(input["outcome"])
+    || typeof input["reason"] !== "string" || input["reason"].length < 1 || input["reason"].length > 128
+    || (input["outcome"] === "replaced") !== (typeof input["replacementCompiledPackId"] === "string" && isUuid(input["replacementCompiledPackId"]))) {
+    return { kind: "not_owned" };
+  }
+  const leaseTokenSha256 = createHash("sha256").update(input["leaseToken"], "utf8").digest("hex");
+  return db.transaction(async (tx) => {
+    const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+      eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+      eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+      eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+      eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
+      gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+    )).limit(1).for("update"))[0];
+    if (!execution) return { kind: "not_owned" as const };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+      workspaceId: execution.workspaceId,
+      recordId: execution.recordId,
+      repo: execution.repo,
+      prNumber: execution.prNumber,
+    })}))`);
+    if (input["outcome"] !== "held") {
+      const record = (await tx.select().from(changeRecords).where(and(
+        eq(changeRecords.id, execution.recordId),
+        eq(changeRecords.workspaceId, execution.workspaceId),
+      )).limit(1))[0];
+      const contracts = await tx.select().from(acceptanceContracts).where(and(
+        eq(acceptanceContracts.recordId, execution.recordId),
+        eq(acceptanceContracts.status, "confirmed"),
+      )).orderBy(asc(acceptanceContracts.version));
+      const confirmed = acceptanceRecordSummaryConfirmedContract(contracts);
+      if (!record || !record.currentPrHeadAuthoritative || record.state !== "open"
+        || record.mergedSha !== null || record.repo !== execution.repo
+        || record.prNumber !== execution.prNumber || record.currentPrHeadSha !== execution.headSha
+        || record.currentPrHeadCycleId !== execution.headCycleId
+        || record.currentPrHeadAuthorityGeneration !== execution.authorityGeneration
+        || !confirmed || confirmed === "invalid"
+        || confirmed.identity.id !== execution.acceptanceContractId
+        || confirmed.identity.version !== execution.acceptanceContractVersion
+        || confirmed.identity.sha256 !== execution.acceptanceContractSha256) {
+        const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+          tx, execution, "not_current", "completion_binding_not_current",
+        );
+        return { kind: "completed" as const, execution: receipt };
+      }
+    }
+    if (input["outcome"] === "replaced") {
+      const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+        eq(acceptanceCompiledContextPacks.id, input["replacementCompiledPackId"]!),
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+      )).limit(1))[0];
+      const replacementSnapshot = pack && (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.id, pack.sourceSnapshotId),
+        eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+      )).limit(1))[0];
+      const priorSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.id, execution.sourceSnapshotId),
+        eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+      )).limit(1))[0];
+      if (!pack || !replacementSnapshot || !priorSnapshot || pack.id === execution.priorCompiledPackId
+        || replacementSnapshot.recordId !== execution.recordId
+        || replacementSnapshot.reviewJobId !== execution.headCycleId
+        || replacementSnapshot.expectedHeadSha !== execution.headSha
+        || replacementSnapshot.acceptanceContractId !== execution.acceptanceContractId
+        || replacementSnapshot.acceptanceContractVersion !== execution.acceptanceContractVersion
+        || replacementSnapshot.acceptanceContractSha256 !== execution.acceptanceContractSha256
+        || replacementSnapshot.baseSha !== priorSnapshot.baseSha
+        || replacementSnapshot.mergeBaseSha !== priorSnapshot.mergeBaseSha
+        || replacementSnapshot.headTreeSha !== priorSnapshot.headTreeSha
+        || replacementSnapshot.packetSetSha256 !== priorSnapshot.packetSetSha256
+        || replacementSnapshot.correctionPacketPayloadSetSha256 !== priorSnapshot.correctionPacketPayloadSetSha256
+        || !isDeepStrictEqual(replacementSnapshot.overlay, priorSnapshot.overlay)) {
+        const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+          tx, execution, "not_proven", "replacement_binding_not_proven",
+        );
+        return { kind: "completed" as const, execution: receipt };
+      }
+      try {
+        const replacementCustody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
+          workspaceId: execution.workspaceId,
+          sourceSnapshotId: replacementSnapshot.id,
+        });
+        if (!acceptanceRecordSummaryCompiledPack({ row: pack, custody: replacementCustody })) {
+          throw new Error("replacement Pack custody mismatch");
+        }
+      } catch {
+        const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+          tx, execution, "not_proven", "replacement_custody_not_proven",
+        );
+        return { kind: "completed" as const, execution: receipt };
+      }
+    }
+    const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+      tx, execution, input["outcome"], input["reason"], input["replacementCompiledPackId"] ?? null,
+    );
+    return { kind: "completed" as const, execution: receipt };
+  });
+}
+
+export async function listAcceptanceContextPackRegenerationExecutions(input: {
+  workspaceId: string;
+  recordId: string;
+  limit?: number;
+}): Promise<AcceptanceContextPackRegenerationExecution[]> {
+  if (!isRecord(input) || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])) return [];
+  const limit = Math.min(20, Math.max(1, Math.trunc(input.limit ?? 10)));
+  const rows = await db.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+    eq(acceptanceContextPackRegenerationExecutions.workspaceId, input["workspaceId"]),
+    eq(acceptanceContextPackRegenerationExecutions.recordId, input["recordId"]),
+  )).orderBy(desc(acceptanceContextPackRegenerationExecutions.createdAt)).limit(limit);
+  const retriedParents = new Set(rows.flatMap((row) => {
+    const match = /^context-pack-regeneration-retry:([0-9a-f-]{36}):/iu.exec(row.requestEventKey);
+    return match ? [match[1]!.toLowerCase()] : [];
+  }));
+  return rows.map((row) => contextPackRegenerationExecutionReceipt(
+    row,
+    canHumanRetryAcceptanceContextPackRegenerationExecution(row) && !retriedParents.has(row.id),
+  ));
 }
 
 export type AcceptanceDependencyObservationStatus =
@@ -17754,6 +18459,7 @@ function acceptanceRecordSummaryContextCustody(input: {
   events: readonly ChangeRecordEventRow[];
   repositoryRows: readonly (typeof repositories.$inferSelect)[];
   wikiPagesById: ReadonlyMap<string, typeof wikiPages.$inferSelect>;
+  wikiVerification?: "current_body" | "snapshot_identity_only";
 }): AcceptanceContextPackCustodyResolution | null {
   const snapshotInput = acceptanceRecordSummarySnapshotInput(input.snapshot);
   if (!validateAcceptanceContextPackSnapshotInput(snapshotInput)
@@ -17800,6 +18506,19 @@ function acceptanceRecordSummaryContextCustody(input: {
         && (!repository || repository.id !== repositoryIds[0]))) return null;
     let totalBodyBytes = 0;
     for (const page of baseIndex.pages) {
+      if (input.wikiVerification === "snapshot_identity_only") {
+        wikiRows.push({
+          id: page.id,
+          repositoryId: page.repositoryId,
+          slug: page.slug,
+          commitSha: page.commitSha,
+          inputsHashSha256: page.inputsHashSha256,
+          pageBodySha256: page.pageBodySha256,
+          stale: page.stale,
+          bodyMd: "",
+        });
+        continue;
+      }
       const actual = input.wikiPagesById.get(page.id);
       const bodyBytes = actual ? Buffer.byteLength(actual.bodyMd, "utf8") : 0;
       totalBodyBytes += bodyBytes;
@@ -17836,6 +18555,7 @@ function acceptanceRecordSummaryContextCustody(input: {
 function acceptanceRecordSummaryCompiledPack(input: {
   row: AcceptanceCompiledContextPackRow;
   custody: AcceptanceContextPackCustodyResolution;
+  wikiVerification?: "current_body" | "snapshot_identity_only";
 }): AcceptanceRecordSummaryCompiledPackIdentity | null {
   const pack = parseCompiledAcceptanceContextPack({
     kind: "compiled_acceptance_context_pack",
@@ -17869,7 +18589,7 @@ function acceptanceRecordSummaryCompiledPack(input: {
     || pack.sourceCustodyReceipt["identitySha256"] !== input.row.sourceCustodyIdentitySha256
     || !bindingMatchesCustody(pack.binding, input.custody)
     || !receiptMatchesCustody(pack.sourceCustodyReceipt, input.custody)
-    || !manifestMatchesCustody(pack, input.custody)
+    || !manifestMatchesCustody(pack, input.custody, input.wikiVerification)
     || !compiledPackDependencyTreeMetadataMatches(pack)) return null;
   return {
     id: input.row.id,

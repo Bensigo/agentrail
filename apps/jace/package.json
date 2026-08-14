@@ -13,6 +13,7 @@
     "start": "eve start",
     "roundtrip": "node scripts/needs-approval-roundtrip.mjs",
     "spend-by-intent": "node scripts/spend-by-intent.mjs",
+    "context-pack-regeneration-worker": "node scripts/context-pack-regeneration-worker.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

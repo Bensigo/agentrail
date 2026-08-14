@@ -24,6 +24,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptancePrDecision: vi.fn(),
   recordAcceptancePrReviewEffort: vi.fn(),
   recordAcceptanceContextPackRegenerationRequest: vi.fn(),
+  retryAcceptanceContextPackRegenerationExecution: vi.fn(),
+  listAcceptanceContextPackRegenerationExecutions: vi.fn(),
   changeRecordEventId: vi.fn(({ recordId, eventKey }: { recordId: string; eventKey: string }) =>
     eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:stale:00000000-0000-4000-8000-000000000777"
       ? "00000000-0000-4000-8000-000000000048"
@@ -49,6 +51,8 @@ import {
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
   recordAcceptanceContextPackRegenerationRequest,
+  retryAcceptanceContextPackRegenerationExecution,
+  listAcceptanceContextPackRegenerationExecutions,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
 
@@ -617,6 +621,46 @@ beforeEach(() => {
       authority: "request_only",
       status: "request_recorded",
     },
+    execution: {
+      id: "00000000-0000-4000-8000-000000000050",
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: null,
+      completedAt: null,
+      createdAt: EFFORT_AT,
+      updatedAt: EFFORT_AT,
+      humanRetryable: false,
+    },
+  } as never);
+  vi.mocked(listAcceptanceContextPackRegenerationExecutions).mockResolvedValue([] as never);
+  vi.mocked(retryAcceptanceContextPackRegenerationExecution).mockResolvedValue({
+    kind: "retried",
+    execution: {
+      id: "00000000-0000-4000-8000-000000000051",
+      requestEventId: "00000000-0000-4000-8000-000000000052",
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: null,
+      completedAt: null,
+      createdAt: EFFORT_AT,
+      updatedAt: EFFORT_AT,
+      humanRetryable: false,
+    },
   } as never);
 });
 
@@ -758,6 +802,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         reason: "criterion_outcome_bundle_not_recorded",
       },
       contextPackRegenerationRequests: [],
+      contextPackRegenerationExecutions: [],
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
@@ -784,6 +829,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(listAcceptanceContextPackRegenerationExecutions).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
     expect(readDependencyDraftProposalDetail).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
@@ -792,6 +841,39 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+  });
+
+  it("returns bounded tenant-scoped Context Pack regeneration execution readback", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000046";
+    vi.mocked(listAcceptanceContextPackRegenerationExecutions).mockResolvedValue([{
+      id: executionId,
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "held",
+      attemptCount: 1,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: "execution_ambiguous",
+      completedAt: UPDATED,
+      createdAt: CREATED,
+      updatedAt: UPDATED,
+      humanRetryable: false,
+    }] as never);
+    const response = await GET(req(), { params: params() });
+    const body = await response.json();
+    expect(body.contextPackRegenerationExecutions).toEqual([expect.objectContaining({
+      id: executionId,
+      workspaceId: WS,
+      recordId: RECORD,
+      status: "held",
+      outcomeReason: "execution_ambiguous",
+      completedAt: UPDATED.toISOString(),
+    })]);
+    expect(JSON.stringify(body.contextPackRegenerationExecutions)).not.toMatch(/lease|token|sourceSnapshot|acceptanceContract/iu);
   });
 
   it("redacts dependency proposal commands from the raw audit timeline", async () => {
@@ -1637,7 +1719,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
   });
 
-  it("records only a request against a server-revalidated Pack binding", async () => {
+  it("records a request and queues one server-derived execution against the same Pack binding", async () => {
     const response = await PATCH(patchReq({
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
@@ -1656,6 +1738,14 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(body.kind).toBe("recorded");
     expect(body.request.authority).toBe("request_only");
     expect(body.request.status).toBe("request_recorded");
+    expect(body.execution).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000050",
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+    });
   });
 
   it("rejects regeneration bodies that try to supply head or execution authority", async () => {
@@ -1671,11 +1761,35 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
   });
 
+  it("records a deliberate retry using only one terminal execution id", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000050";
+    const response = await PATCH(patchReq({
+      action: "retry_context_pack_regeneration",
+      executionId,
+    }), { params: params() });
+    expect(response.status).toBe(201);
+    expect(retryAcceptanceContextPackRegenerationExecution).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      executionId,
+      requestedBy: `user:${USER}`,
+    });
+    expect(await response.json()).toMatchObject({ kind: "retried", execution: { status: "queued" } });
+  });
+
+  it("rejects widened or invalid deliberate retry bodies", async () => {
+    for (const body of [
+      { action: "retry_context_pack_regeneration", executionId: "invalid" },
+      { action: "retry_context_pack_regeneration", executionId: "00000000-0000-4000-8000-000000000050", dispatch: true },
+    ]) expect((await PATCH(patchReq(body), { params: params() })).status).toBe(400);
+    expect(retryAcceptanceContextPackRegenerationExecution).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ kind: "not_found" }, 404],
     [{ kind: "not_authorized" }, 403],
     [{ kind: "not_current" }, 409],
-  ] as const)("maps the closed Context Pack request result %# without inventing regeneration", async (result, status) => {
+  ] as const)("maps the closed Context Pack request result %# without queuing an execution", async (result, status) => {
     vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValue(result as never);
     const response = await PATCH(patchReq({
       action: "request_context_pack_regeneration",

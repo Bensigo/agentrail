@@ -1388,6 +1388,84 @@ export const changeRecordEvents = pgTable(
 );
 
 /**
+ * Durable execution custody for one human Context Pack regeneration request.
+ * Immutable authority bindings are copied from the request transaction;
+ * workers receive only this row's opaque id and a one-lease token.
+ */
+export const acceptanceContextPackRegenerationExecutions = pgTable(
+  "acceptance_context_pack_regeneration_executions",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    requestEventId: uuid("request_event_id").notNull()
+      .references(() => changeRecordEvents.id, { onDelete: "restrict" }),
+    requestEventKey: text("request_event_key").notNull(),
+    sourceSnapshotId: uuid("source_snapshot_id").notNull()
+      .references(() => acceptanceContextPackSnapshots.id, { onDelete: "restrict" }),
+    priorCompiledPackId: uuid("prior_compiled_pack_id").notNull()
+      .references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("queued"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(1),
+    claimedBy: text("claimed_by"),
+    leaseTokenSha256: text("lease_token_sha256"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    replacementCompiledPackId: uuid("replacement_compiled_pack_id")
+      .references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
+    outcomeReason: text("outcome_reason"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    request: uniqueIndex("acceptance_context_pack_regeneration_executions_request_key")
+      .on(t.requestEventId),
+    claim: index("acceptance_context_pack_regeneration_executions_claim_idx")
+      .on(t.status, t.leaseExpiresAt, t.createdAt),
+    record: index("acceptance_context_pack_regeneration_executions_record_idx")
+      .on(t.workspaceId, t.recordId, t.createdAt),
+    bindingCheck: check(
+      "acceptance_context_pack_regeneration_executions_binding_check",
+      sql`char_length(${t.requestEventKey}) BETWEEN 1 AND 1024
+        AND char_length(${t.repo}) BETWEEN 3 AND 201
+        AND ${t.repo} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[a-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.acceptanceContractVersion} > 0
+        AND ${t.acceptanceContractSha256} ~ '^[a-f0-9]{64}$'
+        AND ${t.reason} IN ('stale', 'inadequate')
+        AND ${t.maxAttempts} = 1
+        AND ${t.attemptCount} BETWEEN 0 AND ${t.maxAttempts}`,
+    ),
+    stateCheck: check(
+      "acceptance_context_pack_regeneration_executions_state_check",
+      sql`${t.status} IN ('queued', 'running', 'replaced', 'unchanged', 'not_current', 'not_proven', 'held')
+        AND ((${t.status} = 'running') = (${t.claimedBy} IS NOT NULL))
+        AND ((${t.status} = 'running') = (${t.leaseTokenSha256} IS NOT NULL))
+        AND ((${t.status} = 'running') = (${t.leaseExpiresAt} IS NOT NULL))
+        AND (${t.leaseTokenSha256} IS NULL OR ${t.leaseTokenSha256} ~ '^[a-f0-9]{64}$')
+        AND ((${t.status} IN ('queued', 'running')) = (${t.completedAt} IS NULL))
+        AND ((${t.status} NOT IN ('queued', 'running')) = (${t.outcomeReason} IS NOT NULL))
+        AND ((${t.status} = 'replaced') = (${t.replacementCompiledPackId} IS NOT NULL))`,
+    ),
+  }),
+);
+
+/**
  * Server-minted approval custody for one exact current gated-issue draft.
  * Model input never supplies repo, title, body, packet ids, or binding data;
  * every field below is projected from the current Acceptance Record under its
@@ -1669,3 +1747,4 @@ export type AcceptanceGatedGithubIssueRequestRow = typeof acceptanceGatedGithubI
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;
 export type AcceptanceMcpTurnDispatchRow = typeof acceptanceMcpTurnDispatches.$inferSelect;
+export type AcceptanceContextPackRegenerationExecutionRow = typeof acceptanceContextPackRegenerationExecutions.$inferSelect;

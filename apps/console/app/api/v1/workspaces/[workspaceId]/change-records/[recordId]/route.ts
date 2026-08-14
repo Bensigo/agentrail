@@ -19,6 +19,8 @@ import {
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
   recordAcceptanceContextPackRegenerationRequest,
+  retryAcceptanceContextPackRegenerationExecution,
+  listAcceptanceContextPackRegenerationExecutions,
 } from "@agentrail/db-postgres";
 import { containsSecretShapedValue } from "../../../../../../../lib/secret-scan";
 
@@ -55,10 +57,16 @@ type ParsedContextPackRegenerationRequestBody = {
   reason: "stale" | "inadequate";
 };
 
+type ParsedContextPackRegenerationRetryBody = {
+  action: "retry_context_pack_regeneration";
+  executionId: string;
+};
+
 type ParsedPatchBody = ParsedDecisionBody
   | ParsedReviewEffortBody
   | ParsedDependencyObservationApprovalBody
-  | ParsedContextPackRegenerationRequestBody;
+  | ParsedContextPackRegenerationRequestBody
+  | ParsedContextPackRegenerationRetryBody;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
@@ -270,6 +278,16 @@ function parseContextPackRegenerationRequestBody(
   };
 }
 
+function parseContextPackRegenerationRetryBody(value: unknown): ParsedContextPackRegenerationRetryBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  return Object.keys(input).length === 2
+    && input.action === "retry_context_pack_regeneration"
+    && typeof input.executionId === "string" && UUID.test(input.executionId)
+    ? { action: "retry_context_pack_regeneration", executionId: input.executionId }
+    : null;
+}
+
 function parsePatchBody(value: unknown): ParsedPatchBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const action = (value as Record<string, unknown>).action;
@@ -281,6 +299,8 @@ function parsePatchBody(value: unknown): ParsedPatchBody | null {
         ? parseDependencyObservationApprovalBody(value)
         : action === "request_context_pack_regeneration"
           ? parseContextPackRegenerationRequestBody(value)
+          : action === "retry_context_pack_regeneration"
+            ? parseContextPackRegenerationRetryBody(value)
         : null;
 }
 
@@ -558,6 +578,7 @@ export async function GET(
       resolvedAcceptanceDetail,
       dependencyDraftProposal,
       resolvedCriterionOutcomes,
+      regenerationExecutions,
     ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
@@ -566,6 +587,7 @@ export async function GET(
       readAcceptanceRecordDetail({ workspaceId, recordId }),
       readDependencyDraftProposalDetail({ workspaceId, recordId }),
       readCurrentAcceptanceCriterionOutcomeBundle({ workspaceId, recordId }),
+      listAcceptanceContextPackRegenerationExecutions({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -648,6 +670,7 @@ export async function GET(
       dependencyDraftProposal,
       criterionOutcomes,
       contextPackRegenerationRequests: regenerationRequests,
+      contextPackRegenerationExecutions: serializeDates(regenerationExecutions),
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,
@@ -688,6 +711,20 @@ export async function PATCH(
   if (!body) return json({ error: "Invalid Change Record action" }, 400);
 
   try {
+    if (body.action === "retry_context_pack_regeneration") {
+      const result = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId,
+        recordId,
+        executionId: body.executionId,
+        requestedBy: `user:${session.user.id}`,
+      });
+      if (result.kind === "retried" || result.kind === "replayed") {
+        return json(serializeDates(result) as Record<string, unknown>, result.kind === "retried" ? 201 : 200);
+      }
+      if (result.kind === "not_found") return json(result, 404);
+      if (result.kind === "not_authorized") return json(result, 403);
+      return json(result, 409);
+    }
     if (body.action === "request_context_pack_regeneration") {
       const result = await recordAcceptanceContextPackRegenerationRequest({
         workspaceId,

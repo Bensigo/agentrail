@@ -6,12 +6,14 @@ import sys
 import time
 from typing import Callable, Protocol
 
-from agentrail.dependencies.acceptance_go_modules_observation_worker import (
-    ServerSelectedObservationWorker,
+from agentrail.dependencies.acceptance_pnpm_observation_worker import (
     WorkerConfig,
     WorkerError,
-    bounded_dependency_version_command,
     bounded_http_request,
+)
+from agentrail.dependencies.server_selected_observation_worker import (
+    ServerSelectedObservationWorker,
+    bounded_dependency_version_command,
 )
 
 

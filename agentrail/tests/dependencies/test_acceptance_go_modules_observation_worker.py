@@ -14,11 +14,11 @@ from agentrail.dependencies.acceptance_go_modules_observation_worker import (
     DescriptorError,
     GoModulesObservationWorker,
     HttpResponse,
-    ServerSelectedObservationWorker,
     SourceCustodyError,
     WorkerConfig,
     bounded_go_version_command,
 )
+from agentrail.dependencies.server_selected_observation_worker import ServerSelectedObservationWorker
 from agentrail.dependencies.go_sumdb import GoSumdbVerifier, parse_signed_go_sumdb_lookup
 from agentrail.dependencies.source_inventory import (
     build_go_github_source_inventory_receipt,

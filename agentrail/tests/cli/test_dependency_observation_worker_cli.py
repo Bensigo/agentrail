@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from agentrail.cli.commands.dependency_observation_worker import (
@@ -37,3 +40,25 @@ def test_worker_rejects_the_global_console_secret_without_a_workspace_api_key(mo
 
     with pytest.raises(ValueError, match="AGENTRAIL_SERVER_API_KEY"):
         _real_worker()
+
+
+def test_generic_help_does_not_import_go_crypto_dependencies() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.modules['cryptography'] = None; "
+                "from agentrail.cli.main import main; "
+                "raise SystemExit(main(['--help']))"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("Usage:\n")

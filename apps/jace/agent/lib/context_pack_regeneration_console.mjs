@@ -63,7 +63,14 @@ function exactExecutionResult(body) {
   return null;
 }
 
+export function assertContextPackRegenerationWorkerCredentialIsolation(env) {
+  if (String(env.JACE_CONSOLE_TOKEN ?? "").trim()) {
+    throw new Error("Context Pack regeneration worker refuses the broad Jace coordinator credential");
+  }
+}
+
 function config(env) {
+  assertContextPackRegenerationWorkerCredentialIsolation(env);
   const rawBaseUrl = String(env.JACE_CONSOLE_BASE_URL ?? "").trim();
   const token = String(env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN ?? "").trim();
   let parsed;

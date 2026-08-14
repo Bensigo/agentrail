@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createContextPackRegenerationWorker } from "../agent/lib/context_pack_regeneration_worker.core.mjs";
-import { claimContextPackRegeneration, executeContextPackRegeneration } from "../agent/lib/context_pack_regeneration_console.mjs";
+import {
+  assertContextPackRegenerationWorkerCredentialIsolation,
+  claimContextPackRegeneration,
+  executeContextPackRegeneration,
+} from "../agent/lib/context_pack_regeneration_console.mjs";
 
 test("idle polling does not execute", async () => {
   let executions = 0;
@@ -54,6 +58,25 @@ test("console configuration rejects unsafe bearer destinations and oversized tok
     env,
     transport: async () => { throw new Error("must not transport"); },
   }), /not configured/);
+});
+
+test("worker credential isolation rejects an environment containing the broad coordinator token", async () => {
+  const env = {
+    JACE_CONSOLE_BASE_URL: "https://console.example",
+    JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "worker-secret",
+    JACE_CONSOLE_TOKEN: "broad-secret-must-not-enter-worker",
+  };
+  assert.throws(
+    () => assertContextPackRegenerationWorkerCredentialIsolation(env),
+    (error) => error instanceof Error
+      && /broad Jace coordinator credential/u.test(error.message)
+      && !error.message.includes(env.JACE_CONSOLE_TOKEN),
+  );
+  await assert.rejects(claimContextPackRegeneration({
+    workerId: "w",
+    env,
+    transport: async () => { throw new Error("must not transport"); },
+  }), /broad Jace coordinator credential/);
 });
 
 test("claim rejects declared and streamed oversized responses", async () => {
@@ -118,5 +141,6 @@ test("standalone worker is default-off and not launched inside Eve instrumentati
   ]);
   assert.match(entrypoint, /JACE_CONTEXT_PACK_REGENERATION_WORKER/);
   assert.match(entrypoint, /!== "1"/);
+  assert.match(entrypoint, /assertContextPackRegenerationWorkerCredentialIsolation\(process\.env\)[\s\S]*buildContextPackRegenerationWorker\(process\.env\)\.start\(\)/u);
   assert.doesNotMatch(instrumentation, /context_pack_regeneration_worker/);
 });

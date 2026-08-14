@@ -9609,10 +9609,25 @@ export async function recordAcceptanceContextPackRegenerationRequest(
     }) || executionRequest?.reason !== execution.reason) {
       throw new AcceptanceContextPackRegenerationRequestConflictError();
     }
+    const [retryChild, retryEvent] = await Promise.all([
+      tx.select({ id: acceptanceContextPackRegenerationExecutions.id })
+        .from(acceptanceContextPackRegenerationExecutions)
+        .where(eq(acceptanceContextPackRegenerationExecutions.parentExecutionId, execution.id))
+        .limit(1).then((rows) => rows[0]),
+      tx.select({ id: changeRecordEvents.id }).from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, execution.recordId),
+        eq(changeRecordEvents.stage, ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE),
+        sql`${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_context_pack_regeneration_retry'`,
+        sql`${changeRecordEvents.payloadRef}->>'terminalExecutionId' = ${execution.id}`,
+      )).limit(1).then((rows) => rows[0]),
+    ]);
     return {
       kind: appended.events[0]!.inserted ? "recorded" : "replayed",
       request,
-      execution: contextPackRegenerationExecutionReceipt(execution),
+      execution: contextPackRegenerationExecutionReceipt(
+        execution,
+        canHumanRetryAcceptanceContextPackRegenerationExecution(execution) && !retryChild && !retryEvent,
+      ),
     };
   });
 }

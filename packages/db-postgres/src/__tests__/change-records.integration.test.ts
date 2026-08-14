@@ -3078,6 +3078,7 @@ describe.skipIf(!DB_AVAILABLE)(
         headSha: "4".repeat(40),
       });
       const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
       const request = await recordAcceptanceContextPackRegenerationRequest({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
@@ -3135,6 +3136,17 @@ describe.skipIf(!DB_AVAILABLE)(
         recordId: fixture.draft.record.id,
       });
       expect(afterRetry.find(({ id }) => id === retryClaim.executionId)?.humanRetryable).toBe(false);
+      const laterReceipt = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: admin,
+      });
+      expect(laterReceipt).toMatchObject({
+        kind: "recorded",
+        execution: { id: first.executionId, status: "held", humanRetryable: false },
+      });
       await expect(retryAcceptanceContextPackRegenerationExecution({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,

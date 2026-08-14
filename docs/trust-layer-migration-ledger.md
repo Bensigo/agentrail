@@ -848,7 +848,9 @@ The worker is a standalone process and is default-off behind
 `JACE_CONTEXT_PACK_REGENERATION_WORKER=1`. It uses the dedicated
 `JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN`, which is accepted only by the
 opaque claim/execute routes and must differ from the deployment-wide
-`JACE_CONSOLE_TOKEN`. The routes accept no tenant, Record,
+`JACE_CONSOLE_TOKEN`. Deploy the worker with a credential-minimal environment;
+its startup fails closed whenever the broad `JACE_CONSOLE_TOKEN` is present.
+The routes accept no tenant, Record,
 Contract, Pack, repository, head, source, correction, builder, PR-mutation,
 merge, or deployment coordinates from the worker. Focused source tests and
 fresh PostgreSQL transaction tests prove queue idempotency, concurrent claim,

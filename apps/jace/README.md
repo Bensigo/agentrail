@@ -35,6 +35,10 @@ process (`npm run context-pack-regeneration-worker`). It starts only with
 claim/execute calls with the dedicated
 `JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN`. That capability must differ
 from `JACE_CONSOLE_TOKEN` and is not accepted by other Jace coordinator routes.
+Run this process with a credential-minimal environment containing the Console
+base URL, enable switch, and dedicated token only. Startup fails closed if the
+broad `JACE_CONSOLE_TOKEN` is present, so a compromised worker cannot inherit
+the coordinator capability from Jace's service environment.
 
 ## Channels
 

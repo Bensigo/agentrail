@@ -709,6 +709,13 @@
       "when": 1793100000000,
       "tag": "0100_acceptance_brief_bindings",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1793200000000,
+      "tag": "0101_agent_mcp_api_key_kind",
+      "breakpoints": true
     }
   ]
 }

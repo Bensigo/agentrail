@@ -22,7 +22,7 @@ import {
   billingAccounts,
   queueEntries,
 } from "../schema/index.js";
-import type { EvalArmMetric } from "../schema/index.js";
+import type { ApiKeyKind, EvalArmMetric } from "../schema/index.js";
 import type {
   ReviewGate,
   ReviewGateFindingCategory,
@@ -1027,6 +1027,7 @@ export async function createApiKey(data: {
   name: string;
   keyPrefix: string;
   keyHash: string;
+  kind?: ApiKeyKind;
 }) {
   const rows = await db
     .insert(apiKeys)
@@ -1036,6 +1037,7 @@ export async function createApiKey(data: {
       name: data.name,
       keyPrefix: data.keyPrefix,
       keyHash: data.keyHash,
+      kind: data.kind ?? "self_hosted",
     })
     .returning();
   return rows[0]!;

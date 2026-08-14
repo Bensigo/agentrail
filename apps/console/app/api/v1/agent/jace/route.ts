@@ -72,9 +72,9 @@ async function readBoundedJson(request: Request): Promise<Record<string, unknown
 }
 
 async function authorize(request: NextRequest) {
-  const authorization = await requireBearer(request);
+  const authorization = await requireBearer(request, { allowedKinds: ["agent_mcp"] });
   if (authorization instanceof NextResponse) return authorization;
-  if (authorization.kind !== "self_hosted") {
+  if (authorization.kind !== "agent_mcp" || authorization.teamId !== null) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   if (await findEnabledJaceWorkspace(authorization.workspaceId) !== authorization.workspaceId) {

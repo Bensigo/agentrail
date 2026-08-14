@@ -47,8 +47,10 @@ The server resolves:
 - `AGENTRAIL_SERVER_BASE_URL` — the AgentRail Console base URL;
 - `AGENTRAIL_MCP_CORRECTION_API_KEY` — a workspace-scoped AgentRail API key
   dedicated to this MCP correction read.
-- `AGENTRAIL_MCP_JACE_API_KEY` — a self-hosted workspace API key used by the
-  MCP process for direct Jace turns and bounded task-state reads.
+- `AGENTRAIL_MCP_JACE_API_KEY` — a dedicated workspace-level `agent_mcp` API
+  key used only for direct Jace turns and bounded task-state reads. Generic
+  self-hosted runner and fleet keys are rejected; `agent_mcp` keys are denied
+  by default from legacy bearer routes.
 
 The tool accepts only a Change Record id. The key supplies workspace authority;
 the server derives and revalidates the Record's current PR head, head cycle,
@@ -70,7 +72,7 @@ The target repo must already be indexed (`agentrail context index`).
         "AGENTRAIL_TARGET": "/abs/path/to/your/repo",
         "AGENTRAIL_SERVER_BASE_URL": "https://console.example.com",
         "AGENTRAIL_MCP_CORRECTION_API_KEY": "<workspace-api-key>",
-        "AGENTRAIL_MCP_JACE_API_KEY": "<self-hosted-workspace-api-key>"
+        "AGENTRAIL_MCP_JACE_API_KEY": "<agent-mcp-workspace-api-key>"
       }
     }
   }

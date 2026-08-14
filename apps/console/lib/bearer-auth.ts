@@ -22,13 +22,25 @@ export interface BearerAuthResult {
   kind: ApiKeyKind;
 }
 
+export interface BearerAuthOptions {
+  /**
+   * Credential kinds admitted by this route. The default deliberately excludes
+   * `agent_mcp`, so adding the least-authority Jace key cannot silently grant it
+   * runner, ingest, CLI, or other legacy bearer capabilities.
+   */
+  allowedKinds?: readonly ApiKeyKind[];
+}
+
+const DEFAULT_BEARER_KINDS: readonly ApiKeyKind[] = ["self_hosted", "fleet"];
+
 /**
  * Validate the ``Authorization: Bearer <key>`` header.
  * Returns a {@link BearerAuthResult} on success, or a 401 NextResponse to
  * return immediately on failure.
  */
 export async function requireBearer(
-  req: NextRequest
+  req: NextRequest,
+  options: BearerAuthOptions = {},
 ): Promise<BearerAuthResult | NextResponse> {
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
@@ -51,6 +63,11 @@ export async function requireBearer(
 
   if (!row) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const allowedKinds = options.allowedKinds ?? DEFAULT_BEARER_KINDS;
+  if (!allowedKinds.includes(row.kind)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   return {

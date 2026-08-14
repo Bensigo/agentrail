@@ -206,8 +206,10 @@ context or correction packets. It extends the existing stdio MCP server with:
   server-linked Acceptance Record, Contract, exact-head Context Pack identities,
   and status.
 
-The MCP credential derives the workspace; neither tool accepts a workspace or
-Record locator. Jace can draft through the existing bound-Intake tool, but MCP
+The dedicated workspace-level `agent_mcp` credential derives the workspace;
+generic runner/fleet keys are rejected, and default legacy bearer consumers
+reject `agent_mcp`. Neither tool accepts a workspace or Record locator. Jace
+can draft through the existing bound-Intake tool, but MCP
 task text is not authenticated human confirmation. The surface exposes no
 builder dispatch, implementation, merge, deploy, shell, filesystem, raw source,
 or opaque artifact read. Jace reply delivery is the durable outbound Intake

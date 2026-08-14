@@ -52,7 +52,7 @@ beforeEach(() => {
     apiKeyId: API_KEY_ID,
     workspaceId: WORKSPACE_ID,
     teamId: null,
-    kind: "self_hosted",
+    kind: "agent_mcp",
   });
   vi.mocked(findEnabledJaceWorkspace).mockResolvedValue(WORKSPACE_ID);
   vi.mocked(readAcceptanceIntakeMessage).mockResolvedValue(null);
@@ -64,7 +64,19 @@ beforeEach(() => {
 });
 
 describe("direct Jace MCP turn", () => {
-  it("rejects fleet credentials and workspaces without an enabled Jace connector", async () => {
+  it("rejects runner/fleet credentials and workspaces without an enabled Jace connector", async () => {
+    vi.mocked(requireBearer).mockResolvedValueOnce({
+      apiKeyId: API_KEY_ID,
+      workspaceId: WORKSPACE_ID,
+      teamId: null,
+      kind: "self_hosted",
+    });
+    expect((await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-0",
+      message: "Plan this.",
+    }))).status).toBe(403);
+
     vi.mocked(requireBearer).mockResolvedValueOnce({
       apiKeyId: API_KEY_ID,
       workspaceId: WORKSPACE_ID,
@@ -83,6 +95,36 @@ describe("direct Jace MCP turn", () => {
       messageKey: "turn-0",
       message: "Plan this.",
     }))).status).toBe(403);
+    expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
+  });
+
+  it("opts into only the dedicated agent_mcp bearer kind", async () => {
+    await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-0",
+      message: "Plan this.",
+    }));
+
+    expect(requireBearer).toHaveBeenCalledWith(expect.any(NextRequest), {
+      allowedKinds: ["agent_mcp"],
+    });
+  });
+
+  it("rejects a team-bound agent_mcp key until Record team authority is enforceable", async () => {
+    vi.mocked(requireBearer).mockResolvedValueOnce({
+      apiKeyId: API_KEY_ID,
+      workspaceId: WORKSPACE_ID,
+      teamId: "00000000-0000-4000-8000-000000000099",
+      kind: "agent_mcp",
+    });
+
+    const response = await POST(request({
+      taskContextKey: "codex-task-7",
+      messageKey: "turn-team",
+      message: "Plan this.",
+    }));
+
+    expect(response.status).toBe(403);
     expect(dispatchMcpJaceTurn).not.toHaveBeenCalled();
   });
 

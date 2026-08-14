@@ -66,7 +66,8 @@ inbound + outbound + threading + credentials.
   (`target`) — the bot credentials stay in Jace's env.
 
 - `agent/channels/mcp.ts` — a virtual hosted channel for direct Codex/Jace
-  planning and intake. The public AgentRail API authenticates a workspace key,
+  planning and intake. The public AgentRail API authenticates a dedicated
+  workspace-level `agent_mcp` key (generic runner/fleet keys are rejected),
   derives `mcp:<credential>:<task>` identity, records the canonical Acceptance
   Intake, and hands the turn through `/eve/v1/hosted-inbound`. The channel's
   own `/eve/v1/mcp-handoff` route is a 404 registration fingerprint, not a

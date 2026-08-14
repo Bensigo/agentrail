@@ -6,6 +6,7 @@ import {
   listApiKeys,
   createApiKey,
 } from "@agentrail/db-postgres";
+import type { ApiKeyKind } from "@agentrail/db-postgres";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
@@ -31,6 +32,7 @@ export async function GET(
     name: k.name,
     key_prefix: k.keyPrefix,
     team_id: k.teamId,
+    kind: k.kind,
     created_at: k.createdAt.toISOString(),
     last_used_at: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
     is_revoked: k.revokedAt !== null,
@@ -62,10 +64,28 @@ export async function POST(
     );
   }
 
-  const body = await request.json().catch(() => ({})) as { name?: string; team_id?: string };
+  const body = await request.json().catch(() => ({})) as {
+    name?: unknown;
+    team_id?: unknown;
+    kind?: unknown;
+  };
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
+  }
+  const kind: ApiKeyKind = body.kind === undefined ? "self_hosted"
+    : body.kind === "self_hosted" || body.kind === "agent_mcp" ? body.kind
+      : "self_hosted";
+  if (body.kind !== undefined && body.kind !== "self_hosted" && body.kind !== "agent_mcp") {
+    return NextResponse.json({ error: "kind must be self_hosted or agent_mcp" }, { status: 400 });
+  }
+  const teamId = typeof body.team_id === "string" && body.team_id.trim()
+    ? body.team_id.trim() : null;
+  if (kind === "agent_mcp" && teamId !== null) {
+    return NextResponse.json(
+      { error: "agent_mcp keys are workspace-scoped; team-scoped Jace authority is not supported" },
+      { status: 400 },
+    );
   }
 
   const raw = randomBytes(32).toString("hex");
@@ -75,10 +95,11 @@ export async function POST(
 
   const created = await createApiKey({
     workspaceId,
-    teamId: typeof body.team_id === "string" ? body.team_id : null,
+    teamId,
     name,
     keyPrefix,
     keyHash,
+    kind,
   });
 
   return NextResponse.json(
@@ -88,6 +109,7 @@ export async function POST(
         name: created.name,
         key_prefix: created.keyPrefix,
         team_id: created.teamId,
+        kind: created.kind,
         created_at: created.createdAt.toISOString(),
         last_used_at: null,
         is_revoked: false,

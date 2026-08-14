@@ -83,6 +83,9 @@ export default defineChannel({
     // Routes mount at the literal declared path; /eve/v1/<id> is an adapter
     // default, not a framework rewrite (see the header comment above).
     POST("/eve/v1/hosted-inbound", async (req, args) => {
+      if (!authorizeHostedInbound(req.headers, process.env)) {
+        return json({ error: "hosted-inbound: unauthorized." }, 401);
+      }
       let raw: unknown;
       try {
         raw = await req.json();
@@ -98,15 +101,6 @@ export default defineChannel({
           { error: err instanceof Error ? err.message : String(err) },
           400,
         );
-      }
-
-      // Existing hosted channels remain on their internal-network contract.
-      // The new MCP ingress crosses a public Console API first, so require an
-      // independent Console-to-Jace service credential before any custody or
-      // Eve dispatch for that channel.
-      if (normalized.channel === "mcp"
-        && !authorizeHostedInbound(req.headers, process.env)) {
-        return json({ error: "hosted-inbound: unauthorized." }, 401);
       }
 
       const channelModule = CHANNELS[normalized.channel];

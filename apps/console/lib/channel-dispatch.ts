@@ -1219,6 +1219,10 @@ async function runEveTurn(params: {
   conversationKey?: string;
   auth: Record<string, unknown>;
 }): Promise<EveTurnOutcome> {
+  const hostedInboundToken = process.env["JACE_HOSTED_INBOUND_TOKEN"]?.trim();
+  if (!hostedInboundToken) {
+    return { ok: false, reason: "hosted-inbound service credential is not configured" };
+  }
   const channel = params.channel ?? "telegram";
   // The wire-level target key is channel-specific (Telegram `chatId`;
   // Discord/Slack `channelId` — see HOSTED_INBOUND_TARGET_KEY above); the
@@ -1253,7 +1257,10 @@ async function runEveTurn(params: {
   try {
     response = await fetchWithTimeout(HOSTED_INBOUND_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${hostedInboundToken}`,
+      },
       body: JSON.stringify({
         message: params.message,
         ...(params.sourceKey ? { sourceKey: params.sourceKey } : {}),

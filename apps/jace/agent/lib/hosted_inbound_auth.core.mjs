@@ -12,7 +12,7 @@ function text(value) {
 export function authorizeHostedInbound(headers, env = {}) {
   const expected = text(env.JACE_HOSTED_INBOUND_TOKEN);
   const header = text(headers?.get?.("authorization"));
-  const match = /^Bearer ([^\s]+)$/u.exec(header);
+  const match = header.match(/^Bearer ([^\s]+)$/u);
   const supplied = match?.[1] ?? "";
   if (!expected || !supplied) return false;
   const expectedBytes = Buffer.from(expected, "utf8");

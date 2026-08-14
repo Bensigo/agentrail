@@ -36,9 +36,8 @@ test("fails closed unless the Console-to-Jace service hop authenticates", () => 
     /import\s*\{\s*authorizeHostedInbound\s*\}\s*from\s*["']\.\.\/lib\/hosted_inbound_auth\.core\.mjs["']/,
   );
   const authAt = code.indexOf("authorizeHostedInbound(req.headers, process.env)");
-  const receiveAt = code.indexOf("args.receive(channelModule");
-  assert.ok(authAt >= 0 && receiveAt > authAt, "authenticate MCP before recording or dispatching it");
-  assert.match(code, /normalized\.channel\s*===\s*["']mcp["']/);
+  const parseAt = code.indexOf("await req.json()");
+  assert.ok(authAt >= 0 && parseAt > authAt, "authenticate before reading an inbound body");
   assert.match(code, /unauthorized/);
 });
 

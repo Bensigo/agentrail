@@ -216,6 +216,7 @@ const IDENTITY = { id: "chat-1", platform: "telegram", platformUserId: "555" } a
 
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env["JACE_HOSTED_INBOUND_TOKEN"] = "hosted-inbound-test-secret";
   vi.stubGlobal("fetch", mockFetch);
   mockReclaim.mockResolvedValue(0);
   mockClaim.mockResolvedValue(null);
@@ -938,7 +939,10 @@ describe("dispatchQueuedChannelMessages — 'intro' kind", () => {
       "http://127.0.0.1:2000/eve/v1/hosted-inbound",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hosted-inbound-test-secret",
+        },
         body: JSON.stringify({
           message: "hello jace",
           sourceKey: "row-1",
@@ -969,6 +973,22 @@ describe("dispatchQueuedChannelMessages — 'intro' kind", () => {
 });
 
 describe("dispatchQueuedChannelMessages — 'pinned' kind", () => {
+  it("fails closed before the hosted-inbound call when its service credential is absent", async () => {
+    delete process.env["JACE_HOSTED_INBOUND_TOKEN"];
+    mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFail).toHaveBeenCalledWith(
+      "row-1",
+      expect.stringContaining("service credential is not configured"),
+    );
+    expect(result).toEqual({ processed: 0, failed: 1 });
+  });
+
   it("runs the Eve turn and binds the ledger session to the returned Eve sessionId", async () => {
     mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);
     mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);

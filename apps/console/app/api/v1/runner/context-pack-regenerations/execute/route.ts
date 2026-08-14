@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
+import { requireContextPackRegenerationWorkerSecret } from "../../../../../../lib/context-pack-regeneration-worker-auth";
 import { executeAcceptanceContextPackRegeneration } from "../../../../../../lib/acceptance-context-pack-regeneration-execution";
 import { readBoundedContextPackRegenerationJson } from "../bounded-json";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export async function POST(request: NextRequest) {
-  const unauthorized = requireJaceConsoleSecret(request);
+  const unauthorized = requireContextPackRegenerationWorkerSecret(request);
   if (unauthorized) return unauthorized;
   const body = await readBoundedContextPackRegenerationJson(request);
   if (!body || typeof body !== "object" || Array.isArray(body)) {

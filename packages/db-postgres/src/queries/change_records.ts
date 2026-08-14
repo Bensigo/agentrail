@@ -9176,6 +9176,7 @@ export type AcceptanceContextPackRegenerationExecution = Pick<
   AcceptanceContextPackRegenerationExecutionRow,
   | "id"
   | "requestEventId"
+  | "parentExecutionId"
   | "workspaceId"
   | "recordId"
   | "priorCompiledPackId"
@@ -9192,9 +9193,28 @@ export type AcceptanceContextPackRegenerationExecution = Pick<
 > & { humanRetryable: boolean };
 
 export function acceptanceContextPackRegenerationExecutionId(input: {
-  requestEventId: string;
+  workspaceId: string;
+  recordId: string;
+  priorCompiledPackId: string;
+  headCycleId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  acceptanceContractSha256: string;
 }): string {
-  return uuid5Url(`acceptance-context-pack-regeneration-execution:${input.requestEventId}`);
+  return uuid5Url([
+    "acceptance-context-pack-regeneration-root-v1",
+    input.workspaceId,
+    input.recordId,
+    input.priorCompiledPackId,
+    input.headCycleId,
+    input.acceptanceContractId,
+    input.acceptanceContractVersion,
+    input.acceptanceContractSha256,
+  ].join(":"));
+}
+
+function acceptanceContextPackRegenerationRetryExecutionId(requestEventId: string): string {
+  return uuid5Url(`acceptance-context-pack-regeneration-retry-execution:${requestEventId}`);
 }
 
 function contextPackRegenerationExecutionReceipt(
@@ -9204,6 +9224,7 @@ function contextPackRegenerationExecutionReceipt(
   return {
     id: row.id,
     requestEventId: row.requestEventId,
+    parentExecutionId: row.parentExecutionId,
     workspaceId: row.workspaceId,
     recordId: row.recordId,
     priorCompiledPackId: row.priorCompiledPackId,
@@ -9501,12 +9522,22 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContract: confirmed.identity,
     });
     if (!request) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    const executionId = acceptanceContextPackRegenerationExecutionId({
+      workspaceId: parsed.workspaceId,
+      recordId: parsed.recordId,
+      priorCompiledPackId: pack.id,
+      headCycleId: record.currentPrHeadCycleId,
+      acceptanceContractId: confirmed.identity.id,
+      acceptanceContractVersion: confirmed.identity.version,
+      acceptanceContractSha256: confirmed.identity.sha256,
+    });
     const executionIdentity = {
-      id: acceptanceContextPackRegenerationExecutionId({ requestEventId: request.eventId }),
+      id: executionId,
       workspaceId: parsed.workspaceId,
       recordId: parsed.recordId,
       requestEventId: request.eventId,
       requestEventKey: request.eventKey,
+      parentExecutionId: null,
       sourceSnapshotId: snapshot.id,
       priorCompiledPackId: pack.id,
       repo: record.repo,
@@ -9525,12 +9556,31 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       .from(acceptanceContextPackRegenerationExecutions)
       .where(eq(acceptanceContextPackRegenerationExecutions.id, executionIdentity.id))
       .limit(1))[0];
+    const executionRequestEvent = execution && execution.requestEventId === request.eventId
+      ? appended.events[0]!.event
+      : execution ? (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.id, execution.requestEventId),
+        eq(changeRecordEvents.recordId, execution.recordId),
+        eq(changeRecordEvents.eventKey, execution.requestEventKey),
+      )).limit(1))[0] : undefined;
+    const executionRequest = executionRequestEvent ? parseAcceptanceContextPackRegenerationRequestEvent({
+      event: executionRequestEvent,
+      workspaceId: executionIdentity.workspaceId,
+      recordId: executionIdentity.recordId,
+      sourceSnapshotId: executionIdentity.sourceSnapshotId,
+      compiledPackId: executionIdentity.priorCompiledPackId,
+      repo: executionIdentity.repo,
+      prNumber: executionIdentity.prNumber,
+      headSha: executionIdentity.headSha,
+      headCycleId: executionIdentity.headCycleId,
+      authorityGeneration: executionIdentity.authorityGeneration,
+      acceptanceContract: confirmed.identity,
+    }) : null;
     if (!execution || !isDeepStrictEqual({
       id: execution.id,
       workspaceId: execution.workspaceId,
       recordId: execution.recordId,
-      requestEventId: execution.requestEventId,
-      requestEventKey: execution.requestEventKey,
+      parentExecutionId: execution.parentExecutionId,
       sourceSnapshotId: execution.sourceSnapshotId,
       priorCompiledPackId: execution.priorCompiledPackId,
       repo: execution.repo,
@@ -9541,8 +9591,24 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContractId: execution.acceptanceContractId,
       acceptanceContractVersion: execution.acceptanceContractVersion,
       acceptanceContractSha256: execution.acceptanceContractSha256,
-      reason: execution.reason,
-    }, executionIdentity)) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    }, {
+      id: executionIdentity.id,
+      workspaceId: executionIdentity.workspaceId,
+      recordId: executionIdentity.recordId,
+      parentExecutionId: executionIdentity.parentExecutionId,
+      sourceSnapshotId: executionIdentity.sourceSnapshotId,
+      priorCompiledPackId: executionIdentity.priorCompiledPackId,
+      repo: executionIdentity.repo,
+      prNumber: executionIdentity.prNumber,
+      headSha: executionIdentity.headSha,
+      headCycleId: executionIdentity.headCycleId,
+      authorityGeneration: executionIdentity.authorityGeneration,
+      acceptanceContractId: executionIdentity.acceptanceContractId,
+      acceptanceContractVersion: executionIdentity.acceptanceContractVersion,
+      acceptanceContractSha256: executionIdentity.acceptanceContractSha256,
+    }) || executionRequest?.reason !== execution.reason) {
+      throw new AcceptanceContextPackRegenerationRequestConflictError();
+    }
     return {
       kind: appended.events[0]!.inserted ? "recorded" : "replayed",
       request,
@@ -9556,14 +9622,16 @@ export type RetryAcceptanceContextPackRegenerationExecutionResult =
   | { kind: "not_found" | "not_current" | "not_authorized" | "not_retryable" };
 
 export function canHumanRetryAcceptanceContextPackRegenerationExecution(input: {
+  parentExecutionId: string | null;
   status: AcceptanceContextPackRegenerationExecutionRow["status"];
   outcomeReason: string | null;
 }): boolean {
-  return (input.status === "held" && input.outcomeReason === "github_credential_unavailable")
+  return input.parentExecutionId === null
+    && ((input.status === "held" && input.outcomeReason === "github_credential_unavailable")
     || (input.status === "not_proven" && (
       input.outcomeReason === "exact_content_github_unavailable"
       || input.outcomeReason === "exact_content_github_rejected"
-    ));
+    )));
 }
 
 export async function retryAcceptanceContextPackRegenerationExecution(input: {
@@ -9652,13 +9720,19 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
         tx, workspaceId: execution.workspaceId, record, snapshot, pack, confirmed,
       })) return { kind: "not_current" as const };
 
-    const retryEventPrefix = `context-pack-regeneration-retry:${execution.id}:`;
-    const eventKey = `${retryEventPrefix}${userId}`;
+    const eventKey = `context-pack-regeneration-retry:${execution.id}:${userId}`;
+    const existingRetryEvent = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, execution.recordId),
+      eq(changeRecordEvents.stage, ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE),
+      sql`${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_context_pack_regeneration_retry'`,
+      sql`${changeRecordEvents.payloadRef}->>'terminalExecutionId' = ${execution.id}`,
+    )).orderBy(asc(changeRecordEvents.createdAt)).limit(1))[0];
     const existingRetry = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(
-      sql`${acceptanceContextPackRegenerationExecutions.requestEventKey} LIKE ${`${retryEventPrefix}%`}`,
-    ).orderBy(asc(acceptanceContextPackRegenerationExecutions.createdAt)).limit(1))[0];
-    if (existingRetry) {
-      return existingRetry.requestEventKey === eventKey
+      eq(acceptanceContextPackRegenerationExecutions.parentExecutionId, execution.id),
+    ).limit(1))[0];
+    if (existingRetryEvent || existingRetry) {
+      return existingRetry && existingRetryEvent?.id === existingRetry.requestEventId
+        && existingRetry.requestEventKey === eventKey
         ? { kind: "replayed" as const, execution: contextPackRegenerationExecutionReceipt(existingRetry) }
         : { kind: "not_retryable" as const };
     }
@@ -9703,11 +9777,12 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       throw new AcceptanceContextPackRegenerationRequestConflictError();
     }
     const nextIdentity = {
-      id: acceptanceContextPackRegenerationExecutionId({ requestEventId: appended.events[0]!.event.id }),
+      id: acceptanceContextPackRegenerationRetryExecutionId(appended.events[0]!.event.id),
       workspaceId: execution.workspaceId,
       recordId: execution.recordId,
       requestEventId: appended.events[0]!.event.id,
       requestEventKey: eventKey,
+      parentExecutionId: execution.id,
       sourceSnapshotId: execution.sourceSnapshotId,
       priorCompiledPackId: execution.priorCompiledPackId,
       repo: execution.repo,
@@ -9727,6 +9802,7 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
     if (!next || !isDeepStrictEqual({
       id: next.id, workspaceId: next.workspaceId, recordId: next.recordId,
       requestEventId: next.requestEventId, requestEventKey: next.requestEventKey,
+      parentExecutionId: next.parentExecutionId,
       sourceSnapshotId: next.sourceSnapshotId, priorCompiledPackId: next.priorCompiledPackId,
       repo: next.repo, prNumber: next.prNumber, headSha: next.headSha, headCycleId: next.headCycleId,
       authorityGeneration: next.authorityGeneration, acceptanceContractId: next.acceptanceContractId,
@@ -9919,6 +9995,21 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
   }
   const leaseTokenSha256 = createHash("sha256").update(input["leaseToken"], "utf8").digest("hex");
   return db.transaction(async (tx) => {
+    const candidate = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(and(
+        eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+        eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
+        gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+      )).limit(1))[0];
+    if (!candidate) return { kind: "not_owned" as const };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+      workspaceId: candidate.workspaceId,
+      recordId: candidate.recordId,
+      repo: candidate.repo,
+      prNumber: candidate.prNumber,
+    })}))`);
     const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
       .where(and(
         eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
@@ -9928,12 +10019,6 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
         gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
       )).limit(1).for("update"))[0];
     if (!execution) return { kind: "not_owned" as const };
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
-      workspaceId: execution.workspaceId,
-      recordId: execution.recordId,
-      repo: execution.repo,
-      prNumber: execution.prNumber,
-    })}))`);
     const record = (await tx.select().from(changeRecords).where(and(
       eq(changeRecords.id, execution.recordId),
       eq(changeRecords.workspaceId, execution.workspaceId),
@@ -10026,6 +10111,20 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
   }
   const leaseTokenSha256 = createHash("sha256").update(input["leaseToken"], "utf8").digest("hex");
   return db.transaction(async (tx) => {
+    const candidate = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+      eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+      eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+      eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+      eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
+      gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+    )).limit(1))[0];
+    if (!candidate) return { kind: "not_owned" as const };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+      workspaceId: candidate.workspaceId,
+      recordId: candidate.recordId,
+      repo: candidate.repo,
+      prNumber: candidate.prNumber,
+    })}))`);
     const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
       eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
       eq(acceptanceContextPackRegenerationExecutions.status, "running"),
@@ -10034,12 +10133,6 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
       gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
     )).limit(1).for("update"))[0];
     if (!execution) return { kind: "not_owned" as const };
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
-      workspaceId: execution.workspaceId,
-      recordId: execution.recordId,
-      repo: execution.repo,
-      prNumber: execution.prNumber,
-    })}))`);
     if (input["outcome"] !== "held") {
       const record = (await tx.select().from(changeRecords).where(and(
         eq(changeRecords.id, execution.recordId),
@@ -10129,11 +10222,143 @@ export async function listAcceptanceContextPackRegenerationExecutions(input: {
     eq(acceptanceContextPackRegenerationExecutions.workspaceId, input["workspaceId"]),
     eq(acceptanceContextPackRegenerationExecutions.recordId, input["recordId"]),
   )).orderBy(desc(acceptanceContextPackRegenerationExecutions.createdAt)).limit(limit);
-  const retriedParents = new Set(rows.flatMap((row) => {
-    const match = /^context-pack-regeneration-retry:([0-9a-f-]{36}):/iu.exec(row.requestEventKey);
-    return match ? [match[1]!.toLowerCase()] : [];
+  const retryEventParents = (await Promise.all(rows.map(async (row) => {
+    const event = (await db.select({ id: changeRecordEvents.id }).from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input["recordId"]),
+      eq(changeRecordEvents.stage, ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE),
+      sql`${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_context_pack_regeneration_retry'`,
+      sql`${changeRecordEvents.payloadRef}->>'terminalExecutionId' = ${row.id}`,
+    )).limit(1))[0];
+    return event ? row.id : null;
+  }))).filter((id): id is string => id !== null);
+  const retriedParents = new Set([
+    ...rows.flatMap((row) => row.parentExecutionId ? [row.parentExecutionId] : []),
+    ...retryEventParents,
+  ]);
+  const proven = await Promise.all(rows.map(async (row) => {
+    const [record, event, snapshot, priorPack, contract, replacementPack, parent] = await Promise.all([
+      db.select().from(changeRecords).where(and(
+        eq(changeRecords.id, row.recordId),
+        eq(changeRecords.workspaceId, row.workspaceId),
+      )).limit(1).then((result) => result[0]),
+      db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.id, row.requestEventId),
+        eq(changeRecordEvents.recordId, row.recordId),
+        eq(changeRecordEvents.eventKey, row.requestEventKey),
+      )).limit(1).then((result) => result[0]),
+      db.select().from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.id, row.sourceSnapshotId),
+        eq(acceptanceContextPackSnapshots.workspaceId, row.workspaceId),
+        eq(acceptanceContextPackSnapshots.recordId, row.recordId),
+      )).limit(1).then((result) => result[0]),
+      db.select().from(acceptanceCompiledContextPacks).where(and(
+        eq(acceptanceCompiledContextPacks.id, row.priorCompiledPackId),
+        eq(acceptanceCompiledContextPacks.workspaceId, row.workspaceId),
+        eq(acceptanceCompiledContextPacks.sourceSnapshotId, row.sourceSnapshotId),
+      )).limit(1).then((result) => result[0]),
+      db.select().from(acceptanceContracts).where(and(
+        eq(acceptanceContracts.id, row.acceptanceContractId),
+        eq(acceptanceContracts.recordId, row.recordId),
+        eq(acceptanceContracts.version, row.acceptanceContractVersion),
+      )).limit(1).then((result) => result[0]),
+      row.replacementCompiledPackId === null ? Promise.resolve(undefined) : db.select()
+        .from(acceptanceCompiledContextPacks).where(and(
+          eq(acceptanceCompiledContextPacks.id, row.replacementCompiledPackId),
+          eq(acceptanceCompiledContextPacks.workspaceId, row.workspaceId),
+        )).limit(1).then((result) => result[0]),
+      row.parentExecutionId === null ? Promise.resolve(undefined) : db.select()
+        .from(acceptanceContextPackRegenerationExecutions).where(
+          eq(acceptanceContextPackRegenerationExecutions.id, row.parentExecutionId),
+        ).limit(1).then((result) => result[0]),
+    ]);
+    let contractSha: string | null = null;
+    try {
+      if (contract) contractSha = acceptanceContractSha256({
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        contract: contract.contract,
+      });
+    } catch { /* malformed custody is omitted */ }
+    const contractIdentity = contractSha === null ? null : {
+      id: row.acceptanceContractId,
+      version: row.acceptanceContractVersion,
+      sha256: contractSha,
+    };
+    const rootRequest = row.parentExecutionId === null && event && contractIdentity
+      ? parseAcceptanceContextPackRegenerationRequestEvent({
+        event,
+        workspaceId: row.workspaceId,
+        recordId: row.recordId,
+        sourceSnapshotId: row.sourceSnapshotId,
+        compiledPackId: row.priorCompiledPackId,
+        repo: row.repo,
+        prNumber: row.prNumber,
+        headSha: row.headSha,
+        headCycleId: row.headCycleId,
+        authorityGeneration: row.authorityGeneration,
+        acceptanceContract: contractIdentity,
+      }) : null;
+    const retryPayload = event?.payloadRef;
+    const retryEventProven = row.parentExecutionId !== null && parent && event && isRecord(retryPayload)
+      && hasExactKeys(retryPayload, [
+        "kind", "version", "workspaceId", "recordId", "terminalExecutionId", "priorCompiledPackId",
+        "headSha", "headCycleId", "authorityGeneration", "acceptanceContract", "terminalStatus",
+        "terminalReason", "requestedBy", "requestedRole", "authority", "status",
+      ]) && retryPayload["kind"] === "acceptance_context_pack_regeneration_retry"
+      && retryPayload["version"] === 1 && retryPayload["workspaceId"] === row.workspaceId
+      && retryPayload["recordId"] === row.recordId
+      && retryPayload["terminalExecutionId"] === row.parentExecutionId
+      && retryPayload["priorCompiledPackId"] === row.priorCompiledPackId
+      && retryPayload["headSha"] === row.headSha && retryPayload["headCycleId"] === row.headCycleId
+      && retryPayload["authorityGeneration"] === row.authorityGeneration
+      && isDeepStrictEqual(retryPayload["acceptanceContract"], contractIdentity)
+      && retryPayload["terminalStatus"] === parent.status
+      && retryPayload["terminalReason"] === parent.outcomeReason
+      && typeof retryPayload["requestedBy"] === "string"
+      && HUMAN_DECISION_ACTOR.test(retryPayload["requestedBy"])
+      && (retryPayload["requestedRole"] === "owner" || retryPayload["requestedRole"] === "admin")
+      && retryPayload["authority"] === "human_retry_only" && retryPayload["status"] === "retry_recorded"
+      && event.actor === retryPayload["requestedBy"]
+      && event.eventKey === `context-pack-regeneration-retry:${row.parentExecutionId}:${retryPayload["requestedBy"].slice("user:".length)}`
+      && event.id === changeRecordEventId({ recordId: row.recordId, eventKey: event.eventKey });
+    if (!record || record.repo !== row.repo || record.prNumber !== row.prNumber
+      || !event || !snapshot || !priorPack || !contract
+      || (row.parentExecutionId === null ? rootRequest?.reason !== row.reason : !retryEventProven)
+      || snapshot.reviewJobId !== row.headCycleId || snapshot.expectedHeadSha !== row.headSha
+      || snapshot.acceptanceContractId !== row.acceptanceContractId
+      || snapshot.acceptanceContractVersion !== row.acceptanceContractVersion
+      || snapshot.acceptanceContractSha256 !== row.acceptanceContractSha256
+      || contractSha !== row.acceptanceContractSha256
+      || (row.replacementCompiledPackId !== null && !replacementPack)) return false;
+    if (replacementPack) {
+      const replacementSnapshot = (await db.select().from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.id, replacementPack.sourceSnapshotId),
+        eq(acceptanceContextPackSnapshots.workspaceId, row.workspaceId),
+        eq(acceptanceContextPackSnapshots.recordId, row.recordId),
+      )).limit(1))[0];
+      if (!replacementSnapshot || replacementSnapshot.reviewJobId !== row.headCycleId
+        || replacementSnapshot.expectedHeadSha !== row.headSha
+        || replacementSnapshot.acceptanceContractId !== row.acceptanceContractId
+        || replacementSnapshot.acceptanceContractVersion !== row.acceptanceContractVersion
+        || replacementSnapshot.acceptanceContractSha256 !== row.acceptanceContractSha256
+        || replacementSnapshot.baseSha !== snapshot.baseSha
+        || replacementSnapshot.mergeBaseSha !== snapshot.mergeBaseSha
+        || replacementSnapshot.headTreeSha !== snapshot.headTreeSha
+        || replacementSnapshot.packetSetSha256 !== snapshot.packetSetSha256
+        || replacementSnapshot.correctionPacketPayloadSetSha256 !== snapshot.correctionPacketPayloadSetSha256
+        || !isDeepStrictEqual(replacementSnapshot.overlay, snapshot.overlay)) return false;
+    }
+    return row.parentExecutionId === null || Boolean(parent
+      && parent.parentExecutionId === null
+      && parent.workspaceId === row.workspaceId
+      && parent.recordId === row.recordId
+      && parent.priorCompiledPackId === row.priorCompiledPackId
+      && parent.headCycleId === row.headCycleId
+      && parent.acceptanceContractId === row.acceptanceContractId
+      && parent.acceptanceContractVersion === row.acceptanceContractVersion
+      && parent.acceptanceContractSha256 === row.acceptanceContractSha256);
   }));
-  return rows.map((row) => contextPackRegenerationExecutionReceipt(
+  return rows.filter((_, index) => proven[index]).map((row) => contextPackRegenerationExecutionReceipt(
     row,
     canHumanRetryAcceptanceContextPackRegenerationExecution(row) && !retriedParents.has(row.id),
   ));

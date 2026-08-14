@@ -21,7 +21,7 @@ test("one claim triggers one opaque execution", async () => {
 
 test("transport sends only worker identity for claim and opaque lease for execution", async () => {
   const calls = [];
-  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONSOLE_TOKEN: "secret" };
+  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
   const claimBody = { claim: {
     executionId: "11111111-1111-4111-8111-111111111111",
     workerId: "w",
@@ -30,7 +30,7 @@ test("transport sends only worker identity for claim and opaque lease for execut
     leaseExpiresAt: "2026-08-14T06:00:00.000Z",
   } };
   const transport = async (url, init) => {
-    calls.push({ url, body: JSON.parse(init.body), redirect: init.redirect });
+    calls.push({ url, body: JSON.parse(init.body), redirect: init.redirect, authorization: init.headers.Authorization });
     return Response.json(calls.length === 1 ? claimBody : { result: { kind: "completed", status: "replaced" } });
   };
   const claim = await claimContextPackRegeneration({ workerId: "w", env, transport });
@@ -40,14 +40,15 @@ test("transport sends only worker identity for claim and opaque lease for execut
     { executionId: claimBody.claim.executionId, workerId: "w", leaseToken: claimBody.claim.leaseToken },
   ]);
   assert.deepEqual(calls.map(({ redirect }) => redirect), ["error", "error"]);
+  assert.deepEqual(calls.map(({ authorization }) => authorization), ["Bearer secret", "Bearer secret"]);
 });
 
 test("console configuration rejects unsafe bearer destinations and oversized tokens", async () => {
   for (const env of [
-    { JACE_CONSOLE_BASE_URL: "ftp://console.example", JACE_CONSOLE_TOKEN: "secret" },
-    { JACE_CONSOLE_BASE_URL: "https://user@console.example", JACE_CONSOLE_TOKEN: "secret" },
-    { JACE_CONSOLE_BASE_URL: "https://console.example?next=other", JACE_CONSOLE_TOKEN: "secret" },
-    { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONSOLE_TOKEN: "x".repeat(4097) },
+    { JACE_CONSOLE_BASE_URL: "ftp://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" },
+    { JACE_CONSOLE_BASE_URL: "https://user@console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" },
+    { JACE_CONSOLE_BASE_URL: "https://console.example?next=other", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" },
+    { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "x".repeat(4097) },
   ]) await assert.rejects(claimContextPackRegeneration({
     workerId: "w",
     env,
@@ -56,7 +57,7 @@ test("console configuration rejects unsafe bearer destinations and oversized tok
 });
 
 test("claim rejects declared and streamed oversized responses", async () => {
-  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONSOLE_TOKEN: "secret" };
+  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
   await assert.rejects(claimContextPackRegeneration({
     workerId: "w",
     env,
@@ -70,7 +71,7 @@ test("claim rejects declared and streamed oversized responses", async () => {
 });
 
 test("claim rejects malformed, cross-worker, or extra fields", async () => {
-  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONSOLE_TOKEN: "secret" };
+  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
   const valid = {
     executionId: "11111111-1111-4111-8111-111111111111",
     workerId: "w",
@@ -92,7 +93,7 @@ test("claim rejects malformed, cross-worker, or extra fields", async () => {
 });
 
 test("execute rejects oversized or widened terminal responses", async () => {
-  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONSOLE_TOKEN: "secret" };
+  const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
   const claim = {
     executionId: "11111111-1111-4111-8111-111111111111",
     workerId: "w",

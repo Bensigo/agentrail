@@ -65,7 +65,7 @@ function exactExecutionResult(body) {
 
 function config(env) {
   const rawBaseUrl = String(env.JACE_CONSOLE_BASE_URL ?? "").trim();
-  const token = String(env.JACE_CONSOLE_TOKEN ?? "").trim();
+  const token = String(env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN ?? "").trim();
   let parsed;
   try { parsed = new URL(rawBaseUrl); } catch { throw new Error("Context Pack regeneration console is not configured"); }
   if ((parsed.protocol !== "http:" && parsed.protocol !== "https:")

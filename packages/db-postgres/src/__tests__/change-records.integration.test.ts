@@ -2450,6 +2450,180 @@ describe.skipIf(!DB_AVAILABLE)(
       ))).toHaveLength(0);
     });
 
+    it("keeps different regeneration reasons as receipts on one root execution lineage", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-reasons",
+        prNumber: 606,
+        headSha: "7".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const stale = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const inadequate = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: owner,
+      });
+
+      expect(stale.kind).toBe("recorded");
+      expect(inadequate.kind).toBe("recorded");
+      if (!("execution" in stale) || !("execution" in inadequate)) {
+        throw new Error("expected two accepted regeneration receipts");
+      }
+      expect(inadequate.execution.id).toBe(stale.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+    });
+
+    it("keeps different authorized actors as receipts on one root execution lineage", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-actors",
+        prNumber: 605,
+        headSha: "8".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const ownerRequest = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const adminRequest = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: admin,
+      });
+
+      expect(ownerRequest.kind).toBe("recorded");
+      expect(adminRequest.kind).toBe("recorded");
+      if (!("execution" in ownerRequest) || !("execution" in adminRequest)) {
+        throw new Error("expected two authorized regeneration receipts");
+      }
+      expect(adminRequest.execution.id).toBe(ownerRequest.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+    });
+
+    it("atomically collapses concurrent cross-actor and cross-reason receipts onto one root execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-concurrent",
+        prNumber: 604,
+        headSha: "9".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const [ownerRequest, adminRequest] = await Promise.all([
+        recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "stale",
+          requestedBy: owner,
+        }),
+        recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "inadequate",
+          requestedBy: admin,
+        }),
+      ]);
+
+      expect(ownerRequest.kind).toBe("recorded");
+      expect(adminRequest.kind).toBe("recorded");
+      if (!("execution" in ownerRequest) || !("execution" in adminRequest)) {
+        throw new Error("expected concurrent regeneration receipts");
+      }
+      expect(adminRequest.execution.id).toBe(ownerRequest.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+      const claims = await Promise.all([
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "root-concurrent-one" }),
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "root-concurrent-two" }),
+      ]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+    });
+
+    it("records later receipts after ambiguity without creating or redelivering an execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-ambiguous",
+        prNumber: 603,
+        headSha: "0".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const original = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (original.kind !== "recorded") throw new Error("expected original regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "root-ambiguous-first" });
+      if (!claim) throw new Error("expected original regeneration claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "execution_ambiguous",
+      });
+
+      const later = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: admin,
+      });
+      expect(later).toMatchObject({
+        kind: "recorded",
+        execution: { id: original.execution.id, status: "held", outcomeReason: "execution_ambiguous" },
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+      await expect(claimAcceptanceContextPackRegenerationExecution({
+        workerId: "root-ambiguous-redelivery",
+      })).resolves.toBeNull();
+    });
+
     it("leases one opaque Context Pack regeneration execution to only one concurrent worker", async () => {
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
@@ -2896,7 +3070,7 @@ describe.skipIf(!DB_AVAILABLE)(
       })).resolves.toEqual({ kind: "not_owned" });
     });
 
-    it("allows one idempotent human retry for a credential hold and never retries ambiguity", async () => {
+    it("allows one idempotent human retry for a credential hold and never creates a grandchild", async () => {
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
         workKey: "context-pack-regeneration-human-retry",
@@ -2954,14 +3128,233 @@ describe.skipIf(!DB_AVAILABLE)(
         leaseToken: retryClaim.leaseToken,
         outcome: "held",
         replacementCompiledPackId: undefined,
-        reason: "execution_ambiguous",
+        reason: "github_credential_unavailable",
       });
+      const afterRetry = await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      expect(afterRetry.find(({ id }) => id === retryClaim.executionId)?.humanRetryable).toBe(false);
       await expect(retryAcceptanceContextPackRegenerationExecution({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
         executionId: retryClaim.executionId,
         requestedBy: owner,
       })).resolves.toEqual({ kind: "not_retryable" });
+    });
+
+    it("omits corrupt cross-tenant prior and replacement Pack custody from readback", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-readback-custody",
+        prNumber: 602,
+        headSha: "1".repeat(40),
+      });
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "regeneration foreign custody",
+        slug: `regeneration-foreign-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        const foreign = await createAcceptanceDependencyObservationFixture({
+          workspaceId: otherWorkspace.id,
+          workKey: "context-pack-regeneration-readback-foreign",
+          prNumber: 601,
+          headSha: "2".repeat(40),
+        });
+        const owner = await addAcceptanceDecisionActor(wsId, "owner");
+        const request = await recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "stale",
+          requestedBy: owner,
+        });
+        if (request.kind !== "recorded") throw new Error("expected regeneration request");
+
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          priorCompiledPackId: foreign.pack.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id))).rejects.toThrow();
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            priorCompiledPackId: foreign.pack.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        await expect(listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        })).resolves.toEqual([]);
+        await db.update(acceptanceContextPackRegenerationExecutions).set({
+          priorCompiledPackId: fixture.pack.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          status: "replaced",
+          replacementCompiledPackId: foreign.pack.id,
+          outcomeReason: "compiler_output_replaced",
+          completedAt: new Date(),
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id))).rejects.toThrow();
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            status: "replaced",
+            replacementCompiledPackId: foreign.pack.id,
+            outcomeReason: "compiler_output_replaced",
+            completedAt: new Date(),
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        await expect(listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        })).resolves.toEqual([]);
+        await db.update(acceptanceContextPackRegenerationExecutions).set({
+          status: "queued",
+          replacementCompiledPackId: null,
+          outcomeReason: null,
+          completedAt: null,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("omits a corrupt cross-tenant retry child and refuses a second retry", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-retry-child-custody",
+        prNumber: 600,
+        headSha: "3".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "retry-child-root" });
+      if (!claim) throw new Error("expected root claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "github_credential_unavailable",
+      });
+      const retried = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: request.execution.id,
+        requestedBy: owner,
+      });
+      if (retried.kind !== "retried") throw new Error("expected retry child");
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "regeneration foreign retry parent",
+        slug: `regeneration-retry-foreign-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        const foreign = await createAcceptanceDependencyObservationFixture({
+          workspaceId: otherWorkspace.id,
+          workKey: "context-pack-regeneration-retry-parent-foreign",
+          prNumber: 599,
+          headSha: "4".repeat(40),
+        });
+        const foreignOwner = await addAcceptanceDecisionActor(otherWorkspace.id, "owner");
+        const foreignRequest = await recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: otherWorkspace.id,
+          recordId: foreign.draft.record.id,
+          compiledPackId: foreign.pack.id,
+          reason: "stale",
+          requestedBy: foreignOwner,
+        });
+        if (foreignRequest.kind !== "recorded") throw new Error("expected foreign root");
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          parentExecutionId: foreignRequest.execution.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id))).rejects.toThrow();
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            parentExecutionId: foreignRequest.execution.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        const listed = await listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        });
+        expect(listed.map(({ id }) => id)).toEqual([request.execution.id]);
+        expect(listed[0]?.humanRetryable).toBe(false);
+        await expect(retryAcceptanceContextPackRegenerationExecution({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          executionId: request.execution.id,
+          requestedBy: owner,
+        })).resolves.toEqual({ kind: "not_retryable" });
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            parentExecutionId: request.execution.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("does not deadlock concurrent retry against terminal completion", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-retry-complete-lock-order",
+        prNumber: 598,
+        headSha: "5".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "retry-complete-lock-order" });
+      if (!claim) throw new Error("expected regeneration claim");
+      const concurrent = Promise.all([
+        completeAcceptanceContextPackRegenerationExecution({
+          executionId: claim.executionId,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+          outcome: "held",
+          replacementCompiledPackId: undefined,
+          reason: "github_credential_unavailable",
+        }),
+        retryAcceptanceContextPackRegenerationExecution({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          executionId: claim.executionId,
+          requestedBy: owner,
+        }),
+      ]);
+      const settled = await Promise.race([
+        concurrent,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("retry/complete deadlocked")), 2_000)),
+      ]);
+      expect(settled[0]).toMatchObject({ kind: "completed", execution: { status: "held" } });
+      expect(["not_retryable", "retried"]).toContain(settled[1].kind);
     });
 
     it("refuses a deliberate retry after the exact head changes", async () => {

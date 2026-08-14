@@ -671,6 +671,7 @@ export type ContextPackRegenerationRequest = {
 export type ContextPackRegenerationExecution = {
   id: string;
   requestEventId: string;
+  parentExecutionId: string | null;
   workspaceId: string;
   recordId: string;
   priorCompiledPackId: string;
@@ -3394,10 +3395,11 @@ function contextPackExecutionsAreBounded(value: unknown, record: unknown): value
     || !isUuid(record.id) || !isUuid(record.workspaceId)) return false;
   const statuses = new Set(["queued", "running", "replaced", "unchanged", "not_current", "not_proven", "held"]);
   return value.every((execution) => isObject(execution) && hasExactKeys(execution, [
-    "id", "requestEventId", "workspaceId", "recordId", "priorCompiledPackId", "headSha", "headCycleId",
+    "id", "requestEventId", "parentExecutionId", "workspaceId", "recordId", "priorCompiledPackId", "headSha", "headCycleId",
     "status", "attemptCount", "maxAttempts", "replacementCompiledPackId", "outcomeReason", "completedAt",
     "createdAt", "updatedAt", "humanRetryable",
   ]) && isUuid(execution.id) && isUuid(execution.requestEventId)
+    && (execution.parentExecutionId === null || isUuid(execution.parentExecutionId))
     && execution.workspaceId === record.workspaceId && execution.recordId === record.id
     && isUuid(execution.priorCompiledPackId) && SHA1.test(String(execution.headSha))
     && isUuid(execution.headCycleId) && statuses.has(String(execution.status))

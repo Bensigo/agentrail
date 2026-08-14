@@ -2989,6 +2989,7 @@ describe("Change Record detail view", () => {
       regenerationExecutions: [{
         id: "00000000-0000-4000-8000-000000000046",
         requestEventId: request.eventId,
+        parentExecutionId: null,
         workspaceId: record.workspaceId,
         recordId: record.id,
         priorCompiledPackId: DETAIL_PACK_ID,
@@ -3044,6 +3045,7 @@ describe("Change Record detail view", () => {
     const base = {
       id: "00000000-0000-4000-8000-000000000046",
       requestEventId: request.eventId,
+      parentExecutionId: null,
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,
@@ -3083,6 +3085,7 @@ describe("Change Record detail view", () => {
     const retryable: ContextPackRegenerationExecution = {
       id: "00000000-0000-4000-8000-000000000046",
       requestEventId: "00000000-0000-4000-8000-000000000045",
+      parentExecutionId: null,
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,
@@ -3470,6 +3473,7 @@ describe("Change Record detail view", () => {
     const boundedExecution = {
       id: "00000000-0000-4000-8000-000000000046",
       requestEventId: "00000000-0000-4000-8000-000000000045",
+      parentExecutionId: null,
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,

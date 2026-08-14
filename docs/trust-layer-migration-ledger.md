@@ -845,7 +845,10 @@ Pack custody. Ambiguous execution, exhausted lease, custody, compiler/proof,
 and not-current outcomes never expose a retry action.
 
 The worker is a standalone process and is default-off behind
-`JACE_CONTEXT_PACK_REGENERATION_WORKER=1`. The routes accept no tenant, Record,
+`JACE_CONTEXT_PACK_REGENERATION_WORKER=1`. It uses the dedicated
+`JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN`, which is accepted only by the
+opaque claim/execute routes and must differ from the deployment-wide
+`JACE_CONSOLE_TOKEN`. The routes accept no tenant, Record,
 Contract, Pack, repository, head, source, correction, builder, PR-mutation,
 merge, or deployment coordinates from the worker. Focused source tests and
 fresh PostgreSQL transaction tests prove queue idempotency, concurrent claim,

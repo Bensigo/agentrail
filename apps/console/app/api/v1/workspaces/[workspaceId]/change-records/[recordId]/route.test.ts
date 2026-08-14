@@ -80,6 +80,7 @@ const EXTERNAL_BUILDER_PACK_EVENT_ID = "00000000-0000-4000-8000-000000000051";
 const EXTERNAL_BUILDER_PACK_ID = "00000000-0000-4000-8000-000000000050";
 const COMPILED_PACK_ID = "00000000-0000-4000-8000-000000000049";
 const REGENERATION_REQUEST_EVENT_ID = "00000000-0000-4000-8000-000000000048";
+const REGENERATION_EXECUTION_ID = "00000000-0000-4000-8000-000000000050";
 const CANDIDATE_FINGERPRINT = `sha256:${"9".repeat(64)}`;
 const DEPENDENCY_OBSERVED_AT = new Date("2026-08-03T12:03:00.000Z");
 const DEPENDENCY_APPROVED_AT = new Date("2026-08-03T12:08:00.000Z");
@@ -622,8 +623,9 @@ beforeEach(() => {
       status: "request_recorded",
     },
     execution: {
-      id: "00000000-0000-4000-8000-000000000050",
+      id: REGENERATION_EXECUTION_ID,
       requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
       workspaceId: WS,
       recordId: RECORD,
       priorCompiledPackId: COMPILED_PACK_ID,
@@ -646,6 +648,7 @@ beforeEach(() => {
     execution: {
       id: "00000000-0000-4000-8000-000000000051",
       requestEventId: "00000000-0000-4000-8000-000000000052",
+      parentExecutionId: REGENERATION_EXECUTION_ID,
       workspaceId: WS,
       recordId: RECORD,
       priorCompiledPackId: COMPILED_PACK_ID,
@@ -848,6 +851,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     vi.mocked(listAcceptanceContextPackRegenerationExecutions).mockResolvedValue([{
       id: executionId,
       requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
       workspaceId: WS,
       recordId: RECORD,
       priorCompiledPackId: COMPILED_PACK_ID,
@@ -1741,6 +1745,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(body.execution).toMatchObject({
       id: "00000000-0000-4000-8000-000000000050",
       requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
       priorCompiledPackId: COMPILED_PACK_ID,
       status: "queued",
       attemptCount: 0,

@@ -18,9 +18,19 @@ function request(body: unknown, authorized = true) {
 }
 
 describe("Context Pack regeneration claim route", () => {
-  beforeEach(() => { vi.clearAllMocks(); process.env.JACE_CONSOLE_TOKEN = token; });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN = token;
+    process.env.JACE_CONSOLE_TOKEN = "central-jace-secret";
+  });
   it("fails closed before touching the queue", async () => {
     expect((await POST(request({ workerId: "w" }, false))).status).toBe(401);
+    expect(claim).not.toHaveBeenCalled();
+  });
+  it("rejects the deployment-wide Jace token at the regeneration door", async () => {
+    const central = request({ workerId: "w" });
+    central.headers.set("authorization", `Bearer ${process.env.JACE_CONSOLE_TOKEN}`);
+    expect((await POST(central)).status).toBe(401);
     expect(claim).not.toHaveBeenCalled();
   });
   it("rejects extra targeting fields", async () => {

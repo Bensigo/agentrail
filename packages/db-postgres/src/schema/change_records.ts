@@ -1,6 +1,7 @@
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -1403,6 +1404,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
     requestEventId: uuid("request_event_id").notNull()
       .references(() => changeRecordEvents.id, { onDelete: "restrict" }),
     requestEventKey: text("request_event_key").notNull(),
+    parentExecutionId: uuid("parent_execution_id"),
     sourceSnapshotId: uuid("source_snapshot_id").notNull()
       .references(() => acceptanceContextPackSnapshots.id, { onDelete: "restrict" }),
     priorCompiledPackId: uuid("prior_compiled_pack_id").notNull()
@@ -1433,6 +1435,25 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
   (t) => ({
     request: uniqueIndex("acceptance_context_pack_regeneration_executions_request_key")
       .on(t.requestEventId),
+    parent: foreignKey({
+      columns: [t.parentExecutionId],
+      foreignColumns: [t.id],
+      name: "acceptance_context_pack_regeneration_executions_parent_fk",
+    }).onDelete("restrict"),
+    rootLineage: uniqueIndex("acceptance_context_pack_regen_root_lineage_key")
+      .on(
+        t.workspaceId,
+        t.recordId,
+        t.priorCompiledPackId,
+        t.headCycleId,
+        t.acceptanceContractId,
+        t.acceptanceContractVersion,
+        t.acceptanceContractSha256,
+      )
+      .where(sql`${t.parentExecutionId} IS NULL`),
+    retryChild: uniqueIndex("acceptance_context_pack_regen_retry_child_key")
+      .on(t.parentExecutionId)
+      .where(sql`${t.parentExecutionId} IS NOT NULL`),
     claim: index("acceptance_context_pack_regeneration_executions_claim_idx")
       .on(t.status, t.leaseExpiresAt, t.createdAt),
     record: index("acceptance_context_pack_regeneration_executions_record_idx")
@@ -1448,6 +1469,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
         AND ${t.acceptanceContractVersion} > 0
         AND ${t.acceptanceContractSha256} ~ '^[a-f0-9]{64}$'
         AND ${t.reason} IN ('stale', 'inadequate')
+        AND (${t.parentExecutionId} IS NULL OR ${t.parentExecutionId} <> ${t.id})
         AND ${t.maxAttempts} = 1
         AND ${t.attemptCount} BETWEEN 0 AND ${t.maxAttempts}`,
     ),

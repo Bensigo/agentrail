@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { claimAcceptanceContextPackRegenerationExecution } from "@agentrail/db-postgres";
-import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
+import { requireContextPackRegenerationWorkerSecret } from "../../../../../../lib/context-pack-regeneration-worker-auth";
 import { readBoundedContextPackRegenerationJson } from "../bounded-json";
 
 export async function POST(request: NextRequest) {
-  const unauthorized = requireJaceConsoleSecret(request);
+  const unauthorized = requireContextPackRegenerationWorkerSecret(request);
   if (unauthorized) return unauthorized;
   const body = await readBoundedContextPackRegenerationJson(request);
   if (!body || typeof body !== "object" || Array.isArray(body)

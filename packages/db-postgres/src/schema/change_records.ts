@@ -16,6 +16,7 @@ import { reviewJobs } from "./review_jobs.js";
 import { users } from "./auth.js";
 import { jaceApprovals, jaceSessions } from "./jace_sessions.js";
 import { briefs } from "./briefs.js";
+import { apiKeys } from "./api_keys.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -1278,6 +1279,84 @@ export const acceptanceIntakeMessages = pgTable(
 );
 
 /**
+ * One fail-closed external dispatch reservation for an exact MCP Intake turn.
+ * The Intake/message are canonical before the reservation can exist; only the
+ * transaction that inserts this row may contact Eve.
+ */
+export const acceptanceMcpTurnDispatches = pgTable(
+  "acceptance_mcp_turn_dispatches",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "restrict" }),
+    taskContextKey: text("task_context_key").notNull(),
+    messageKey: text("message_key").notNull(),
+    intakeId: uuid("intake_id")
+      .notNull()
+      .references(() => acceptanceIntakes.id, { onDelete: "restrict" }),
+    inboundMessageId: uuid("inbound_message_id")
+      .notNull()
+      .references(() => acceptanceIntakeMessages.id, { onDelete: "restrict" }),
+    sourceKey: text("source_key").notNull(),
+    messageSha256: text("message_sha256").notNull(),
+    status: text("status").notNull().default("reserved"),
+    sessionId: text("session_id"),
+    continuationToken: text("continuation_token"),
+    resultReason: text("result_reason"),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    turn: uniqueIndex("acceptance_mcp_turn_dispatches_turn_key").on(
+      t.workspaceId,
+      t.credentialId,
+      t.taskContextKey,
+      t.messageKey,
+    ),
+    inboundMessage: uniqueIndex("acceptance_mcp_turn_dispatches_message_key").on(t.inboundMessageId),
+    bindingCheck: check(
+      "acceptance_mcp_turn_dispatches_binding_check",
+      sql`char_length(${t.taskContextKey}) BETWEEN 1 AND 256
+        AND ${t.taskContextKey} = btrim(${t.taskContextKey})
+        AND ${t.taskContextKey} !~ '[[:cntrl:]]'
+        AND char_length(${t.messageKey}) BETWEEN 1 AND 256
+        AND ${t.messageKey} = btrim(${t.messageKey})
+        AND ${t.messageKey} !~ '[[:cntrl:]]'
+        AND char_length(${t.sourceKey}) BETWEEN 1 AND 1024
+        AND ${t.sourceKey} = btrim(${t.sourceKey})
+        AND ${t.sourceKey} !~ '[[:cntrl:]]'
+        AND ${t.messageSha256} ~ '^[a-f0-9]{64}$'`,
+    ),
+    stateCheck: check(
+      "acceptance_mcp_turn_dispatches_state_check",
+      sql`${t.status} IN ('reserved', 'accepted', 'held')
+        AND (${t.status} = 'reserved') = (${t.completedAt} IS NULL)
+        AND (${t.status} = 'accepted') = (${t.sessionId} IS NOT NULL)
+        AND (${t.status} = 'accepted') = (${t.continuationToken} IS NOT NULL)
+        AND (${t.status} = 'held') = (${t.resultReason} IS NOT NULL)
+        AND (${t.status} <> 'reserved' OR (
+          ${t.sessionId} IS NULL AND ${t.continuationToken} IS NULL AND ${t.resultReason} IS NULL
+        ))
+        AND (${t.status} <> 'accepted' OR (
+          char_length(${t.sessionId}) BETWEEN 1 AND 512 AND ${t.sessionId} !~ '[[:cntrl:]]'
+          AND char_length(${t.continuationToken}) <= 1024 AND ${t.continuationToken} !~ '[[:cntrl:]]'
+          AND ${t.resultReason} IS NULL
+        ))
+        AND (${t.status} <> 'held' OR (
+          ${t.sessionId} IS NULL AND ${t.continuationToken} IS NULL
+          AND char_length(${t.resultReason}) BETWEEN 1 AND 256 AND ${t.resultReason} !~ '[[:cntrl:]]'
+        ))`,
+    ),
+  }),
+);
+
+/**
  * Append-only timeline entries attached to a Change Record. The row is
  * immutable by convention and by query helper: append uses
  * `ON CONFLICT (record_id, event_key) DO NOTHING`, never update.
@@ -1589,3 +1668,4 @@ export type AcceptanceGatedGithubIssuePublicationRow = typeof acceptanceGatedGit
 export type AcceptanceGatedGithubIssueRequestRow = typeof acceptanceGatedGithubIssueRequests.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;
+export type AcceptanceMcpTurnDispatchRow = typeof acceptanceMcpTurnDispatches.$inferSelect;

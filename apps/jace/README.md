@@ -65,6 +65,16 @@ inbound + outbound + threading + credentials.
   The console sends only the built message and the NON-SECRET destination
   (`target`) — the bot credentials stay in Jace's env.
 
+- `agent/channels/mcp.ts` — a virtual hosted channel for direct Codex/Jace
+  planning and intake. The public AgentRail API authenticates a dedicated
+  workspace-level `agent_mcp` key (generic runner/fleet keys are rejected),
+  derives `mcp:<credential>:<task>` identity, records the canonical Acceptance
+  Intake, and hands the turn through `/eve/v1/hosted-inbound`. The channel's
+  own `/eve/v1/mcp-handoff` route is a 404 registration fingerprint, not a
+  public ingress. Replies are delivered only after durable outbound Intake
+  custody succeeds. MCP text cannot confirm a Contract and grants no builder,
+  implementation, merge, or deployment authority.
+
 - `agent/channels/imessage.ts` — a hand-rolled `defineChannel` (#1100). Eve ships
   no iMessage/LoopMessage channel, so this is a first-party bridge over the
   [LoopMessage](https://docs.loopmessage.com) Send + Inbound API. Inbound at
@@ -123,6 +133,7 @@ to migrate an existing self-hosted workspace onto the shared bot.
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
 | `AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE` | Arc E rejected-approach admission gate: `off` (default), `warn`, or `block`. In `block`, missing console configuration or an unavailable/malformed check fails closed before filing. |
 | `EVE_HOST` | Base URL used by the round-trip harness. Defaults to `http://127.0.0.1:2000`. |
+| `JACE_HOSTED_INBOUND_TOKEN` | Shared service credential set to the same value on Console and Jace. Required for every Console-to-Jace hosted-inbound turn; unset fails the door closed. It is never an MCP tool argument. |
 | `TELEGRAM_BOT_USERNAME` | The Telegram bot's @username (without `@`) for the native `telegram` channel. |
 | `TELEGRAM_BOT_TOKEN` | BotFather token for proactive Telegram sends. |
 | `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Secret token Telegram signs inbound updates with (set on `setWebhook`). |

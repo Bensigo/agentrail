@@ -111,4 +111,38 @@ describe("requireBearer", () => {
       kind: "fleet",
     });
   });
+
+  it("rejects an agent_mcp credential from default bearer consumers", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-mcp",
+      workspaceId: "ws-1",
+      teamId: null,
+      kind: "agent_mcp",
+    } as never);
+
+    const result = await requireBearer(req("Bearer ar_agent_mcp"));
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("allows an agent_mcp credential only when the route opts into that exact kind", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-mcp",
+      workspaceId: "ws-1",
+      teamId: null,
+      kind: "agent_mcp",
+    } as never);
+
+    const result = await requireBearer(req("Bearer ar_agent_mcp"), {
+      allowedKinds: ["agent_mcp"],
+    });
+
+    expect(result).toEqual({
+      apiKeyId: "key-mcp",
+      workspaceId: "ws-1",
+      teamId: null,
+      kind: "agent_mcp",
+    });
+  });
 });

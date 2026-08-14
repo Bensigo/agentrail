@@ -37,11 +37,13 @@ import { TARGET_KEY as _TARGET_KEY } from "./run_outcome.core.mjs";
  * today, so extending that shared map here would be speculative.
  */
 const CONSOLE_CHANNEL = "console";
+const MCP_CHANNEL = "mcp";
 
 /** Channels this door understands. Unlisted channel ids fall back to "telegram" — see normalizeHostedInbound's `channel` handling below. */
 export const HOSTED_INBOUND_CHANNELS = Object.freeze([
   ...Object.keys(_TARGET_KEY),
   CONSOLE_CHANNEL,
+  MCP_CHANNEL,
 ]);
 
 /**
@@ -66,8 +68,9 @@ export const HOSTED_INBOUND_CHANNELS = Object.freeze([
  * - `auth` is REQUIRED (unlike run-outcome's optional auth) and must be an
  *   object — the door's whole point is carrying `chatIdentityId`/
  *   `workspaceId` attribution into the session's `auth.initiator`, so a
- *   turn with no auth would be unattributable. Forwarded through UNCHANGED;
- *   this file does not interpret its contents.
+ *   turn with no auth would be unattributable. Existing hosted channels are
+ *   forwarded unchanged; MCP additionally proves its service-supplied
+ *   workspace, credential, task, conversation, and inbound-source bindings.
  *
  * @param {unknown} raw parsed JSON body from the console dispatcher
  */
@@ -112,6 +115,17 @@ export function normalizeHostedInbound(raw) {
       throw new Error("hosted-inbound: `target.conversationKey` is required.");
     }
     normalizedTarget = { workspaceId, conversationKey };
+  } else if (channel === MCP_CHANNEL) {
+    const workspaceId = typeof target.workspaceId === "string" ? target.workspaceId.trim() : "";
+    const taskContextKey =
+      typeof target.taskContextKey === "string" ? target.taskContextKey.trim() : "";
+    if (!workspaceId) {
+      throw new Error("hosted-inbound: `target.workspaceId` is required.");
+    }
+    if (!taskContextKey) {
+      throw new Error("hosted-inbound: `target.taskContextKey` is required.");
+    }
+    normalizedTarget = { workspaceId, taskContextKey };
   } else {
     const key = _TARGET_KEY[channel];
     const dest = target[key];
@@ -151,6 +165,34 @@ export function normalizeHostedInbound(raw) {
   const auth = raw.auth;
   if (auth == null || typeof auth !== "object" || Array.isArray(auth)) {
     throw new Error("hosted-inbound: `auth` is required and must be an object.");
+  }
+  if (channel === MCP_CHANNEL) {
+    const attributes = auth.attributes;
+    if (attributes == null || typeof attributes !== "object" || Array.isArray(attributes)) {
+      throw new Error("hosted-inbound: MCP authenticated attributes are required.");
+    }
+    const credentialId = typeof attributes.mcpCredentialId === "string"
+      ? attributes.mcpCredentialId.trim() : "";
+    const inboundSourceKey = typeof attributes.mcpInboundSourceKey === "string"
+      ? attributes.mcpInboundSourceKey.trim() : "";
+    const authenticatedWorkspaceId = typeof attributes.workspaceId === "string"
+      ? attributes.workspaceId.trim() : "";
+    const expectedConversationKey = credentialId
+      ? `mcp:${credentialId}:${normalizedTarget.taskContextKey}` : "";
+    if (auth.authenticator !== "agentrail"
+      || auth.principalType !== "agent_mcp"
+      || auth.principalId !== `agent-mcp:${credentialId}`
+      || attributes.channel !== MCP_CHANNEL
+      || !credentialId
+      || inboundSourceKey !== sourceKey) {
+      throw new Error("hosted-inbound: MCP principal binding is invalid.");
+    }
+    if (authenticatedWorkspaceId !== normalizedTarget.workspaceId) {
+      throw new Error("hosted-inbound: MCP workspace binding mismatch.");
+    }
+    if (attributes.conversationKey !== expectedConversationKey) {
+      throw new Error("hosted-inbound: MCP task-context binding mismatch.");
+    }
   }
 
   return { channel, message, ...(sourceKey ? { sourceKey } : {}), target: normalizedTarget, auth };

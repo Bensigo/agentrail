@@ -16,11 +16,21 @@ export interface BearerAuthResult {
   apiKeyId: string;
   workspaceId: string;
   teamId: string | null;
-  /** 'self_hosted' (default — an operator's own runner) or 'fleet' (minted by
-   * POST /api/v1/fleet/workspace-tokens/sync, #1267 PR ①). Additive: every
-   * pre-#1267 caller that ignores this field is unaffected. */
+  /** Credential class resolved from storage. `agent_mcp` is denied by the
+   * default route policy and must be explicitly admitted by a narrow caller. */
   kind: ApiKeyKind;
 }
+
+export interface BearerAuthOptions {
+  /**
+   * Credential kinds admitted by this route. The default deliberately excludes
+   * `agent_mcp`, so adding the least-authority Jace key cannot silently grant it
+   * runner, ingest, CLI, or other legacy bearer capabilities.
+   */
+  allowedKinds?: readonly ApiKeyKind[];
+}
+
+const DEFAULT_BEARER_KINDS: readonly ApiKeyKind[] = ["self_hosted", "fleet"];
 
 /**
  * Validate the ``Authorization: Bearer <key>`` header.
@@ -28,7 +38,8 @@ export interface BearerAuthResult {
  * return immediately on failure.
  */
 export async function requireBearer(
-  req: NextRequest
+  req: NextRequest,
+  options: BearerAuthOptions = {},
 ): Promise<BearerAuthResult | NextResponse> {
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
@@ -51,6 +62,11 @@ export async function requireBearer(
 
   if (!row) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const allowedKinds = options.allowedKinds ?? DEFAULT_BEARER_KINDS;
+  if (!allowedKinds.includes(row.kind)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   return {

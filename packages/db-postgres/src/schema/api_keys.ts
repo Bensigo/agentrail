@@ -13,8 +13,10 @@ import { workspaces } from "./workspaces.js";
 // (the only kind that existed before #1267 — every pre-migration row is one of
 // these). 'fleet' — minted by the hosted fleet's sync endpoint (POST
 // /api/v1/fleet/workspace-tokens/sync) for a `workspaces.hosted_execution =
-// true` workspace with no live fleet key yet.
-export type ApiKeyKind = "self_hosted" | "fleet";
+// true` workspace with no live fleet key yet. 'agent_mcp' — a least-authority
+// credential for direct Jace MCP conversation/readback only; default bearer
+// consumers reject it unless they explicitly opt into this exact kind.
+export type ApiKeyKind = "self_hosted" | "fleet" | "agent_mcp";
 
 export const apiKeys = pgTable(
   "api_keys",
@@ -39,7 +41,7 @@ export const apiKeys = pgTable(
   (t) => ({
     kindCheck: check(
       "api_keys_kind_check",
-      sql`${t.kind} IN ('self_hosted', 'fleet')`
+      sql`${t.kind} IN ('self_hosted', 'fleet', 'agent_mcp')`
     ),
     // One active (non-revoked) fleet key per workspace (#1267 PR ①) — makes
     // the sync endpoint's mint race-safe: a concurrent second sync's mint for

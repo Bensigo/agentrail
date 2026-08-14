@@ -58,7 +58,8 @@ Fill in every `REQUIRED` value (see the comments in that file — each one says
 exactly where it's consumed and, for anything you need to go create yourself,
 how). At minimum before first boot: `POSTGRES_PASSWORD`, `DATABASE_URL`,
 `AUTH_SECRET`, `CONSOLE_PUBLIC_URL`, `CONNECTOR_SECRET_KEY`,
-`JACE_MODEL_API_KEY`, `JACE_TARGET_REPO`, `OPENROUTER_API_KEY`. The
+`JACE_HOSTED_INBOUND_TOKEN`, `JACE_MODEL_API_KEY`, `JACE_TARGET_REPO`,
+`OPENROUTER_API_KEY`. The
 `GITHUB_APP_*` sextet needs the App from step 3, so those can wait. Leaving
 `CONSOLE_PUBLIC_URL` unset does not fail the boot — it fails silently later:
 every `/connect` from an unlinked chat gets a generic failure reply forever,

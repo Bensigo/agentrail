@@ -30,10 +30,30 @@ test("imports the pure validator from agent/lib", () => {
   );
 });
 
+test("fails closed unless the Console-to-Jace service hop authenticates", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*authorizeHostedInbound\s*\}\s*from\s*["']\.\.\/lib\/hosted_inbound_auth\.core\.mjs["']/,
+  );
+  const authAt = code.indexOf("authorizeHostedInbound(req.headers, process.env)");
+  const parseAt = code.indexOf("readBoundedRequestJson(req, HOSTED_INBOUND_BODY_BYTES)");
+  assert.ok(authAt >= 0 && parseAt > authAt, "authenticate before reading an inbound body");
+  assert.match(code, /unauthorized/);
+});
+
+test("reads the authenticated machine body through an explicit byte bound", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*HOSTED_INBOUND_BODY_BYTES,\s*readBoundedRequestJson\s*\}\s*from\s*["']\.\.\/lib\/bounded_request_json\.core\.mjs["']/,
+  );
+  assert.doesNotMatch(code, /await\s+req\.json\(\)/);
+});
+
 test("imports telegram/discord/slack channel modules (#1284/#1285: multi-channel CHANNELS map, mirroring run-outcome.ts)", () => {
   assert.match(code, /import\s+telegram\s+from\s*["']\.\/telegram\.js["']/);
   assert.match(code, /import\s+discord\s+from\s*["']\.\/discord\.js["']/);
   assert.match(code, /import\s+slack\s+from\s*["']\.\/slack\.js["']/);
+  assert.match(code, /import\s+mcp\s+from\s*["']\.\/mcp\.js["']/);
 });
 
 test("declares exactly one POST(\"/eve/v1/hosted-inbound\") route — the LITERAL mount path (Eve mounts defineChannel routes at their literal declared path; /eve/v1/<id> is a built-in-adapter default, not a framework rewrite)", () => {

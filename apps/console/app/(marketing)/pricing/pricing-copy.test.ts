@@ -39,6 +39,7 @@ const landingPublicSources = Object.fromEntries(
 const landingSource = landingPublicSources["page.tsx"];
 const useCasesSource = landingPublicSources["_use-cases.tsx"];
 const publicLandingSource = Object.values(landingPublicSources).join("\n");
+const rootLayoutSource = sourceAt(MARKETING_DIR, "..", "layout.tsx");
 const pricingSource = [
   sourceAt(PRICING_DIR, "page.tsx"),
   sourceAt(PRICING_DIR, "tiers.ts"),
@@ -64,16 +65,20 @@ describe("R12.1 landing truth boundary", () => {
     expect(landingSource).toContain("{step.line}");
 
     const flowMarkers = [
-      "Define the work",
-      "planned checks",
-      "You confirm it before work starts.",
-      "Give the coding agent focused context",
-      "external coding agent",
+      "Plan and confirm the Acceptance Contract",
+      "planned scope and criteria",
+      "A human on your team confirms the Acceptance Contract",
+      "Hand off through MCP",
+      "MCP",
+      "confirmed Acceptance Contract and a bounded Context Pack",
+      "selected external coding agent",
       "The coding agent writes the code.",
-      "Verify and correct",
-      "exact change",
-      "agreed criteria",
-      "correction path",
+      "Review the exact head",
+      "exact PR head",
+      "confirmed intent",
+      "criterion evidence",
+      "refuses success",
+      "provides a correction path",
       "Human decides",
       "accepts, reworks, or rejects it.",
     ];
@@ -90,11 +95,37 @@ describe("R12.1 landing truth boundary", () => {
   });
 
   it("scans the rendered landing source set for factory, codegen, auto-merge, or live-looking copy", () => {
-    for (const [file, source] of Object.entries(landingPublicSources)) {
-      for (const phrase of ["factory", "codegen", "auto-merge", "live cached stats"]) {
-        expect(source.toLowerCase(), `${file} contains ${phrase}`).not.toContain(phrase);
+    const truthBoundarySources = {
+      ...landingPublicSources,
+      "../layout.tsx": rootLayoutSource,
+    };
+    for (const [file, source] of Object.entries(truthBoundarySources)) {
+      const normalized = source.replace(/\s+/g, " ");
+      for (const claim of [
+        /\bfactory\b/i,
+        /\bcodegen\b/i,
+        /\bJace (?:is|acts as) (?:a )?code generator\b/i,
+        /(?<!not claim that )\bJace (?:generates?|will generate) code\b/i,
+        /\bauto-merge\b/i,
+        /\bJace automatically merges?\b/i,
+        /\blive cached stats\b/i,
+        /\bJace turns approved engineering work into reviewable pull requests?\b/i,
+        /(?<!not claim that )\bJace (?:delivers?|will deliver) (?:a |the )?pull requests?\b/i,
+      ]) {
+        expect(normalized, `${file} contains ${claim}`).not.toMatch(claim);
       }
     }
+  });
+
+  it("labels the chat as illustrative and keeps root metadata on the trust-layer role split", () => {
+    const demoStart = landingSource.indexOf("<PhoneDemo />");
+    const demoEnd = landingSource.indexOf("</section>", demoStart);
+    expect(demoStart).toBeGreaterThan(-1);
+    expect(demoEnd).toBeGreaterThan(demoStart);
+    expect(landingSource.slice(demoStart, demoEnd)).toContain("Illustrative example");
+    expect(rootLayoutSource).toContain("evidence and control for AI coding agents");
+    expect(rootLayoutSource).toContain("human-confirmed Acceptance Contracts");
+    expect(rootLayoutSource).toContain("external coding agents");
   });
 
   it("describes Jace as the dependency-upgrade control layer, not the code executor", () => {

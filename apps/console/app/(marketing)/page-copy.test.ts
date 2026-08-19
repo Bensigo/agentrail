@@ -47,9 +47,9 @@ describe("landing story", () => {
     const end = landingSource.indexOf("\n];", start);
     const workflow = landingSource.slice(start, end);
     const steps = [
-      "Define the work",
-      "Give the coding agent focused context",
-      "Verify and correct",
+      "Plan and confirm the Acceptance Contract",
+      "Hand off through MCP",
+      "Review the exact head",
       "Human decides",
     ];
 

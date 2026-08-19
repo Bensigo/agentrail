@@ -3452,12 +3452,14 @@ export function dependencyObservationApprovalPatchBody(observationEventId: strin
 export function contextPackRegenerationPatchBody(
   compiledPackId: string,
   reason: "stale" | "inadequate",
+  requestIntentId: string,
 ): {
   action: "request_context_pack_regeneration";
   compiledPackId: string;
   reason: "stale" | "inadequate";
+  requestIntentId: string;
 } {
-  return { action: "request_context_pack_regeneration", compiledPackId, reason };
+  return { action: "request_context_pack_regeneration", compiledPackId, reason, requestIntentId };
 }
 
 export function contextPackRegenerationRetryPatchBody(executionId: string): {
@@ -5881,7 +5883,11 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(contextPackRegenerationPatchBody(compiledPackId, reason)),
+        body: JSON.stringify(contextPackRegenerationPatchBody(
+          compiledPackId,
+          reason,
+          crypto.randomUUID(),
+        )),
       });
       const body = (await response.json().catch(() => ({}))) as {
         kind?: string;

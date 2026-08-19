@@ -1433,6 +1433,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
     acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
     acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
     reason: text("reason").notNull(),
+    intentGeneration: integer("intent_generation").notNull().default(1),
     status: text("status").notNull().default("queued"),
     attemptCount: integer("attempt_count").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(1),
@@ -1464,6 +1465,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
         t.acceptanceContractId,
         t.acceptanceContractVersion,
         t.acceptanceContractSha256,
+        t.intentGeneration,
       )
       .where(sql`${t.parentExecutionId} IS NULL`),
     retryChild: uniqueIndex("acceptance_context_pack_regen_retry_child_key")
@@ -1484,6 +1486,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
         AND ${t.acceptanceContractVersion} > 0
         AND ${t.acceptanceContractSha256} ~ '^[a-f0-9]{64}$'
         AND ${t.reason} IN ('stale', 'inadequate')
+        AND ${t.intentGeneration} > 0
         AND (${t.parentExecutionId} IS NULL OR ${t.parentExecutionId} <> ${t.id})
         AND ${t.maxAttempts} = 1
         AND ${t.attemptCount} BETWEEN 0 AND ${t.maxAttempts}`,

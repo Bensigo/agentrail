@@ -27,7 +27,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   retryAcceptanceContextPackRegenerationExecution: vi.fn(),
   listAcceptanceContextPackRegenerationExecutions: vi.fn(),
   changeRecordEventId: vi.fn(({ recordId, eventKey }: { recordId: string; eventKey: string }) =>
-    eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:stale:00000000-0000-4000-8000-000000000777"
+    eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:00000000-0000-4000-8000-000000000051"
       ? "00000000-0000-4000-8000-000000000048"
       : recordId),
 }));
@@ -81,6 +81,7 @@ const EXTERNAL_BUILDER_PACK_ID = "00000000-0000-4000-8000-000000000050";
 const COMPILED_PACK_ID = "00000000-0000-4000-8000-000000000049";
 const REGENERATION_REQUEST_EVENT_ID = "00000000-0000-4000-8000-000000000048";
 const REGENERATION_EXECUTION_ID = "00000000-0000-4000-8000-000000000050";
+const REGENERATION_REQUEST_INTENT_ID = "00000000-0000-4000-8000-000000000051";
 const CANDIDATE_FINGERPRINT = `sha256:${"9".repeat(64)}`;
 const DEPENDENCY_OBSERVED_AT = new Date("2026-08-03T12:03:00.000Z");
 const DEPENDENCY_APPROVED_AT = new Date("2026-08-03T12:08:00.000Z");
@@ -604,7 +605,7 @@ beforeEach(() => {
     kind: "recorded",
     request: {
       eventId: REGENERATION_REQUEST_EVENT_ID,
-      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`,
+      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`,
       workspaceId: WS,
       recordId: RECORD,
       sourceSnapshotId: "00000000-0000-4000-8000-000000000047",
@@ -616,6 +617,7 @@ beforeEach(() => {
       authorityGeneration: 1,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
       requestedBy: `user:${USER}`,
       requestedRole: "owner",
       requestedAt: EFFORT_AT,
@@ -1085,7 +1087,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
   it("projects only the current actor's exact current request-only Context Pack receipt", async () => {
     const sourceSnapshotId = "00000000-0000-4000-8000-000000000047";
-    const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`;
+    const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`;
     vi.mocked(readChangeRecordTimeline).mockResolvedValue({
       ...timeline,
       events: [...timeline.events, {
@@ -1097,7 +1099,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         actor: `user:${USER}`,
         payloadRef: {
           kind: "acceptance_context_pack_regeneration_request",
-          version: 1,
+          version: 2,
           workspaceId: WS,
           recordId: RECORD,
           sourceSnapshotId,
@@ -1109,6 +1111,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           authorityGeneration: 1,
           acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
           reason: "stale",
+          requestIntentId: REGENERATION_REQUEST_INTENT_ID,
           requestedBy: `user:${USER}`,
           requestedRole: "owner",
           authority: "request_only",
@@ -1118,13 +1121,13 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       }, {
         id: RECORD,
         recordId: RECORD,
-        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:00000000-0000-4000-8000-000000000778`,
+        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:00000000-0000-4000-8000-000000000052`,
         stage: "human_context_request",
         at: EFFORT_AT,
         actor: "user:00000000-0000-4000-8000-000000000778",
         payloadRef: {
           kind: "acceptance_context_pack_regeneration_request",
-          version: 1,
+          version: 2,
           workspaceId: WS,
           recordId: RECORD,
           sourceSnapshotId,
@@ -1136,6 +1139,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           authorityGeneration: 1,
           acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
           reason: "inadequate",
+          requestIntentId: "00000000-0000-4000-8000-000000000052",
           requestedBy: "user:00000000-0000-4000-8000-000000000778",
           requestedRole: "admin",
           authority: "request_only",
@@ -1174,6 +1178,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       headCycleId: CYCLE,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
       requestedBy: `user:${USER}`,
       requestedRole: "owner",
       requestedAt: EFFORT_AT.toISOString(),
@@ -1724,10 +1729,12 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
   });
 
   it("records a request and queues one server-derived execution against the same Pack binding", async () => {
+    const requestIntentId = "00000000-0000-4000-8000-000000000051";
     const response = await PATCH(patchReq({
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId,
     }), { params: params() });
 
     expect(response.status).toBe(201);
@@ -1737,6 +1744,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
       requestedBy: `user:${USER}`,
+      requestIntentId,
     });
     const body = await response.json();
     expect(body.kind).toBe("recorded");
@@ -1757,8 +1765,10 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     for (const body of [
       { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "missing" },
       { action: "request_context_pack_regeneration", compiledPackId: "not-a-uuid", reason: "stale" },
-      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", headSha: HEAD },
-      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", dispatch: true },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale" },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "invalid" },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "00000000-0000-4000-8000-000000000051", headSha: HEAD },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "00000000-0000-4000-8000-000000000051", dispatch: true },
     ]) {
       const response = await PATCH(patchReq(body), { params: params() });
       expect(response.status).toBe(400);
@@ -1800,6 +1810,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "inadequate",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual(result);
@@ -1813,6 +1824,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({
@@ -1826,6 +1838,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });

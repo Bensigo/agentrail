@@ -55,6 +55,7 @@ type ParsedContextPackRegenerationRequestBody = {
   action: "request_context_pack_regeneration";
   compiledPackId: string;
   reason: "stale" | "inadequate";
+  requestIntentId: string;
 };
 
 type ParsedContextPackRegenerationRetryBody = {
@@ -266,15 +267,18 @@ function parseContextPackRegenerationRequestBody(
 ): ParsedContextPackRegenerationRequestBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).length !== 3
-    || !Object.keys(input).every((key) => key === "action" || key === "compiledPackId" || key === "reason")
+  if (Object.keys(input).length !== 4
+    || !Object.keys(input).every((key) => key === "action" || key === "compiledPackId"
+      || key === "reason" || key === "requestIntentId")
     || input.action !== "request_context_pack_regeneration"
     || typeof input.compiledPackId !== "string" || !UUID.test(input.compiledPackId)
+    || typeof input.requestIntentId !== "string" || !UUID.test(input.requestIntentId)
     || (input.reason !== "stale" && input.reason !== "inadequate")) return null;
   return {
     action: "request_context_pack_regeneration",
     compiledPackId: input.compiledPackId,
     reason: input.reason,
+    requestIntentId: input.requestIntentId,
   };
 }
 
@@ -326,22 +330,22 @@ function contextPackRegenerationRequests(
     const expectedKeys = [
       "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
       "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
-      "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
+      "acceptanceContract", "reason", "requestIntentId", "requestedBy", "requestedRole", "authority", "status",
     ];
     if (Object.keys(payload).length !== expectedKeys.length
       || Object.keys(payload).some((key) => !expectedKeys.includes(key))
-      || payload.version !== 1 || typeof payload.compiledPackId !== "string"
+      || payload.version !== 2 || typeof payload.compiledPackId !== "string"
       || !UUID.test(payload.compiledPackId) || typeof payload.sourceSnapshotId !== "string"
       || !UUID.test(payload.sourceSnapshotId)
       || (payload.reason !== "stale" && payload.reason !== "inadequate")
+      || typeof payload.requestIntentId !== "string" || !UUID.test(payload.requestIntentId)
       || typeof payload.requestedBy !== "string"
       || !payload.requestedBy.startsWith("user:")
       || !UUID.test(payload.requestedBy.slice("user:".length))
       || (payload.requestedRole !== "owner" && payload.requestedRole !== "admin")
       || payload.authority !== "request_only" || payload.status !== "request_recorded") return [];
     const found = packs.get(payload.compiledPackId);
-    const requestedByUserId = payload.requestedBy.slice("user:".length).toLowerCase();
-    const eventKey = `context-pack-regeneration:${payload.compiledPackId}:${payload.reason}:${requestedByUserId}`;
+    const eventKey = `context-pack-regeneration:${payload.compiledPackId}:${payload.requestIntentId}`;
     if (!found || found.snapshotId !== payload.sourceSnapshotId
       || payload.workspaceId !== timeline.record.workspaceId || payload.recordId !== timeline.record.id
       || payload.repo !== timeline.record.repo || payload.prNumber !== timeline.record.prNumber
@@ -364,6 +368,7 @@ function contextPackRegenerationRequests(
       headCycleId: payload.headCycleId,
       acceptanceContract: payload.acceptanceContract,
       reason: payload.reason,
+      requestIntentId: payload.requestIntentId,
       requestedBy: payload.requestedBy,
       requestedRole: payload.requestedRole,
       requestedAt: event.at.toISOString(),
@@ -732,6 +737,7 @@ export async function PATCH(
         compiledPackId: body.compiledPackId,
         reason: body.reason,
         requestedBy: `user:${session.user.id}`,
+        requestIntentId: body.requestIntentId,
       });
       if (result.kind === "recorded" || result.kind === "replayed") {
         return json(serializeDates(result) as Record<string, unknown>, result.kind === "recorded" ? 201 : 200);

@@ -9226,6 +9226,7 @@ export type AcceptanceContextPackRegenerationRequest = {
   authorityGeneration: number;
   acceptanceContract: AcceptanceRecordSummaryContractIdentity;
   reason: AcceptanceContextPackRegenerationReason;
+  requestIntentId: string;
   requestedBy: string;
   requestedRole: "owner" | "admin";
   requestedAt: Date;
@@ -9239,6 +9240,7 @@ export type RecordAcceptanceContextPackRegenerationRequestInput = {
   compiledPackId: string;
   reason: AcceptanceContextPackRegenerationReason;
   requestedBy: string;
+  requestIntentId?: string;
 };
 
 export type RecordAcceptanceContextPackRegenerationRequestResult =
@@ -9262,7 +9264,7 @@ export class AcceptanceContextPackRegenerationRequestConflictError extends Error
 
 const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND =
   "acceptance_context_pack_regeneration_request";
-const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION = 1;
+const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION = 2;
 const ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE = "human_context_request";
 
 export type AcceptanceContextPackRegenerationExecution = Pick<
@@ -9273,6 +9275,7 @@ export type AcceptanceContextPackRegenerationExecution = Pick<
   | "workspaceId"
   | "recordId"
   | "priorCompiledPackId"
+  | "intentGeneration"
   | "headSha"
   | "headCycleId"
   | "status"
@@ -9293,8 +9296,9 @@ export function acceptanceContextPackRegenerationExecutionId(input: {
   acceptanceContractId: string;
   acceptanceContractVersion: number;
   acceptanceContractSha256: string;
+  intentGeneration?: number;
 }): string {
-  return uuid5Url([
+  const lineage = [
     "acceptance-context-pack-regeneration-root-v1",
     input.workspaceId,
     input.recordId,
@@ -9303,7 +9307,9 @@ export function acceptanceContextPackRegenerationExecutionId(input: {
     input.acceptanceContractId,
     input.acceptanceContractVersion,
     input.acceptanceContractSha256,
-  ].join(":"));
+  ].join(":");
+  const intentGeneration = input.intentGeneration ?? 1;
+  return uuid5Url(intentGeneration === 1 ? lineage : `${lineage}:intent-generation:${intentGeneration}`);
 }
 
 function acceptanceContextPackRegenerationRetryExecutionId(requestEventId: string): string {
@@ -9321,6 +9327,7 @@ function contextPackRegenerationExecutionReceipt(
     workspaceId: row.workspaceId,
     recordId: row.recordId,
     priorCompiledPackId: row.priorCompiledPackId,
+    intentGeneration: row.intentGeneration,
     headSha: row.headSha,
     headCycleId: row.headCycleId,
     status: row.status,
@@ -9337,31 +9344,40 @@ function contextPackRegenerationExecutionReceipt(
 
 function parseAcceptanceContextPackRegenerationRequestInput(
   input: unknown,
-): (RecordAcceptanceContextPackRegenerationRequestInput & { requestedByUserId: string }) | null {
-  if (!isRecord(input) || !hasExactKeys(input, [
+): (RecordAcceptanceContextPackRegenerationRequestInput & {
+  requestedByUserId: string;
+  requestIntentId: string;
+}) | null {
+  if (!isRecord(input) || !(hasExactKeys(input, [
     "workspaceId", "recordId", "compiledPackId", "reason", "requestedBy",
-  ]) || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])
+  ]) || hasExactKeys(input, [
+    "workspaceId", "recordId", "compiledPackId", "reason", "requestedBy", "requestIntentId",
+  ])) || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])
     || !isUuid(input["compiledPackId"])
+    || (hasOwn(input, "requestIntentId") && !isUuid(input["requestIntentId"]))
     || (input["reason"] !== "stale" && input["reason"] !== "inadequate")
     || typeof input["requestedBy"] !== "string") return null;
   const actor = HUMAN_DECISION_ACTOR.exec(input["requestedBy"]);
   if (!actor) return null;
+  const requestedByUserId = actor[1]!.toLowerCase();
   return {
     workspaceId: input["workspaceId"],
     recordId: input["recordId"],
     compiledPackId: input["compiledPackId"],
     reason: input["reason"],
-    requestedBy: `user:${actor[1]!.toLowerCase()}`,
-    requestedByUserId: actor[1]!.toLowerCase(),
+    requestedBy: `user:${requestedByUserId}`,
+    requestedByUserId,
+    requestIntentId: hasOwn(input, "requestIntentId")
+      ? input["requestIntentId"] as string
+      : uuid5Url(`legacy-context-pack-regeneration-intent:${input["compiledPackId"]}:${input["reason"]}:${requestedByUserId}`),
   };
 }
 
 function acceptanceContextPackRegenerationRequestEventKey(input: {
   compiledPackId: string;
-  reason: AcceptanceContextPackRegenerationReason;
-  requestedByUserId: string;
+  requestIntentId: string;
 }): string {
-  return `context-pack-regeneration:${input.compiledPackId}:${input.reason}:${input.requestedByUserId}`;
+  return `context-pack-regeneration:${input.compiledPackId}:${input.requestIntentId}`;
 }
 
 function parseAcceptanceContextPackRegenerationRequestEvent(input: {
@@ -9383,6 +9399,7 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
     "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
     "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
     "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
+    "requestIntentId",
   ]) || payload["kind"] !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND
     || payload["version"] !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION
     || payload["workspaceId"] !== input.workspaceId || payload["recordId"] !== input.recordId
@@ -9393,14 +9410,14 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
     || payload["authorityGeneration"] !== input.authorityGeneration
     || !isDeepStrictEqual(payload["acceptanceContract"], input.acceptanceContract)
     || (payload["reason"] !== "stale" && payload["reason"] !== "inadequate")
+    || !isUuid(payload["requestIntentId"])
     || typeof payload["requestedBy"] !== "string" || !HUMAN_DECISION_ACTOR.test(payload["requestedBy"])
     || (payload["requestedRole"] !== "owner" && payload["requestedRole"] !== "admin")
     || payload["authority"] !== "request_only" || payload["status"] !== "request_recorded"
     || event.recordId !== input.recordId
     || event.eventKey !== acceptanceContextPackRegenerationRequestEventKey({
       compiledPackId: input.compiledPackId,
-      reason: payload["reason"],
-      requestedByUserId: payload["requestedBy"].slice("user:".length),
+      requestIntentId: payload["requestIntentId"],
     })
     || event.id !== changeRecordEventId({ recordId: input.recordId, eventKey: event.eventKey })
     || event.stage !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE
@@ -9420,6 +9437,7 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
     authorityGeneration: input.authorityGeneration,
     acceptanceContract: { ...input.acceptanceContract },
     reason: payload["reason"],
+    requestIntentId: payload["requestIntentId"],
     requestedBy: payload["requestedBy"],
     requestedRole: payload["requestedRole"],
     requestedAt: event.at,
@@ -9568,8 +9586,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
     }
     const eventKey = acceptanceContextPackRegenerationRequestEventKey({
       compiledPackId: pack.id,
-      reason: parsed.reason,
-      requestedByUserId: parsed.requestedByUserId,
+      requestIntentId: parsed.requestIntentId,
     });
     const payloadRef = {
       kind: ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND,
@@ -9585,6 +9602,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       authorityGeneration: record.currentPrHeadAuthorityGeneration,
       acceptanceContract: { ...confirmed.identity },
       reason: parsed.reason,
+      requestIntentId: parsed.requestIntentId,
       requestedBy: parsed.requestedBy,
       requestedRole: membership.role as "owner" | "admin",
       authority: "request_only",
@@ -9619,6 +9637,27 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContract: confirmed.identity,
     });
     if (!request) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    const exactExecution = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(eq(acceptanceContextPackRegenerationExecutions.requestEventId, request.eventId))
+      .limit(1))[0];
+    const latestExecution = exactExecution ?? (await tx.select()
+      .from(acceptanceContextPackRegenerationExecutions)
+      .where(and(
+        eq(acceptanceContextPackRegenerationExecutions.workspaceId, parsed.workspaceId),
+        eq(acceptanceContextPackRegenerationExecutions.recordId, parsed.recordId),
+        eq(acceptanceContextPackRegenerationExecutions.priorCompiledPackId, pack.id),
+        eq(acceptanceContextPackRegenerationExecutions.headCycleId, record.currentPrHeadCycleId),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractId, confirmed.identity.id),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractVersion, confirmed.identity.version),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractSha256, confirmed.identity.sha256),
+        isNull(acceptanceContextPackRegenerationExecutions.parentExecutionId),
+      ))
+      .orderBy(desc(acceptanceContextPackRegenerationExecutions.intentGeneration))
+      .limit(1))[0];
+    const createGeneration = !exactExecution
+      && (!latestExecution || latestExecution.status === "unchanged");
+    const intentGeneration = exactExecution?.intentGeneration
+      ?? (createGeneration ? (latestExecution?.intentGeneration ?? 0) + 1 : latestExecution?.intentGeneration ?? 1);
     const executionId = acceptanceContextPackRegenerationExecutionId({
       workspaceId: parsed.workspaceId,
       recordId: parsed.recordId,
@@ -9627,6 +9666,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContractId: confirmed.identity.id,
       acceptanceContractVersion: confirmed.identity.version,
       acceptanceContractSha256: confirmed.identity.sha256,
+      intentGeneration,
     });
     const executionIdentity = {
       id: executionId,
@@ -9646,13 +9686,16 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContractVersion: confirmed.identity.version,
       acceptanceContractSha256: confirmed.identity.sha256,
       reason: parsed.reason,
+      intentGeneration,
     };
-    const insertedExecutions = await tx.insert(acceptanceContextPackRegenerationExecutions)
-      .values(executionIdentity).onConflictDoNothing().returning();
-    const execution = insertedExecutions[0] ?? (await tx.select()
-      .from(acceptanceContextPackRegenerationExecutions)
-      .where(eq(acceptanceContextPackRegenerationExecutions.id, executionIdentity.id))
-      .limit(1))[0];
+    const insertedExecutions = createGeneration
+      ? await tx.insert(acceptanceContextPackRegenerationExecutions)
+        .values(executionIdentity).onConflictDoNothing().returning()
+      : [];
+    const execution = exactExecution ?? insertedExecutions[0] ?? latestExecution
+      ?? (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+        .where(eq(acceptanceContextPackRegenerationExecutions.id, executionIdentity.id))
+        .limit(1))[0];
     const executionRequestEvent = execution && execution.requestEventId === request.eventId
       ? appended.events[0]!.event
       : execution ? (await tx.select().from(changeRecordEvents).where(and(
@@ -9688,6 +9731,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContractId: execution.acceptanceContractId,
       acceptanceContractVersion: execution.acceptanceContractVersion,
       acceptanceContractSha256: execution.acceptanceContractSha256,
+      intentGeneration: execution.intentGeneration,
     }, {
       id: executionIdentity.id,
       workspaceId: executionIdentity.workspaceId,
@@ -9703,6 +9747,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
       acceptanceContractId: executionIdentity.acceptanceContractId,
       acceptanceContractVersion: executionIdentity.acceptanceContractVersion,
       acceptanceContractSha256: executionIdentity.acceptanceContractSha256,
+      intentGeneration: executionIdentity.intentGeneration,
     }) || executionRequest?.reason !== execution.reason) {
       throw new AcceptanceContextPackRegenerationRequestConflictError();
     }
@@ -9908,6 +9953,7 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       acceptanceContractVersion: execution.acceptanceContractVersion,
       acceptanceContractSha256: execution.acceptanceContractSha256,
       reason: execution.reason,
+      intentGeneration: execution.intentGeneration,
     };
     const inserted = await tx.insert(acceptanceContextPackRegenerationExecutions)
       .values(nextIdentity).onConflictDoNothing().returning();
@@ -9922,6 +9968,7 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       authorityGeneration: next.authorityGeneration, acceptanceContractId: next.acceptanceContractId,
       acceptanceContractVersion: next.acceptanceContractVersion,
       acceptanceContractSha256: next.acceptanceContractSha256, reason: next.reason,
+      intentGeneration: next.intentGeneration,
     }, nextIdentity)) throw new AcceptanceContextPackRegenerationRequestConflictError();
     return {
       kind: appended.events[0]!.inserted ? "retried" as const : "replayed" as const,
@@ -10582,7 +10629,8 @@ export async function listAcceptanceContextPackRegenerationExecutions(input: {
       && parent.headCycleId === row.headCycleId
       && parent.acceptanceContractId === row.acceptanceContractId
       && parent.acceptanceContractVersion === row.acceptanceContractVersion
-      && parent.acceptanceContractSha256 === row.acceptanceContractSha256);
+      && parent.acceptanceContractSha256 === row.acceptanceContractSha256
+      && parent.intentGeneration === row.intentGeneration);
   }));
   return rows.filter((_, index) => proven[index]).map((row) => contextPackRegenerationExecutionReceipt(
     row,

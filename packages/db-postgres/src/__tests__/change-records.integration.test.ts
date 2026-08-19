@@ -3068,7 +3068,7 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(stored).toMatchObject({ status: "held", outcomeReason: "lease_attempts_exhausted", attemptCount: 1 });
     });
 
-    it("persists a successful unchanged execution and rejects replay", async () => {
+    it("replays an exact unchanged intent and permits a new intent after Wiki inputs change", async () => {
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
         workKey: "context-pack-regeneration-unchanged",
@@ -3076,12 +3076,14 @@ describe.skipIf(!DB_AVAILABLE)(
         headSha: "b".repeat(40),
       });
       const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const firstIntentId = randomUUID();
       await recordAcceptanceContextPackRegenerationRequest({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
         compiledPackId: fixture.pack.id,
         reason: "stale",
         requestedBy: owner,
+        requestIntentId: firstIntentId,
       });
       const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "unchanged-worker" });
       if (!claim) throw new Error("expected claim");
@@ -3110,6 +3112,35 @@ describe.skipIf(!DB_AVAILABLE)(
         replacementCompiledPackId: undefined,
         reason: "compiler_output_unchanged",
       })).resolves.toEqual({ kind: "not_owned" });
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: firstIntentId,
+      })).resolves.toMatchObject({
+        kind: "replayed",
+        execution: { id: claim.executionId, status: "unchanged", intentGeneration: 1 },
+      });
+      await db.update(wikiPages).set({
+        commitSha: "c".repeat(40),
+        inputsHash: "2".repeat(64),
+        bodyMd: "Dependency observation background changed after the unchanged result",
+      }).where(eq(wikiPages.id, fixture.wiki.id));
+      const nextIntent = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: randomUUID(),
+      });
+      expect(nextIntent).toMatchObject({
+        kind: "recorded",
+        execution: { status: "queued", intentGeneration: 2 },
+      });
+      expect((nextIntent as { execution: { id: string } }).execution.id).not.toBe(claim.executionId);
     });
 
     it("terminalizes a replacement Pack from a different exact binding as not proven", async () => {

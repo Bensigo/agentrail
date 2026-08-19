@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS "acceptance_context_pack_regeneration_executions" (
   "acceptance_contract_version" integer NOT NULL,
   "acceptance_contract_sha256" text NOT NULL,
   "reason" text NOT NULL,
+  "intent_generation" integer NOT NULL DEFAULT 1,
   "status" text NOT NULL DEFAULT 'queued',
   "attempt_count" integer NOT NULL DEFAULT 0,
   "max_attempts" integer NOT NULL DEFAULT 1,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS "acceptance_context_pack_regeneration_executions" (
     AND "acceptance_contract_version" > 0
     AND "acceptance_contract_sha256" ~ '^[a-f0-9]{64}$'
     AND "reason" IN ('stale', 'inadequate')
+    AND "intent_generation" > 0
     AND ("parent_execution_id" IS NULL OR "parent_execution_id" <> "id")
     AND "max_attempts" = 1
     AND "attempt_count" BETWEEN 0 AND "max_attempts"
@@ -70,7 +72,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_regen_root_lineage_ke
     "head_cycle_id",
     "acceptance_contract_id",
     "acceptance_contract_version",
-    "acceptance_contract_sha256"
+    "acceptance_contract_sha256",
+    "intent_generation"
   ) WHERE "parent_execution_id" IS NULL;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_regen_retry_child_key"
@@ -146,6 +149,7 @@ BEGIN
       AND parent."acceptance_contract_id" = NEW."acceptance_contract_id"
       AND parent."acceptance_contract_version" = NEW."acceptance_contract_version"
       AND parent."acceptance_contract_sha256" = NEW."acceptance_contract_sha256"
+      AND parent."intent_generation" = NEW."intent_generation"
   ) THEN
     RAISE EXCEPTION 'Context Pack regeneration parent custody mismatch';
   END IF;

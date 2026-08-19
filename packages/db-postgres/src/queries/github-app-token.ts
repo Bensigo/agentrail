@@ -19,6 +19,7 @@ import {
   resolveGithubAppConfig,
   mintInstallationToken,
   mintCorrectionCarrierInstallationToken,
+  mintRepositoryContentsReadInstallationToken,
 } from "@agentrail/github-app";
 import { db } from "../db.js";
 import { workspaces, accounts } from "../schema/index.js";
@@ -119,6 +120,19 @@ export type GithubCorrectionCarrierCredentialResult =
     };
 
 export type GithubDependencyBuilderCredentialResult = GithubCorrectionCarrierCredentialResult;
+export type GithubDependencyObservationCredentialResult =
+  | {
+      ok: true;
+      token: string;
+      expiresAt: string;
+      permissionBasis: { repository: "scoped_installation_token"; contents: "read" };
+    }
+  | { ok: false; kind: "unavailable"; reason: "installation_or_permission_denied" }
+  | {
+      ok: false;
+      kind: "indeterminate";
+      reason: "github_unavailable" | "invalid_github_response" | "storage_unavailable";
+    };
 
 const GITHUB_REPOSITORY = /^([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -282,6 +296,58 @@ export async function getGithubDependencyBuilderCredential(
     return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
   }
   return mintGithubRepositoryCredential({ repo: input.repo, installation });
+}
+
+export async function getGithubDependencyObservationCredential(
+  input: GithubDependencyBuilderCredentialInput,
+): Promise<GithubDependencyObservationCredentialResult> {
+  if (!isGithubDependencyBuilderCredentialInput(input)) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  let installation: Awaited<ReturnType<typeof getGithubInstallation>>;
+  try {
+    installation = await getGithubInstallation(input.workspaceId);
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "storage_unavailable" };
+  }
+  if (!installation || githubInstallationIdentitySha256({
+    workspaceId: input.workspaceId,
+    installationId: installation.installationId,
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+  }) !== input.expectedInstallationIdentitySha256) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  const match = GITHUB_REPOSITORY.exec(input.repo)!;
+  const [, owner, repoName] = match;
+  if (!installation.accountLogin
+    || installation.accountLogin.toLowerCase() !== owner!.toLowerCase()) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  const cfg = resolveGithubAppConfig(process.env);
+  if (!cfg.ok) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  let minted: Awaited<ReturnType<typeof mintRepositoryContentsReadInstallationToken>>;
+  try {
+    minted = await mintRepositoryContentsReadInstallationToken(
+      { installationId: installation.installationId, owner: owner!, repo: repoName! },
+      { appId: cfg.appId, privateKey: cfg.privateKey },
+    );
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+  }
+  if (minted.ok) return minted;
+  if (minted.kind === "indeterminate") {
+    return {
+      ok: false,
+      kind: "indeterminate",
+      reason: minted.reason === "github_unavailable"
+        ? "github_unavailable"
+        : "invalid_github_response",
+    };
+  }
+  return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
 }
 
 export async function bindWorkspaceGithubInstallation(

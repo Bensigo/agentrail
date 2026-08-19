@@ -5,6 +5,7 @@ import {
   signAppJwt,
   mintInstallationToken,
   mintCorrectionCarrierInstallationToken,
+  mintRepositoryContentsReadInstallationToken,
   getInstallationAccount,
   botCommitIdentity,
   listUserInstallations,
@@ -339,6 +340,52 @@ describe("mintCorrectionCarrierInstallationToken", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("mintRepositoryContentsReadInstallationToken", () => {
+  const cfg = { appId: "12345", privateKey };
+  const expiresAt = () => new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+  function response(permissions: Record<string, string> = { contents: "read", metadata: "read" }): Response {
+    return new Response(JSON.stringify({
+      token: "ghs_contents_read",
+      expires_at: expiresAt(),
+      repositories: [{ full_name: "acme/widgets" }],
+      permissions,
+    }), { status: 201, headers: { "content-type": "application/json" } });
+  }
+
+  it("requests one repository with contents-read authority only", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response());
+    await expect(mintRepositoryContentsReadInstallationToken(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      cfg,
+      fetchMock as unknown as typeof fetch,
+    )).resolves.toMatchObject({
+      ok: true,
+      token: "ghs_contents_read",
+      permissionBasis: { repository: "scoped_installation_token", contents: "read" },
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init).toMatchObject({ method: "POST", redirect: "error" });
+    expect(JSON.parse(init.body)).toEqual({
+      repositories: ["widgets"],
+      permissions: { contents: "read" },
+    });
+  });
+
+  it("rejects a response that grants any repository write authority", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({ contents: "read", issues: "write" }));
+    await expect(mintRepositoryContentsReadInstallationToken(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      cfg,
+      fetchMock as unknown as typeof fetch,
+    )).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "required_permissions_not_granted",
+    });
   });
 });
 

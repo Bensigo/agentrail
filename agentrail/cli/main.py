@@ -37,6 +37,7 @@ from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.upgrade import run_upgrade
 from agentrail.cli.commands.timeline import run_timeline
 from agentrail.cli.commands.cost import run_cost
+from agentrail.cli.commands.dependency_observation_worker import run_dependency_observation_worker
 
 
 def _repo_dir() -> Path:
@@ -55,6 +56,7 @@ def _usage() -> str:
         "  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--dry-run]\n"
         "  agentrail heartbeat run [--workspace ID] [--once] [--interval SECONDS]\n"
         "  agentrail heartbeat serve [--workspace ID] [--port PORT]\n"
+        "  agentrail dependency-observation-worker [--once] [--interval SECONDS]\n"
         "  agentrail status [--target DIR]\n"
         "  agentrail doctor [--target DIR]\n"
         "  agentrail upgrade [--target DIR] [--force]\n"
@@ -96,6 +98,7 @@ def _usage() -> str:
         "  run-records Assemble per-run production records (issue #1178)\n"
         "  afk         Run the AFK queue/worktree loop\n"
         "  heartbeat   Run the live Heartbeat dispatcher loop (MVP)\n"
+        "  dependency-observation-worker  Gather and post read-only pnpm evidence\n"
         "  status      Show worktree / session status\n"
         "  doctor      Check installation health\n"
         "  upgrade     Upgrade agentrail in this project\n"
@@ -158,6 +161,7 @@ def main(argv: List[str] | None = None) -> int:
                                         # gate would otherwise wrongly print "Not
                                         # logged in" before fleet's own env-var
                                         # check ever runs (#1267 PR②).
+        "dependency-observation-worker", # authenticates with JACE_CONSOLE_TOKEN
     }
     if args[0] not in _OFFLINE_COMMANDS:
         if load_credentials() is None and not os.environ.get("AGENTRAIL_SERVER_API_KEY"):
@@ -179,6 +183,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_afk(args[1:])
     if args[0] == "heartbeat":
         return run_heartbeat(args[1:])
+    if args[0] == "dependency-observation-worker":
+        return run_dependency_observation_worker(args[1:])
     if args[0] == "cleanup":
         return run_cleanup(args[1:])
     if args[0] == "console":

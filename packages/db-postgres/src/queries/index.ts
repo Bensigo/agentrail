@@ -3183,6 +3183,7 @@ export * from "./dependency_watches.js";
 export * from "./go_sumdb_note_custody.js";
 export * from "./dependency_upgrade_contracts.js";
 export * from "./dependency_observation_acceptance_records.js";
+export * from "./acceptance_dependency_observation_work.js";
 export {
   getRequirementDecisionReport,
   type RequirementDecisionReport,
@@ -3375,6 +3376,7 @@ export {
   reserveAcceptanceDependencyBuilderDelivery,
   reportAcceptanceDependencyBuilderDelivery,
   AcceptanceDependencyObservationConflictError,
+  AcceptanceDependencyObservationClaimError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   AcceptanceDependencyExternalBuilderPackConflictError,
   recordAcceptancePostMergeOutcome,

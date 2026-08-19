@@ -11,6 +11,7 @@ import {
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceDependencyBuilderDeliveries,
+  acceptanceDependencyObservationClaims,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCorrectionDispatchGithubFindingPublications,
@@ -10990,6 +10991,16 @@ export class AcceptanceDependencyObservationInvalidEvidenceError extends Error {
   }
 }
 
+/** A runner claim is absent, forged, stale, consumed by other evidence, or drifted. */
+export class AcceptanceDependencyObservationClaimError extends Error {
+  readonly code = "ACCEPTANCE_DEPENDENCY_OBSERVATION_CLAIM_INVALID" as const;
+
+  constructor() {
+    super("Dependency observation claim does not match current exact custody");
+    this.name = "AcceptanceDependencyObservationClaimError";
+  }
+}
+
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND = "acceptance_dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION = 1;
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 2;
@@ -11810,8 +11821,17 @@ function acceptanceDependencyObservationFromEvent(input: {
  * builder route.
  */
 export async function recordAcceptanceDependencyObservation(
-  input: RecordAcceptanceDependencyObservationInput
+  input: RecordAcceptanceDependencyObservationInput,
+  options: { claimToken?: string } = {},
 ): Promise<RecordAcceptanceDependencyObservationResult> {
+  if (options.claimToken !== undefined
+    && (!safeDependencyEvidenceText(options.claimToken, 256)
+      || !/^[A-Za-z0-9_-]{32,256}$/u.test(options.claimToken))) {
+    throw new AcceptanceDependencyObservationClaimError();
+  }
+  const suppliedClaimTokenSha256 = options.claimToken === undefined
+    ? null
+    : createHash("sha256").update(options.claimToken, "utf8").digest("hex");
   const currentProfileParsed = parseRecordAcceptanceDependencyObservationInput(input);
   const parsed = currentProfileParsed
     ?? parseRecordAcceptanceDependencyObservationInput(input, { freezeUnsupportedProfile: true });
@@ -11915,6 +11935,28 @@ export async function recordAcceptanceDependencyObservation(
       || sourceSnapshot.acceptanceContractVersion !== confirmed.version
       || sourceSnapshot.acceptanceContractSha256 !== acceptanceContractSha) {
       return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+
+    const activeSnapshots = await tx.select({ id: acceptanceContextPackSnapshots.id })
+      .from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.workspaceId, parsed.workspaceId),
+      eq(acceptanceContextPackSnapshots.recordId, record.id),
+      eq(acceptanceContextPackSnapshots.reviewJobId, record.currentPrHeadCycleId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+    )).limit(2);
+    if (activeSnapshots.length !== 1) {
+      return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+    const activePacks = await tx.select({ id: acceptanceCompiledContextPacks.id })
+      .from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, sourceSnapshot.id),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+    )).limit(2);
+    if (sourceSnapshot.status !== "admitted"
+      || activeSnapshots[0]!.id !== sourceSnapshot.id
+      || activePacks.length !== 1 || activePacks[0]!.id !== parsed.compiledPackId) {
+      return { kind: "not_ready" as const, reason: "compiled_pack_unavailable" as const };
     }
 
     let custody: AcceptanceContextPackCustodyResolution;
@@ -12024,6 +12066,67 @@ export async function recordAcceptanceDependencyObservation(
       reasons: disposition.reasons,
     });
 
+    const claim = options.claimToken === undefined ? null : (await tx.select()
+      .from(acceptanceDependencyObservationClaims).where(and(
+        eq(acceptanceDependencyObservationClaims.workspaceId, record.workspaceId),
+        eq(acceptanceDependencyObservationClaims.recordId, record.id),
+        eq(acceptanceDependencyObservationClaims.headCycleId, record.currentPrHeadCycleId),
+        eq(acceptanceDependencyObservationClaims.claimTokenSha256, suppliedClaimTokenSha256!),
+      )).limit(1))[0];
+    if (options.claimToken !== undefined) {
+      const installation = (await tx.select({
+        installationId: workspaces.githubInstallationId,
+        accountLogin: workspaces.githubInstallationAccountLogin,
+        accountType: workspaces.githubInstallationAccountType,
+      }).from(workspaces).where(eq(workspaces.id, record.workspaceId)).limit(1))[0];
+      const currentInstallationIdentitySha256 = installation && githubInstallationIdentitySha256({
+        workspaceId: record.workspaceId,
+        installationId: installation.installationId,
+        accountLogin: installation.accountLogin,
+        accountType: installation.accountType,
+      });
+      const profile = claim?.profile;
+      if (!claim || claim.claimTokenSha256 !== suppliedClaimTokenSha256
+        || !currentInstallationIdentitySha256
+        || claim.githubInstallationIdentitySha256 !== currentInstallationIdentitySha256
+        || claim.candidateFingerprint !== candidateFingerprint
+        || claim.headSha !== binding.headSha
+        || claim.authorityGeneration !== binding.authorityGeneration
+        || claim.acceptanceContractId !== binding.acceptanceContract.id
+        || claim.acceptanceContractVersion !== binding.acceptanceContract.version
+        || claim.acceptanceContractSha256 !== binding.acceptanceContract.sha256
+        || claim.compiledPackId !== binding.compiledPack.id
+        || claim.compiledPackSha256 !== binding.compiledPack.sha256
+        || !isDeepStrictEqual(claim.candidate, parsed.candidate)
+        || !isRecord(profile)
+        || profile["ecosystem"] !== parsed.candidate.identity.ecosystem
+        || profile["manager"] !== parsed.candidate.identity.manager
+        || profile["profile"] !== parsed.candidate.identity.profile
+        || profile["capability"] !== "proposal_observation_only"
+        || (claim.consumedAt === null && claim.leaseExpiresAt <= new Date())
+        || (claim.consumedAt === null) !== (claim.observationEventId === null)) {
+        throw new AcceptanceDependencyObservationClaimError();
+      }
+    }
+
+    const consumeClaim = async (eventId: string) => {
+      if (!claim) return;
+      if (claim.consumedAt !== null) {
+        if (claim.observationEventId !== eventId) {
+          throw new AcceptanceDependencyObservationClaimError();
+        }
+        return;
+      }
+      const consumed = await tx.update(acceptanceDependencyObservationClaims).set({
+        consumedAt: new Date(), observationEventId: eventId, updatedAt: new Date(),
+      }).where(and(
+        eq(acceptanceDependencyObservationClaims.id, claim.id),
+        eq(acceptanceDependencyObservationClaims.claimTokenSha256, claim.claimTokenSha256),
+        isNull(acceptanceDependencyObservationClaims.consumedAt),
+      )).returning({ id: acceptanceDependencyObservationClaims.id });
+      if (consumed.length !== 1) throw new AcceptanceDependencyObservationClaimError();
+    };
+
     const legacyCompatible = sameAcceptanceDependencyProfile(
       parsed.candidate.identity,
       ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
@@ -12073,6 +12176,7 @@ export async function recordAcceptanceDependencyObservation(
         || !isDeepStrictEqual(frozenDisposition.reasons, stored.observation.reasons)) {
         throw new AcceptanceDependencyObservationConflictError();
       }
+      await consumeClaim(existing.id);
       return { kind: "replayed" as const, binding, observation: stored.observation };
     }
     if (frozenUnsupportedReplayOnly) {
@@ -12089,6 +12193,7 @@ export async function recordAcceptanceDependencyObservation(
         reasons: disposition.reasons,
       });
       if (!observation) throw new AcceptanceDependencyObservationConflictError();
+      await consumeClaim(legacyExisting.id);
       return { kind: "replayed" as const, binding, observation };
     }
 
@@ -12119,6 +12224,7 @@ export async function recordAcceptanceDependencyObservation(
       reasons: disposition.reasons,
     });
     if (!observation) throw new AcceptanceDependencyObservationConflictError();
+    await consumeClaim(event.id);
     return { kind: "recorded" as const, binding, observation };
   });
 }

@@ -7,6 +7,7 @@ vi.mock("@agentrail/github-app", () => ({
   resolveGithubAppConfig: vi.fn(),
   mintInstallationToken: vi.fn(),
   mintCorrectionCarrierInstallationToken: vi.fn(),
+  mintRepositoryContentsReadInstallationToken: vi.fn(),
 }));
 
 import { db } from "../db.js";
@@ -14,11 +15,13 @@ import {
   resolveGithubAppConfig,
   mintInstallationToken,
   mintCorrectionCarrierInstallationToken,
+  mintRepositoryContentsReadInstallationToken,
 } from "@agentrail/github-app";
 import {
   getInstallationToken,
   getGithubCorrectionCarrierCredential,
   getGithubDependencyBuilderCredential,
+  getGithubDependencyObservationCredential,
   consumeGithubInstallState,
   getUserGithubIdentityById,
 } from "../queries/github-app-token.js";
@@ -235,6 +238,56 @@ describe("getGithubDependencyBuilderCredential", () => {
     });
     expect(resolveGithubAppConfig).not.toHaveBeenCalled();
     expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("getGithubDependencyObservationCredential", () => {
+  const expectedInstallationIdentitySha256 = githubInstallationIdentitySha256({
+    workspaceId: WORKSPACE_ID,
+    installationId: "777",
+    accountLogin: "acme",
+    accountType: "Organization",
+  })!;
+
+  it("mints one repository-scoped contents-read token from the exact installation", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "777", accountLogin: "acme", accountType: "Organization" }]) as never,
+    );
+    vi.mocked(mintRepositoryContentsReadInstallationToken).mockResolvedValue({
+      ok: true,
+      token: "ghs_contents_read",
+      expiresAt: "2030-01-01T00:00:00Z",
+      permissionBasis: { repository: "scoped_installation_token", contents: "read" },
+    } as never);
+
+    await expect(getGithubDependencyObservationCredential({
+      workspaceId: WORKSPACE_ID,
+      repo: "acme/widgets",
+      expectedInstallationIdentitySha256,
+    })).resolves.toMatchObject({
+      ok: true,
+      permissionBasis: { repository: "scoped_installation_token", contents: "read" },
+    });
+    expect(mintRepositoryContentsReadInstallationToken).toHaveBeenCalledWith(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      expect.objectContaining({ appId: "12345" }),
+    );
+  });
+
+  it("refuses an installation rebind before minting", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "888", accountLogin: "acme", accountType: "Organization" }]) as never,
+    );
+    await expect(getGithubDependencyObservationCredential({
+      workspaceId: WORKSPACE_ID,
+      repo: "acme/widgets",
+      expectedInstallationIdentitySha256,
+    })).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    });
+    expect(mintRepositoryContentsReadInstallationToken).not.toHaveBeenCalled();
   });
 });
 

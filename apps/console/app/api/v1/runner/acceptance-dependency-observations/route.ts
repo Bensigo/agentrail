@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  AcceptanceDependencyObservationClaimError,
   AcceptanceDependencyObservationConflictError,
   AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
 } from "@agentrail/db-postgres";
-import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
+import { requireBearer } from "../../../../../lib/bearer-auth";
 import {
   parseAcceptanceDependencyObservationForStorage,
   readBoundedAcceptanceDependencyObservationJson,
@@ -12,13 +13,13 @@ import {
 
 /**
  * Record one bounded dependency observation against server-revalidated
- * Acceptance Record, Contract, Context Pack and exact-head custody. The shared
- * runner secret authenticates the caller but grants no authority over those
- * supplied locators; the database derives and locks all canonical bindings.
+ * Acceptance Record, Contract, Context Pack and exact-head custody. The
+ * workspace API key supplies the tenant; the database derives and locks all
+ * remaining canonical bindings.
  */
 export async function POST(request: NextRequest) {
-  const unauthorized = requireJaceConsoleSecret(request);
-  if (unauthorized) return unauthorized;
+  const auth = await requireBearer(request);
+  if (auth instanceof NextResponse) return auth;
 
   const json = await readBoundedAcceptanceDependencyObservationJson(request);
   if (!json.ok) {
@@ -28,9 +29,16 @@ export async function POST(request: NextRequest) {
   if (!parsed) {
     return NextResponse.json({ error: "Invalid dependency observation" }, { status: 400 });
   }
+  if (parsed.input.workspaceId !== auth.workspaceId) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const claimToken = request.headers.get("x-agentrail-dependency-claim-token");
+  if (!claimToken) {
+    return NextResponse.json({ kind: "invalid_claim" }, { status: 409 });
+  }
 
   try {
-    const result = await recordAcceptanceDependencyObservation(parsed.input);
+    const result = await recordAcceptanceDependencyObservation(parsed.input, { claimToken });
     switch (result.kind) {
       case "recorded":
       case "replayed":
@@ -55,6 +63,9 @@ export async function POST(request: NextRequest) {
     }
     if (error instanceof AcceptanceDependencyObservationConflictError) {
       return NextResponse.json({ kind: "conflict" }, { status: 409 });
+    }
+    if (error instanceof AcceptanceDependencyObservationClaimError) {
+      return NextResponse.json({ kind: "invalid_claim" }, { status: 409 });
     }
     console.error("Acceptance dependency observation storage unavailable");
     return NextResponse.json({ error: "Dependency observation unavailable" }, { status: 503 });

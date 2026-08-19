@@ -17,7 +17,7 @@ import {
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
   recordAcceptanceContextPackSnapshot,
-  resolveAcceptanceCompiledContextPack,
+  resolveActiveAcceptanceCompiledContextPackForRecord,
   resolveAcceptanceBuilderRouteCapabilityProfile,
   resolveAcceptanceContextPackCustody,
   validateReviewJobCorrectionPacketPayload,
@@ -364,9 +364,10 @@ export async function produceAndRunGithubCorrectionDispatch(
       compilerVersion: SOURCE_SNAPSHOT_COMPILER_VERSION,
       packetSetSha256,
     });
-    const existingPack = await resolveAcceptanceCompiledContextPack({
+    const existingPack = await resolveActiveAcceptanceCompiledContextPackForRecord({
       workspaceId: input.workspaceId,
-      sourceSnapshotId,
+      recordId: timeline.record.id,
+      reviewJobId: job.id,
       compilerVersion: ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION,
       policyVersion: ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
     });

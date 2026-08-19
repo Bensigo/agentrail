@@ -9,7 +9,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   listWikiPages: vi.fn(),
   prepareAcceptanceContextPackRegenerationExecution: vi.fn(),
   recordAcceptanceContextPackSnapshot: vi.fn(),
-  resolveAcceptanceContextPackCustody: vi.fn(),
+  resolveAcceptanceContextPackCustodyForRegeneration: vi.fn(),
   wikiPageBodySha256: vi.fn(() => "d".repeat(64)),
 }));
 vi.mock("./acceptance-context-pack-compiler", () => ({
@@ -26,7 +26,7 @@ import {
   listWikiPages,
   prepareAcceptanceContextPackRegenerationExecution,
   recordAcceptanceContextPackSnapshot,
-  resolveAcceptanceContextPackCustody,
+  resolveAcceptanceContextPackCustodyForRegeneration,
 } from "@agentrail/db-postgres";
 import { compileAndRecordAcceptanceContextPack } from "./acceptance-context-pack-compiler";
 import { materializeExactHeadGithubContent } from "./github-exact-head-content";
@@ -51,7 +51,7 @@ describe("executeAcceptanceContextPackRegeneration", () => {
     vi.mocked(getRepositoryByName).mockResolvedValue({ id: "11111111-1111-4111-8111-111111111117" } as never);
     vi.mocked(listWikiPages).mockResolvedValue([] as never);
     vi.mocked(recordAcceptanceContextPackSnapshot).mockResolvedValue({ snapshot: { id: "11111111-1111-4111-8111-111111111118" } } as never);
-    vi.mocked(resolveAcceptanceContextPackCustody).mockResolvedValue({ sourceSnapshot: { id: "11111111-1111-4111-8111-111111111118" } } as never);
+    vi.mocked(resolveAcceptanceContextPackCustodyForRegeneration).mockResolvedValue({ sourceSnapshot: { id: "11111111-1111-4111-8111-111111111118" } } as never);
   });
   it("re-materializes server-derived custody and records an immutable replacement", async () => {
     vi.mocked(prepareAcceptanceContextPackRegenerationExecution).mockResolvedValue(ready as never);
@@ -60,9 +60,20 @@ describe("executeAcceptanceContextPackRegeneration", () => {
     vi.mocked(compileAndRecordAcceptanceContextPack).mockResolvedValue({ ok: true, persistence: { pack: { id: "new" } } } as never);
     await executeAcceptanceContextPackRegeneration(lease);
     expect(materializeExactHeadGithubContent).toHaveBeenCalledWith(expect.objectContaining({ token: "installation-token" }));
-    expect(recordAcceptanceContextPackSnapshot).toHaveBeenCalledWith(expect.objectContaining({
-      expectedHeadSha: priorSourceSnapshot.expectedHeadSha,
-      baseIndex: expect.objectContaining({ revisionSha256: "e".repeat(64) }),
+    expect(recordAcceptanceContextPackSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedHeadSha: priorSourceSnapshot.expectedHeadSha,
+        baseIndex: expect.objectContaining({ revisionSha256: "e".repeat(64) }),
+      }),
+      { regenerationExecutionId: lease.executionId },
+    );
+    expect(resolveAcceptanceContextPackCustodyForRegeneration).toHaveBeenCalledWith({
+      workspaceId: priorSourceSnapshot.workspaceId,
+      sourceSnapshotId: "11111111-1111-4111-8111-111111111118",
+      regenerationExecutionId: lease.executionId,
+    });
+    expect(compileAndRecordAcceptanceContextPack).toHaveBeenCalledWith(expect.objectContaining({
+      regenerationExecutionId: lease.executionId,
     }));
     expect(completeAcceptanceContextPackRegenerationExecution).toHaveBeenCalledWith({ ...lease, outcome: "replaced", replacementCompiledPackId: "new", reason: "compiler_output_replaced" });
   });

@@ -71,8 +71,10 @@ import {
   completeAcceptanceContextPackRegenerationExecution,
   listAcceptanceContextPackRegenerationExecutions,
   resolveAcceptanceContextPackCustody,
+  resolveAcceptanceContextPackCustodyForRegeneration,
   recordAcceptanceCompiledContextPack,
   resolveAcceptanceCompiledContextPack,
+  listAcceptanceContextPacksForWorkspace,
   recordAcceptanceDependencyObservation,
   readCurrentAcceptanceDependencyObservations,
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
@@ -2812,10 +2814,11 @@ describe.skipIf(!DB_AVAILABLE)(
         },
         status: "admitted",
         reason: null,
-      });
-      const custody = await resolveAcceptanceContextPackCustody({
+      }, { regenerationExecutionId: claim.executionId });
+      const custody = await resolveAcceptanceContextPackCustodyForRegeneration({
         workspaceId: wsId,
         sourceSnapshotId: freshSnapshot.snapshot.id,
+        regenerationExecutionId: claim.executionId,
       });
       const changedFiles = fixture.fileProofs.map((file) => ({
         path: file.path,
@@ -2868,14 +2871,55 @@ describe.skipIf(!DB_AVAILABLE)(
         },
         readExactPath: async () => ({ ok: false as const, kind: "not_proven" as const, reason: "path_not_found" as const }),
       };
-      const first = await compileAndRecordAcceptanceContextPack({ custody, snapshot: exact, materialization });
-      const replay = await compileAndRecordAcceptanceContextPack({ custody, snapshot: exact, materialization });
+      const first = await compileAndRecordAcceptanceContextPack({
+        custody,
+        snapshot: exact,
+        materialization,
+        regenerationExecutionId: claim.executionId,
+      });
+      const replay = await compileAndRecordAcceptanceContextPack({
+        custody,
+        snapshot: exact,
+        materialization,
+        regenerationExecutionId: claim.executionId,
+      });
       expect(first.ok).toBe(true);
       expect(replay.ok).toBe(true);
       if (!first.ok || !replay.ok) return;
       expect(first.persistence).toMatchObject({ inserted: true, pack: { sourceSnapshotId: freshSnapshot.snapshot.id } });
       expect(replay.persistence).toMatchObject({ inserted: false, pack: { id: first.persistence.pack.id } });
       expect(first.persistence.pack.id).not.toBe(fixture.pack.id);
+      expect(freshSnapshot.snapshot).toMatchObject({
+        generationStatus: "provisional",
+        regenerationExecutionId: claim.executionId,
+      });
+      expect(first.persistence.pack).toMatchObject({
+        generationStatus: "provisional",
+        regenerationExecutionId: claim.executionId,
+      });
+      await expect(resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: freshSnapshot.snapshot.id,
+      })).rejects.toThrow(/missing, legacy, or not admitted/u);
+      await expect(resolveAcceptanceCompiledContextPack({
+        workspaceId: wsId,
+        sourceSnapshotId: freshSnapshot.snapshot.id,
+        compilerVersion: first.persistence.pack.compilerVersion,
+        policyVersion: first.persistence.pack.policyVersion,
+      })).resolves.toBeNull();
+      const beforeSummary = (await readAcceptanceRecordSummaries({ workspaceId: wsId })).records
+        .find(({ recordId }) => recordId === fixture.draft.record.id);
+      expect(beforeSummary?.suppliedContext).toMatchObject({
+        kind: "compiled",
+        compiledPack: { id: fixture.pack.id },
+      });
+      expect(JSON.stringify(await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      }))).not.toContain(first.persistence.pack.id);
+      expect(await listAcceptanceContextPacksForWorkspace({ workspaceId: wsId })).toEqual(
+        expect.not.arrayContaining([expect.objectContaining({ id: first.persistence.pack.id })]),
+      );
       await expect(completeAcceptanceContextPackRegenerationExecution({
         executionId: claim.executionId,
         workerId: claim.workerId,
@@ -2890,6 +2934,14 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(await db.select().from(acceptanceCompiledContextPacks).where(inArray(
         acceptanceCompiledContextPacks.id, [fixture.pack.id, first.persistence.pack.id],
       ))).toHaveLength(2);
+      expect((await readAcceptanceRecordSummaries({ workspaceId: wsId })).records
+        .find(({ recordId }) => recordId === fixture.draft.record.id)?.suppliedContext).toMatchObject({
+        kind: "compiled",
+        compiledPack: { id: first.persistence.pack.id },
+      });
+      expect(await listAcceptanceContextPacksForWorkspace({ workspaceId: wsId })).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: first.persistence.pack.id })]),
+      );
     });
 
     it("derives exact regeneration custody from a valid lease and rejects a forged lease", async () => {

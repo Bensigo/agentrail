@@ -8161,16 +8161,33 @@ export async function resolveAcceptanceContextPackCustody(
   return db.transaction((tx) => resolveAcceptanceContextPackCustodyInTransaction(tx, input));
 }
 
+/** Internal execution-only resolver for one provisional generation. */
+export async function resolveAcceptanceContextPackCustodyForRegeneration(
+  input: ResolveAcceptanceContextPackCustodyInput & { regenerationExecutionId: string },
+): Promise<AcceptanceContextPackCustodyResolution> {
+  if (!isUuid(input?.regenerationExecutionId)) throw new Error("Invalid regeneration execution");
+  return db.transaction((tx) => resolveAcceptanceContextPackCustodyInTransaction(
+    tx,
+    input,
+    input.regenerationExecutionId,
+  ));
+}
+
 /** Shared transaction-scoped authority check for custody resolution and Pack persistence. */
 async function resolveAcceptanceContextPackCustodyInTransaction(
   tx: DbTransaction,
-  input: ResolveAcceptanceContextPackCustodyInput
+  input: ResolveAcceptanceContextPackCustodyInput,
+  regenerationExecutionId?: string,
 ): Promise<AcceptanceContextPackCustodyResolution> {
     const snapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.id, input.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
     )).limit(1))[0];
-    if (!snapshot || snapshot.status !== "admitted"
+    const generationReadable = snapshot?.generationStatus === "active"
+      || regenerationExecutionId !== undefined
+        && snapshot?.generationStatus === "provisional"
+        && snapshot.regenerationExecutionId === regenerationExecutionId;
+    if (!snapshot || !generationReadable || snapshot.status !== "admitted"
       || !isCustodyBaseIndexIdentity(snapshot.baseIndex) || !isCustodyOverlayIdentity(snapshot.overlay)
       || typeof snapshot.acceptanceContractSha256 !== "string"
       || typeof snapshot.correctionPacketPayloadSetSha256 !== "string") {
@@ -8328,6 +8345,7 @@ export type AcceptanceCompiledContextPackExactSourceProof = {
 export type RecordAcceptanceCompiledContextPackInput = {
   workspaceId: string;
   sourceSnapshotId: string;
+  regenerationExecutionId?: string;
   compiled: unknown;
   exactSourceProofs: readonly AcceptanceCompiledContextPackExactSourceProof[];
   /** Transient full native-tree proofs; raw tree bodies are never persisted. */
@@ -8964,7 +8982,10 @@ export function acceptanceCompiledContextPackId(input: Pick<ResolveAcceptanceCom
 export async function recordAcceptanceCompiledContextPack(
   input: RecordAcceptanceCompiledContextPackInput
 ): Promise<{ pack: AcceptanceCompiledContextPackRow; inserted: boolean }> {
-  if (!isUuid(input?.workspaceId) || !isUuid(input?.sourceSnapshotId)) throw new Error("Invalid compiled Context Pack scope");
+  if (!isUuid(input?.workspaceId) || !isUuid(input?.sourceSnapshotId)
+    || (input.regenerationExecutionId !== undefined && !isUuid(input.regenerationExecutionId))) {
+    throw new Error("Invalid compiled Context Pack scope");
+  }
   const compiled = parseCompiledAcceptanceContextPack(input.compiled);
   if (!compiled || compiled.binding["workspaceId"] !== input.workspaceId || compiled.binding["sourceSnapshotId"] !== input.sourceSnapshotId) {
     throw new Error("Invalid compiled Context Pack");
@@ -8981,7 +9002,11 @@ export async function recordAcceptanceCompiledContextPack(
   const lockKey = `acceptance-compiled-context-pack:${input.sourceSnapshotId}:${compilerVersion}:${policyVersion}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
-    const custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, input);
+    const custody = await resolveAcceptanceContextPackCustodyInTransaction(
+      tx,
+      input,
+      input.regenerationExecutionId,
+    );
     if (!bindingMatchesCustody(compiled.binding, custody) || !receiptMatchesCustody(compiled.sourceCustodyReceipt, custody)
       || !manifestMatchesCustody(compiled, custody) || compiled.packSha256 !== compiledPackIdentity(compiled)) {
       throw new Error("Compiled Context Pack custody does not match the authoritative snapshot");
@@ -8993,6 +9018,8 @@ export async function recordAcceptanceCompiledContextPack(
       renderedByteCount: compiled.renderedByteCount, binding: compiled.binding, manifest: compiled.manifest,
       sourceCustodyReceipt: compiled.sourceCustodyReceipt,
       exactHeadDependencyTreeProofs: compiled.exactHeadDependencyTreeProofs,
+      generationStatus: input.regenerationExecutionId ? "provisional" : "active",
+      regenerationExecutionId: input.regenerationExecutionId ?? null,
     };
     const existing = await tx.select().from(acceptanceCompiledContextPacks).where(and(
       eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
@@ -9003,7 +9030,34 @@ export async function recordAcceptanceCompiledContextPack(
       if (!isDeepStrictEqual(compiledPackComparable(existing[0]), compiledPackInputComparable(compiled, input.workspaceId, input.sourceSnapshotId))) {
         throw new Error("Compiled Context Pack replay identity is already bound to different metadata");
       }
+      const replayGenerationMatches = input.regenerationExecutionId
+        ? existing[0].generationStatus === "active"
+          || existing[0].generationStatus === "provisional"
+            && existing[0].regenerationExecutionId === input.regenerationExecutionId
+        : existing[0].generationStatus === "active";
+      if (!replayGenerationMatches) {
+        throw new Error("Compiled Context Pack replay is not in the requested generation");
+      }
       return { pack: existing[0], inserted: false };
+    }
+    if (input.regenerationExecutionId) {
+      const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+        eq(acceptanceContextPackRegenerationExecutions.id, input.regenerationExecutionId),
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        eq(acceptanceContextPackRegenerationExecutions.workspaceId, input.workspaceId),
+        eq(acceptanceContextPackRegenerationExecutions.recordId, custody.sourceSnapshot.recordId),
+        eq(acceptanceContextPackRegenerationExecutions.headCycleId, custody.sourceSnapshot.reviewJobId),
+        gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
+      )).limit(1))[0];
+      if (!execution) throw new Error("Compiled Context Pack regeneration generation is not current");
+    } else {
+      await tx.update(acceptanceCompiledContextPacks).set({
+        generationStatus: "superseded",
+      }).where(and(
+        eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+        eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      ));
     }
     const rows = await tx.insert(acceptanceCompiledContextPacks).values(values).returning();
     return { pack: rows[0]!, inserted: true };
@@ -9036,8 +9090,45 @@ export async function resolveAcceptanceCompiledContextPack(
       eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
       eq(acceptanceCompiledContextPacks.compilerVersion, input.compilerVersion),
       eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     )).limit(1);
   return rows[0]?.pack ?? null;
+}
+
+/** Finds the one active Pack generation for an exact current Record occurrence. */
+export async function resolveActiveAcceptanceCompiledContextPackForRecord(input: {
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  compilerVersion: string;
+  policyVersion: string;
+}): Promise<AcceptanceCompiledContextPackRow | null> {
+  if (!isUuid(input?.workspaceId) || !isUuid(input?.recordId) || !isUuid(input?.reviewJobId)
+    || !isPackText(input?.compilerVersion, 128) || !isPackText(input?.policyVersion, 128)) return null;
+  const rows = await db.select({ pack: acceptanceCompiledContextPacks })
+    .from(acceptanceCompiledContextPacks)
+    .innerJoin(acceptanceContextPackSnapshots, and(
+      eq(acceptanceContextPackSnapshots.id, acceptanceCompiledContextPacks.sourceSnapshotId),
+      eq(acceptanceContextPackSnapshots.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+    ))
+    .innerJoin(changeRecords, and(
+      eq(changeRecords.id, acceptanceContextPackSnapshots.recordId),
+      eq(changeRecords.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+      eq(changeRecords.currentPrHeadAuthoritative, true),
+      eq(changeRecords.currentPrHeadSha, acceptanceContextPackSnapshots.expectedHeadSha),
+      eq(changeRecords.currentPrHeadCycleId, acceptanceContextPackSnapshots.reviewJobId),
+    ))
+    .where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+      eq(acceptanceContextPackSnapshots.recordId, input.recordId),
+      eq(acceptanceContextPackSnapshots.reviewJobId, input.reviewJobId),
+      eq(acceptanceCompiledContextPacks.compilerVersion, input.compilerVersion),
+      eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+    )).limit(2);
+  return rows.length === 1 ? rows[0]!.pack : null;
 }
 
 const ACCEPTANCE_CONTEXT_PACK_INDEX_DEFAULT_LIMIT = 100;
@@ -9112,6 +9203,8 @@ export async function listAcceptanceContextPacksForWorkspace(
     .where(and(
       eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
       eq(acceptanceContextPackSnapshots.status, "admitted"),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     ))
     .orderBy(desc(acceptanceCompiledContextPacks.createdAt))
     .limit(parsed.limit);
@@ -9404,6 +9497,8 @@ export async function recordAcceptanceContextPackRegenerationRequest(
     .where(and(
       eq(acceptanceCompiledContextPacks.id, parsed.compiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
       eq(changeRecords.id, parsed.recordId),
     )).limit(1))[0];
   if (!candidate) return { kind: "not_found" };
@@ -9437,11 +9532,13 @@ export async function recordAcceptanceContextPackRegenerationRequest(
     const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
       eq(acceptanceCompiledContextPacks.id, parsed.compiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
     )).limit(1))[0];
     const snapshot = pack && (await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.id, pack.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, parsed.workspaceId),
       eq(acceptanceContextPackSnapshots.recordId, parsed.recordId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     )).limit(1))[0];
     if (!pack || !snapshot) return { kind: "not_found" };
     if (!record.currentPrHeadAuthoritative || record.state !== "open" || record.mergedSha !== null
@@ -9718,11 +9815,13 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       eq(acceptanceContextPackSnapshots.id, execution.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
       eq(acceptanceContextPackSnapshots.recordId, execution.recordId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     )).limit(1))[0];
     const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
       eq(acceptanceCompiledContextPacks.id, execution.priorCompiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
       eq(acceptanceCompiledContextPacks.sourceSnapshotId, execution.sourceSnapshotId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
     )).limit(1))[0];
     const snapshotInput = snapshot ? acceptanceRecordSummarySnapshotInput(snapshot) : null;
     if (!snapshot || !pack || !snapshotInput || !validateAcceptanceContextPackSnapshotInput(snapshotInput)
@@ -10123,6 +10222,7 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
       eq(acceptanceCompiledContextPacks.id, execution.priorCompiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
       eq(acceptanceCompiledContextPacks.sourceSnapshotId, execution.sourceSnapshotId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
     )).limit(1))[0];
     if (!priorPack) {
       await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
@@ -10134,6 +10234,7 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
       eq(acceptanceContextPackSnapshots.id, execution.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
       eq(acceptanceContextPackSnapshots.recordId, execution.recordId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     )).limit(1))[0];
     const priorSnapshotInput = priorSourceSnapshot ? snapshotComparable(priorSourceSnapshot) : null;
     if (!priorSourceSnapshot || !priorSnapshotInput || priorSourceSnapshot.reviewJobId !== execution.headCycleId
@@ -10245,6 +10346,14 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
         eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
       )).limit(1))[0];
       if (!pack || !replacementSnapshot || !priorSnapshot || pack.id === execution.priorCompiledPackId
+        || pack.generationStatus !== "provisional"
+        || pack.regenerationExecutionId !== execution.id
+        || priorSnapshot.generationStatus !== "active"
+        || (replacementSnapshot.id !== priorSnapshot.id
+          && (replacementSnapshot.generationStatus !== "provisional"
+            || replacementSnapshot.regenerationExecutionId !== execution.id))
+        || (replacementSnapshot.id === priorSnapshot.id
+          && replacementSnapshot.generationStatus !== "active")
         || replacementSnapshot.recordId !== execution.recordId
         || replacementSnapshot.reviewJobId !== execution.headCycleId
         || replacementSnapshot.expectedHeadSha !== execution.headSha
@@ -10263,10 +10372,14 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
         return { kind: "completed" as const, execution: receipt };
       }
       try {
-        const replacementCustody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
-          workspaceId: execution.workspaceId,
-          sourceSnapshotId: replacementSnapshot.id,
-        });
+        const replacementCustody = await resolveAcceptanceContextPackCustodyInTransaction(
+          tx,
+          {
+            workspaceId: execution.workspaceId,
+            sourceSnapshotId: replacementSnapshot.id,
+          },
+          execution.id,
+        );
         if (!acceptanceRecordSummaryCompiledPack({ row: pack, custody: replacementCustody })) {
           throw new Error("replacement Pack custody mismatch");
         }
@@ -10275,6 +10388,46 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
           tx, execution, "not_proven", "replacement_custody_not_proven",
         );
         return { kind: "completed" as const, execution: receipt };
+      }
+      const priorPackSwap = await tx.update(acceptanceCompiledContextPacks).set({
+        generationStatus: "superseded",
+      }).where(and(
+        eq(acceptanceCompiledContextPacks.id, execution.priorCompiledPackId),
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      )).returning({ id: acceptanceCompiledContextPacks.id });
+      const replacementPackSwap = await tx.update(acceptanceCompiledContextPacks).set({
+        generationStatus: "active",
+        regenerationExecutionId: null,
+      }).where(and(
+        eq(acceptanceCompiledContextPacks.id, pack.id),
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "provisional"),
+        eq(acceptanceCompiledContextPacks.regenerationExecutionId, execution.id),
+      )).returning({ id: acceptanceCompiledContextPacks.id });
+      if (priorPackSwap.length !== 1 || replacementPackSwap.length !== 1) {
+        throw new Error("Context Pack regeneration Pack activation lost custody");
+      }
+      if (replacementSnapshot.id !== priorSnapshot.id) {
+        const priorSnapshotSwap = await tx.update(acceptanceContextPackSnapshots).set({
+          generationStatus: "superseded",
+        }).where(and(
+          eq(acceptanceContextPackSnapshots.id, priorSnapshot.id),
+          eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+          eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+        )).returning({ id: acceptanceContextPackSnapshots.id });
+        const replacementSnapshotSwap = await tx.update(acceptanceContextPackSnapshots).set({
+          generationStatus: "active",
+          regenerationExecutionId: null,
+        }).where(and(
+          eq(acceptanceContextPackSnapshots.id, replacementSnapshot.id),
+          eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+          eq(acceptanceContextPackSnapshots.generationStatus, "provisional"),
+          eq(acceptanceContextPackSnapshots.regenerationExecutionId, execution.id),
+        )).returning({ id: acceptanceContextPackSnapshots.id });
+        if (priorSnapshotSwap.length !== 1 || replacementSnapshotSwap.length !== 1) {
+          throw new Error("Context Pack regeneration snapshot activation lost custody");
+        }
       }
     }
     const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
@@ -11511,6 +11664,7 @@ export async function recordAcceptanceDependencyObservation(
     const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
       eq(acceptanceCompiledContextPacks.id, parsed.compiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
     )).limit(1))[0];
     if (!pack) {
       return { kind: "not_ready" as const, reason: "compiled_pack_unavailable" as const };
@@ -11518,6 +11672,7 @@ export async function recordAcceptanceDependencyObservation(
     const sourceSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.id, pack.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, parsed.workspaceId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
     )).limit(1))[0];
     if (!sourceSnapshot) {
       return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
@@ -12196,6 +12351,7 @@ async function revalidateStoredAcceptanceDependencyObservationInTransaction(
   const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
     eq(acceptanceCompiledContextPacks.id, stored.binding.compiledPack.id),
     eq(acceptanceCompiledContextPacks.workspaceId, context.binding.workspaceId),
+    eq(acceptanceCompiledContextPacks.generationStatus, "active"),
   )).limit(1))[0];
   if (!pack) return { kind: "not_ready", reason: "compiled_pack_unavailable" };
   const proofSetSha256 = acceptanceContextPackCanonicalSha256({
@@ -13059,13 +13215,17 @@ function snapshotComparable(snapshot: AcceptanceContextPackSnapshotRow | Accepta
  * Replays are accepted only when every durable field is identical.
  */
 export async function recordAcceptanceContextPackSnapshot(
-  input: AcceptanceContextPackSnapshotInput
+  input: AcceptanceContextPackSnapshotInput,
+  options?: { regenerationExecutionId: string },
 ): Promise<{ snapshot: AcceptanceContextPackSnapshotRow; inserted: boolean }> {
   if (!validateAcceptanceContextPackSnapshotInput(input)) {
     throw new Error("Invalid exact-head Context Pack snapshot");
   }
   if (input.packetIds.some((id, index) => index > 0 && input.packetIds[index - 1]! >= id)) {
     throw new Error("Context Pack snapshot packetIds must be sorted and unique");
+  }
+  if (options !== undefined && !isUuid(options.regenerationExecutionId)) {
+    throw new Error("Invalid Context Pack snapshot regeneration generation");
   }
   const id = acceptanceContextPackSnapshotId(input);
   const lockKey = `acceptance-context-pack-snapshot:${input.reviewJobId}:${input.compilerVersion}:${input.packetSetSha256}`;
@@ -13141,6 +13301,18 @@ export async function recordAcceptanceContextPackSnapshot(
       throw new Error("Context Pack snapshot packets are not the complete exact R8.1 payload set");
     }
     await recheckWikiBaseIndex(tx, input);
+    if (options) {
+      const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions).where(and(
+        eq(acceptanceContextPackRegenerationExecutions.id, options.regenerationExecutionId),
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        eq(acceptanceContextPackRegenerationExecutions.workspaceId, input.workspaceId),
+        eq(acceptanceContextPackRegenerationExecutions.recordId, input.recordId),
+        eq(acceptanceContextPackRegenerationExecutions.headCycleId, input.reviewJobId),
+        eq(acceptanceContextPackRegenerationExecutions.headSha, input.expectedHeadSha),
+        gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
+      )).limit(1))[0];
+      if (!execution) throw new Error("Context Pack snapshot regeneration generation is not current");
+    }
     const existing = await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.reviewJobId, input.reviewJobId),
       eq(acceptanceContextPackSnapshots.compilerVersion, input.compilerVersion),
@@ -13150,9 +13322,32 @@ export async function recordAcceptanceContextPackSnapshot(
       if (!isDeepStrictEqual(snapshotComparable(existing[0]), snapshotComparable(input))) {
         throw new Error("Context Pack snapshot replay identity is already bound to different provenance");
       }
+      const replayGenerationMatches = options
+        ? existing[0].generationStatus === "active"
+          || existing[0].generationStatus === "provisional"
+            && existing[0].regenerationExecutionId === options.regenerationExecutionId
+        : existing[0].generationStatus === "active";
+      if (!replayGenerationMatches) {
+        throw new Error("Context Pack snapshot replay is not in the requested generation");
+      }
       return { snapshot: existing[0], inserted: false };
     }
-    const rows = await tx.insert(acceptanceContextPackSnapshots).values({ id, ...input }).returning();
+    if (!options) {
+      await tx.update(acceptanceContextPackSnapshots).set({
+        generationStatus: "superseded",
+      }).where(and(
+        eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+        eq(acceptanceContextPackSnapshots.recordId, input.recordId),
+        eq(acceptanceContextPackSnapshots.reviewJobId, input.reviewJobId),
+        eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+      ));
+    }
+    const rows = await tx.insert(acceptanceContextPackSnapshots).values({
+      id,
+      ...input,
+      generationStatus: options ? "provisional" : "active",
+      regenerationExecutionId: options?.regenerationExecutionId ?? null,
+    }).returning();
     return { snapshot: rows[0]!, inserted: true };
   });
 }
@@ -14159,6 +14354,7 @@ async function resolveCurrentGithubCorrectionCarrierPreflightBindingInTransactio
     eq(acceptanceContextPackSnapshots.prNumber, dispatch.prNumber),
     eq(acceptanceContextPackSnapshots.expectedHeadSha, dispatch.headSha),
     eq(acceptanceContextPackSnapshots.status, "admitted"),
+    eq(acceptanceContextPackSnapshots.generationStatus, "active"),
   )).limit(1))[0];
   if (!sourceSnapshot || sourceSnapshot.reviewJobId !== dispatch.headCycleId
     || !sourceSnapshot.baseSha || !isSha1(sourceSnapshot.baseSha)) return null;
@@ -14663,6 +14859,7 @@ async function resolveCurrentGithubCorrectionCarrierBindingInTransaction(
     eq(acceptanceContextPackSnapshots.prNumber, dispatch.prNumber),
     eq(acceptanceContextPackSnapshots.expectedHeadSha, dispatch.headSha),
     eq(acceptanceContextPackSnapshots.status, "admitted"),
+    eq(acceptanceContextPackSnapshots.generationStatus, "active"),
   )).limit(1))[0];
   if (!sourceSnapshot || sourceSnapshot.reviewJobId !== dispatch.headCycleId
     || !sourceSnapshot.baseSha || !isSha1(sourceSnapshot.baseSha)) return null;
@@ -14699,6 +14896,7 @@ async function resolveCurrentGithubCorrectionCarrierBindingInTransaction(
     eq(acceptanceCompiledContextPacks.id, dispatch.compiledPackId),
     eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
     eq(acceptanceCompiledContextPacks.sourceSnapshotId, dispatch.sourceSnapshotId),
+    eq(acceptanceCompiledContextPacks.generationStatus, "active"),
   )).limit(1))[0];
   if (!compiledPack || compiledPack.packSha256 !== dispatch.compiledPackSha256
     || compiledPack.compilerVersion !== dispatch.compilerVersion
@@ -16036,6 +16234,7 @@ async function resolveStoredGithubCorrectionFallbackBindingInTransaction(
     eq(acceptanceContextPackSnapshots.prNumber, dispatch.prNumber),
     eq(acceptanceContextPackSnapshots.expectedHeadSha, dispatch.headSha),
     eq(acceptanceContextPackSnapshots.status, "admitted"),
+    eq(acceptanceContextPackSnapshots.generationStatus, "active"),
   )).limit(1))[0];
   if (!sourceSnapshot || sourceSnapshot.reviewJobId !== dispatch.headCycleId
     || !sourceSnapshot.baseSha || !isSha1(sourceSnapshot.baseSha)) return null;
@@ -16058,6 +16257,7 @@ async function resolveStoredGithubCorrectionFallbackBindingInTransaction(
     eq(acceptanceCompiledContextPacks.id, dispatch.compiledPackId),
     eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
     eq(acceptanceCompiledContextPacks.sourceSnapshotId, dispatch.sourceSnapshotId),
+    eq(acceptanceCompiledContextPacks.generationStatus, "active"),
   )).limit(1))[0];
   if (!compiledPack || compiledPack.packSha256 !== dispatch.compiledPackSha256
     || compiledPack.compilerVersion !== dispatch.compilerVersion
@@ -18169,6 +18369,8 @@ export async function queueSelectedCorrectionDispatch(
       eq(acceptanceCompiledContextPacks.id, input.compiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
       eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
       eq(changeRecords.workspaceId, input.workspaceId),
     )).limit(1))[0];
   if (!candidate) throw new Error("Compiled Context Pack is missing or outside this workspace");
@@ -18183,6 +18385,7 @@ export async function queueSelectedCorrectionDispatch(
     const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
       eq(acceptanceCompiledContextPacks.id, input.compiledPackId),
       eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
     )).limit(1))[0];
     if (!pack) throw new Error("Compiled Context Pack is missing or outside this workspace");
     const custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
@@ -18925,6 +19128,8 @@ function mapAcceptanceRecordSummarySnapshotRow(
     provenance: row["provenance"] as Record<string, unknown>,
     status: row["status"] as string,
     reason: (row["reason"] as string | null) ?? null,
+    generationStatus: row["generation_status"] as AcceptanceContextPackSnapshotRow["generationStatus"],
+    regenerationExecutionId: (row["regeneration_execution_id"] as string | null) ?? null,
     createdAt: toDate(row["created_at"]),
     updatedAt: toDate(row["updated_at"]),
   };
@@ -18949,6 +19154,8 @@ function mapAcceptanceRecordSummaryCompiledPackRow(
     manifest: row["manifest"] as Record<string, unknown>,
     sourceCustodyReceipt: row["source_custody_receipt"] as Record<string, unknown>,
     exactHeadDependencyTreeProofs,
+    generationStatus: row["generation_status"] as AcceptanceCompiledContextPackRow["generationStatus"],
+    regenerationExecutionId: (row["regeneration_execution_id"] as string | null) ?? null,
     createdAt: toDate(row["created_at"]),
   };
 }
@@ -19173,6 +19380,7 @@ async function readAcceptanceRecordSummariesInTransaction(
           ) AS summary_rank
         FROM acceptance_context_pack_snapshots AS snapshots
         WHERE snapshots.workspace_id = ${parsed.workspaceId}::uuid
+          AND snapshots.generation_status = 'active'
           AND snapshots.record_id IN (${stableRecordIdSql})
           AND snapshots.review_job_id IN (${sql.join(
             focusJobIds.map((jobId) => sql`${jobId}::uuid`),
@@ -19207,6 +19415,7 @@ async function readAcceptanceRecordSummariesInTransaction(
           ) AS summary_rank
         FROM acceptance_compiled_context_packs AS packs
         WHERE packs.workspace_id = ${parsed.workspaceId}::uuid
+          AND packs.generation_status = 'active'
           AND packs.source_snapshot_id IN (${sql.join(
             snapshotIds.map((snapshotId) => sql`${snapshotId}::uuid`),
             sql`, `,
@@ -19343,6 +19552,7 @@ async function readAcceptanceRecordSummariesInTransaction(
             events,
             repositoryRows: repositoriesByName.get(record.repo) ?? [],
             wikiPagesById,
+            wikiVerification: "snapshot_identity_only",
           });
           const packs = compiledPacksBySnapshot.get(snapshot.id) ?? [];
           if (!custody || (snapshot.status === "not_proven" && packs.length !== 0)) {
@@ -19360,7 +19570,11 @@ async function readAcceptanceRecordSummariesInTransaction(
           } else if (packs.length !== 1) {
             reasons.add("ambiguous_context_custody");
           } else {
-            const compiledPack = acceptanceRecordSummaryCompiledPack({ row: packs[0]!, custody });
+            const compiledPack = acceptanceRecordSummaryCompiledPack({
+              row: packs[0]!,
+              custody,
+              wikiVerification: "snapshot_identity_only",
+            });
             if (!compiledPack) {
               reasons.add("invalid_context_custody");
             } else {
@@ -19609,6 +19823,7 @@ function acceptanceRecordDetailSnapshot(
 function acceptanceRecordDetailCompiledPack(input: {
   row: AcceptanceCompiledContextPackRow;
   custody: AcceptanceContextPackCustodyResolution;
+  wikiVerification?: "current_body" | "snapshot_identity_only";
 }): AcceptanceRecordDetailCompiledPack | null {
   if (!acceptanceRecordSummaryCompiledPack(input)) return null;
   const parsed = parseCompiledAcceptanceContextPack({
@@ -19955,6 +20170,7 @@ export async function readAcceptanceRecordDetail(
       FROM acceptance_context_pack_snapshots AS snapshots
       WHERE snapshots.workspace_id = ${record.workspaceId}::uuid
         AND snapshots.record_id = ${record.id}::uuid
+        AND snapshots.generation_status <> 'provisional'
       ORDER BY snapshots.created_at ASC, snapshots.id ASC
       LIMIT ${ACCEPTANCE_RECORD_DETAIL_SNAPSHOT_LIMIT + 1}
     `)) as Array<Record<string, unknown>>;
@@ -20257,6 +20473,7 @@ export async function readAcceptanceRecordDetail(
         snapshotIds.map((snapshotId) => sql`${snapshotId}::uuid`),
         sql`, `,
       )})
+        AND packs.generation_status <> 'provisional'
       ORDER BY packs.source_snapshot_id ASC, packs.created_at ASC, packs.id ASC
       LIMIT ${ACCEPTANCE_RECORD_DETAIL_COMPILED_PACK_LIMIT + 1}
     `)) as Array<Record<string, unknown>>;
@@ -20290,6 +20507,7 @@ export async function readAcceptanceRecordDetail(
         events,
         repositoryRows,
         wikiPagesById,
+        wikiVerification: "snapshot_identity_only",
       });
       if (!custody) return { kind: "unavailable", reason: "invalid_context_custody" };
       const storedPacks = packsBySnapshot.get(snapshot.id) ?? [];
@@ -20298,7 +20516,11 @@ export async function readAcceptanceRecordDetail(
       }
       const compiledPacks: AcceptanceRecordDetailCompiledPack[] = [];
       for (const storedPack of storedPacks) {
-        const projected = acceptanceRecordDetailCompiledPack({ row: storedPack, custody });
+        const projected = acceptanceRecordDetailCompiledPack({
+          row: storedPack,
+          custody,
+          wikiVerification: "snapshot_identity_only",
+        });
         if (!projected) {
           return { kind: "unavailable", reason: "invalid_compiled_pack_custody" };
         }

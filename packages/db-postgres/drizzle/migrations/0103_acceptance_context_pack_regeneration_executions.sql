@@ -157,3 +157,62 @@ $$;
 CREATE TRIGGER "acceptance_context_pack_regeneration_executions_custody_trigger"
 BEFORE INSERT OR UPDATE ON "acceptance_context_pack_regeneration_executions"
 FOR EACH ROW EXECUTE FUNCTION "validate_acceptance_context_pack_regeneration_execution_custody"();
+--> statement-breakpoint
+ALTER TABLE "acceptance_context_pack_snapshots"
+  ADD COLUMN IF NOT EXISTS "generation_status" text NOT NULL DEFAULT 'active',
+  ADD COLUMN IF NOT EXISTS "regeneration_execution_id" uuid;
+--> statement-breakpoint
+ALTER TABLE "acceptance_compiled_context_packs"
+  ADD COLUMN IF NOT EXISTS "generation_status" text NOT NULL DEFAULT 'active',
+  ADD COLUMN IF NOT EXISTS "regeneration_execution_id" uuid;
+--> statement-breakpoint
+WITH ranked AS (
+  SELECT "id", row_number() OVER (
+    PARTITION BY "workspace_id", "record_id", "review_job_id"
+    ORDER BY "created_at" DESC, "id" DESC
+  ) AS generation_rank
+  FROM "acceptance_context_pack_snapshots"
+)
+UPDATE "acceptance_context_pack_snapshots" AS snapshots
+SET "generation_status" = 'superseded'
+FROM ranked
+WHERE snapshots."id" = ranked."id" AND ranked.generation_rank > 1;
+--> statement-breakpoint
+UPDATE "acceptance_compiled_context_packs" AS packs
+SET "generation_status" = 'superseded'
+FROM "acceptance_context_pack_snapshots" AS snapshots
+WHERE snapshots."id" = packs."source_snapshot_id"
+  AND snapshots."generation_status" = 'superseded';
+--> statement-breakpoint
+WITH ranked AS (
+  SELECT packs."id", row_number() OVER (
+    PARTITION BY packs."source_snapshot_id"
+    ORDER BY packs."created_at" DESC, packs."id" DESC
+  ) AS generation_rank
+  FROM "acceptance_compiled_context_packs" AS packs
+  JOIN "acceptance_context_pack_snapshots" AS snapshots
+    ON snapshots."id" = packs."source_snapshot_id"
+  WHERE snapshots."generation_status" = 'active'
+)
+UPDATE "acceptance_compiled_context_packs" AS packs
+SET "generation_status" = 'superseded'
+FROM ranked
+WHERE packs."id" = ranked."id" AND ranked.generation_rank > 1;
+--> statement-breakpoint
+ALTER TABLE "acceptance_context_pack_snapshots"
+  ADD CONSTRAINT "acceptance_context_pack_snapshots_generation_execution_fk"
+  FOREIGN KEY ("regeneration_execution_id")
+  REFERENCES "acceptance_context_pack_regeneration_executions"("id") ON DELETE restrict,
+  ADD CONSTRAINT "acceptance_context_pack_snapshots_generation_check" CHECK (
+    "generation_status" IN ('provisional', 'active', 'superseded')
+    AND (("generation_status" = 'provisional') = ("regeneration_execution_id" IS NOT NULL))
+  );
+--> statement-breakpoint
+ALTER TABLE "acceptance_compiled_context_packs"
+  ADD CONSTRAINT "acceptance_compiled_context_packs_generation_execution_fk"
+  FOREIGN KEY ("regeneration_execution_id")
+  REFERENCES "acceptance_context_pack_regeneration_executions"("id") ON DELETE restrict,
+  ADD CONSTRAINT "acceptance_compiled_context_packs_generation_check" CHECK (
+    "generation_status" IN ('provisional', 'active', 'superseded')
+    AND (("generation_status" = 'provisional') = ("regeneration_execution_id" IS NOT NULL))
+  );

@@ -21,6 +21,9 @@ describe("0103 Context Pack regeneration executions migration", () => {
     expect(sql).toContain('"lease_token_sha256" IS NOT NULL');
     expect(sql).toContain('"execution_deadline_at" timestamp with time zone');
     expect(sql).toContain('"lease_expires_at" <= "execution_deadline_at"');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS "generation_status" text NOT NULL DEFAULT \'active\'');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS "regeneration_execution_id" uuid');
+    expect(sql).toContain('"generation_status" IN (\'provisional\', \'active\', \'superseded\')');
     expect(sql).toContain('"status" = \'replaced\'');
   });
 });

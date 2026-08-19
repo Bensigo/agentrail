@@ -6,7 +6,7 @@ import {
   listWikiPages,
   prepareAcceptanceContextPackRegenerationExecution,
   recordAcceptanceContextPackSnapshot,
-  resolveAcceptanceContextPackCustody,
+  resolveAcceptanceContextPackCustodyForRegeneration,
   type AcceptanceContextPackCustodyResolution,
   type AcceptanceContextPackSnapshotInput,
 } from "@agentrail/db-postgres";
@@ -100,9 +100,10 @@ export async function executeAcceptanceContextPackRegeneration(
     }
     let custody: AcceptanceContextPackCustodyResolution;
     if (wikiUnchanged) {
-      custody = await resolveAcceptanceContextPackCustody({
+      custody = await resolveAcceptanceContextPackCustodyForRegeneration({
         workspaceId: prepared.workspaceId,
         sourceSnapshotId: prepared.sourceSnapshotId,
+        regenerationExecutionId: input.executionId,
       });
     } else {
       const source = prepared.priorSourceSnapshot;
@@ -136,10 +137,11 @@ export async function executeAcceptanceContextPackRegeneration(
         },
         status: "admitted",
         reason: null,
-      });
-      custody = await resolveAcceptanceContextPackCustody({
+      }, { regenerationExecutionId: input.executionId });
+      custody = await resolveAcceptanceContextPackCustodyForRegeneration({
         workspaceId: prepared.workspaceId,
         sourceSnapshotId: persisted.snapshot.id,
+        regenerationExecutionId: input.executionId,
       });
     }
     const token = await getInstallationToken(prepared.workspaceId);
@@ -150,6 +152,7 @@ export async function executeAcceptanceContextPackRegeneration(
       custody,
       snapshot,
       materialization: materialization.materialization,
+      regenerationExecutionId: input.executionId,
     });
     if (!compiled.ok) return await finish("not_proven", `pack_compilation_${compiled.reason}`);
     const packId = compiled.persistence.pack.id;

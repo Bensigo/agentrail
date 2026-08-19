@@ -451,6 +451,8 @@ export const acceptanceContextPackSnapshots = pgTable(
     provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull(),
     status: text("status").notNull(),
     reason: text("reason"),
+    generationStatus: text("generation_status").notNull().default("active"),
+    regenerationExecutionId: uuid("regeneration_execution_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -465,6 +467,11 @@ export const acceptanceContextPackSnapshots = pgTable(
     statusCheck: check(
       "acceptance_context_pack_snapshots_status_check",
       sql`${t.status} IN ('admitted', 'not_proven')`
+    ),
+    generationCheck: check(
+      "acceptance_context_pack_snapshots_generation_check",
+      sql`${t.generationStatus} IN ('provisional', 'active', 'superseded')
+        AND ((${t.generationStatus} = 'provisional') = (${t.regenerationExecutionId} IS NOT NULL))`
     ),
     repoCheck: check(
       "acceptance_context_pack_snapshots_repo_check",
@@ -567,6 +574,8 @@ export const acceptanceCompiledContextPacks = pgTable(
       blobSha: string;
       proofIdentitySha256: string;
     }>>().notNull(),
+    generationStatus: text("generation_status").notNull().default("active"),
+    regenerationExecutionId: uuid("regeneration_execution_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -602,6 +611,11 @@ export const acceptanceCompiledContextPacks = pgTable(
         AND jsonb_typeof(${t.manifest}) = 'object'
         AND jsonb_typeof(${t.sourceCustodyReceipt}) = 'object'
         AND jsonb_typeof(${t.exactHeadDependencyTreeProofs}) = 'array'`
+    ),
+    generationCheck: check(
+      "acceptance_compiled_context_packs_generation_check",
+      sql`${t.generationStatus} IN ('provisional', 'active', 'superseded')
+        AND ((${t.generationStatus} = 'provisional') = (${t.regenerationExecutionId} IS NOT NULL))`
     ),
   })
 );

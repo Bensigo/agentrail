@@ -367,7 +367,7 @@ test.describe.serial("R11.2 authenticated Acceptance Record detail", () => {
     await expect(contextPack.getByRole("button", { name: "Report stale", exact: true })).toBeVisible();
     await expect(contextPack.getByRole("button", { name: "Report inadequate", exact: true })).toBeVisible();
     await expect(contextPack).toContainText(
-      "Queues one bounded exact-head regeneration. It does not contact a builder or change the PR.",
+      "Starts or reuses one bounded exact-head regeneration. It does not contact a builder or change the PR.",
     );
     await page.getByRole("link", { name: "Continue to decision", exact: true }).click();
     await expect(page).toHaveURL(/#final-human-decision$/u);

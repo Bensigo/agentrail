@@ -19,6 +19,8 @@ import {
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
   recordAcceptanceContextPackRegenerationRequest,
+  retryAcceptanceContextPackRegenerationExecution,
+  listAcceptanceContextPackRegenerationExecutions,
 } from "@agentrail/db-postgres";
 import { containsSecretShapedValue } from "../../../../../../../lib/secret-scan";
 
@@ -53,12 +55,19 @@ type ParsedContextPackRegenerationRequestBody = {
   action: "request_context_pack_regeneration";
   compiledPackId: string;
   reason: "stale" | "inadequate";
+  requestIntentId: string;
+};
+
+type ParsedContextPackRegenerationRetryBody = {
+  action: "retry_context_pack_regeneration";
+  executionId: string;
 };
 
 type ParsedPatchBody = ParsedDecisionBody
   | ParsedReviewEffortBody
   | ParsedDependencyObservationApprovalBody
-  | ParsedContextPackRegenerationRequestBody;
+  | ParsedContextPackRegenerationRequestBody
+  | ParsedContextPackRegenerationRetryBody;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
@@ -258,16 +267,29 @@ function parseContextPackRegenerationRequestBody(
 ): ParsedContextPackRegenerationRequestBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).length !== 3
-    || !Object.keys(input).every((key) => key === "action" || key === "compiledPackId" || key === "reason")
+  if (Object.keys(input).length !== 4
+    || !Object.keys(input).every((key) => key === "action" || key === "compiledPackId"
+      || key === "reason" || key === "requestIntentId")
     || input.action !== "request_context_pack_regeneration"
     || typeof input.compiledPackId !== "string" || !UUID.test(input.compiledPackId)
+    || typeof input.requestIntentId !== "string" || !UUID.test(input.requestIntentId)
     || (input.reason !== "stale" && input.reason !== "inadequate")) return null;
   return {
     action: "request_context_pack_regeneration",
     compiledPackId: input.compiledPackId,
     reason: input.reason,
+    requestIntentId: input.requestIntentId,
   };
+}
+
+function parseContextPackRegenerationRetryBody(value: unknown): ParsedContextPackRegenerationRetryBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  return Object.keys(input).length === 2
+    && input.action === "retry_context_pack_regeneration"
+    && typeof input.executionId === "string" && UUID.test(input.executionId)
+    ? { action: "retry_context_pack_regeneration", executionId: input.executionId }
+    : null;
 }
 
 function parsePatchBody(value: unknown): ParsedPatchBody | null {
@@ -281,6 +303,8 @@ function parsePatchBody(value: unknown): ParsedPatchBody | null {
         ? parseDependencyObservationApprovalBody(value)
         : action === "request_context_pack_regeneration"
           ? parseContextPackRegenerationRequestBody(value)
+          : action === "retry_context_pack_regeneration"
+            ? parseContextPackRegenerationRetryBody(value)
         : null;
 }
 
@@ -303,25 +327,39 @@ function contextPackRegenerationRequests(
     const payload = event.payloadRef;
     if (!object(payload) || payload.kind !== "acceptance_context_pack_regeneration_request"
       || event.actor !== requestedBy) return [];
-    const expectedKeys = [
+    const commonKeys = [
       "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
       "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
       "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
     ];
-    if (Object.keys(payload).length !== expectedKeys.length
+    const expectedKeys = payload.version === 1
+      ? commonKeys
+      : payload.version === 2
+        ? [...commonKeys, "requestIntentId"]
+        : payload.version === 3
+          ? [...commonKeys, "requestIntentId", "executionId"]
+          : null;
+    if (!expectedKeys || Object.keys(payload).length !== expectedKeys.length
       || Object.keys(payload).some((key) => !expectedKeys.includes(key))
-      || payload.version !== 1 || typeof payload.compiledPackId !== "string"
+      || typeof payload.compiledPackId !== "string"
       || !UUID.test(payload.compiledPackId) || typeof payload.sourceSnapshotId !== "string"
       || !UUID.test(payload.sourceSnapshotId)
       || (payload.reason !== "stale" && payload.reason !== "inadequate")
+      || (payload.version !== 1
+        && (typeof payload.requestIntentId !== "string" || !UUID.test(payload.requestIntentId)))
+      || (payload.version === 3
+        && (typeof payload.executionId !== "string" || !UUID.test(payload.executionId)))
       || typeof payload.requestedBy !== "string"
       || !payload.requestedBy.startsWith("user:")
       || !UUID.test(payload.requestedBy.slice("user:".length))
       || (payload.requestedRole !== "owner" && payload.requestedRole !== "admin")
       || payload.authority !== "request_only" || payload.status !== "request_recorded") return [];
     const found = packs.get(payload.compiledPackId);
-    const requestedByUserId = payload.requestedBy.slice("user:".length).toLowerCase();
-    const eventKey = `context-pack-regeneration:${payload.compiledPackId}:${payload.reason}:${requestedByUserId}`;
+    const requestIntentId = payload.version === 1 ? null : payload.requestIntentId as string;
+    const executionId = payload.version === 3 ? payload.executionId as string : null;
+    const eventKey = payload.version === 1
+      ? `context-pack-regeneration:${payload.compiledPackId}:${payload.reason}:${payload.requestedBy.slice("user:".length)}`
+      : `context-pack-regeneration:${payload.compiledPackId}:${requestIntentId}`;
     if (!found || found.snapshotId !== payload.sourceSnapshotId
       || payload.workspaceId !== timeline.record.workspaceId || payload.recordId !== timeline.record.id
       || payload.repo !== timeline.record.repo || payload.prNumber !== timeline.record.prNumber
@@ -338,12 +376,16 @@ function contextPackRegenerationRequests(
     return [{
       eventId: event.id,
       eventKey: event.eventKey,
+      eventVersion: payload.version,
       sourceSnapshotId: payload.sourceSnapshotId,
       compiledPackId: payload.compiledPackId,
       headSha: payload.headSha,
       headCycleId: payload.headCycleId,
       acceptanceContract: payload.acceptanceContract,
       reason: payload.reason,
+      requestIntentId,
+      executionId,
+      executionBinding: payload.version === 3 ? "execution_bound" : "legacy_request_only",
       requestedBy: payload.requestedBy,
       requestedRole: payload.requestedRole,
       requestedAt: event.at.toISOString(),
@@ -558,6 +600,7 @@ export async function GET(
       resolvedAcceptanceDetail,
       dependencyDraftProposal,
       resolvedCriterionOutcomes,
+      regenerationExecutions,
     ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
@@ -566,6 +609,7 @@ export async function GET(
       readAcceptanceRecordDetail({ workspaceId, recordId }),
       readDependencyDraftProposalDetail({ workspaceId, recordId }),
       readCurrentAcceptanceCriterionOutcomeBundle({ workspaceId, recordId }),
+      listAcceptanceContextPackRegenerationExecutions({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -648,6 +692,7 @@ export async function GET(
       dependencyDraftProposal,
       criterionOutcomes,
       contextPackRegenerationRequests: regenerationRequests,
+      contextPackRegenerationExecutions: serializeDates(regenerationExecutions),
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,
@@ -688,6 +733,20 @@ export async function PATCH(
   if (!body) return json({ error: "Invalid Change Record action" }, 400);
 
   try {
+    if (body.action === "retry_context_pack_regeneration") {
+      const result = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId,
+        recordId,
+        executionId: body.executionId,
+        requestedBy: `user:${session.user.id}`,
+      });
+      if (result.kind === "retried" || result.kind === "replayed") {
+        return json(serializeDates(result) as Record<string, unknown>, result.kind === "retried" ? 201 : 200);
+      }
+      if (result.kind === "not_found") return json(result, 404);
+      if (result.kind === "not_authorized") return json(result, 403);
+      return json(result, 409);
+    }
     if (body.action === "request_context_pack_regeneration") {
       const result = await recordAcceptanceContextPackRegenerationRequest({
         workspaceId,
@@ -695,6 +754,7 @@ export async function PATCH(
         compiledPackId: body.compiledPackId,
         reason: body.reason,
         requestedBy: `user:${session.user.id}`,
+        requestIntentId: body.requestIntentId,
       });
       if (result.kind === "recorded" || result.kind === "replayed") {
         return json(serializeDates(result) as Record<string, unknown>, result.kind === "recorded" ? 201 : 200);

@@ -644,6 +644,7 @@ export type ChangeRecordResponse = {
   dependencyDraftProposal: AcceptanceDependencyDraftProposal;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   contextPackRegenerationRequests: ContextPackRegenerationRequest[];
+  contextPackRegenerationExecutions: ContextPackRegenerationExecution[];
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
@@ -654,17 +655,42 @@ export type ChangeRecordResponse = {
 export type ContextPackRegenerationRequest = {
   eventId: string;
   eventKey: string;
+  eventVersion: 1 | 2 | 3;
+  executionId: string | null;
+  executionBinding: "legacy_request_only" | "execution_bound";
   sourceSnapshotId: string;
   compiledPackId: string;
   headSha: string;
   headCycleId: string;
   acceptanceContract: { id: string; version: number; sha256: string };
   reason: "stale" | "inadequate";
+  requestIntentId: string | null;
   requestedBy: string;
   requestedRole: "owner" | "admin";
   requestedAt: string;
   authority: "request_only";
   status: "request_recorded";
+};
+
+export type ContextPackRegenerationExecution = {
+  id: string;
+  requestEventId: string;
+  parentExecutionId: string | null;
+  workspaceId: string;
+  recordId: string;
+  priorCompiledPackId: string;
+  intentGeneration: number;
+  headSha: string;
+  headCycleId: string;
+  status: "queued" | "running" | "replaced" | "unchanged" | "not_current" | "not_proven" | "held";
+  attemptCount: number;
+  maxAttempts: 1;
+  replacementCompiledPackId: string | null;
+  outcomeReason: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  humanRetryable: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -3349,31 +3375,66 @@ function contextPackRequestsMatchDetail(
   return requests.every((request) => {
     if (!isObject(request) || !hasExactKeys(request, [
       "eventId", "eventKey", "sourceSnapshotId", "compiledPackId", "headSha", "headCycleId",
-      "acceptanceContract", "reason", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
+      "eventVersion", "acceptanceContract", "reason", "requestIntentId", "executionId", "executionBinding",
+      "requestedBy", "requestedRole", "requestedAt", "authority", "status",
     ]) || !isUuid(request.eventId) || seen.has(request.eventId)
       || !isUuid(request.sourceSnapshotId) || !isUuid(request.compiledPackId)
       || packSnapshots.get(request.compiledPackId) !== request.sourceSnapshotId
       || request.headSha !== current.headSha || request.headCycleId !== current.headCycleId
       || !exactJsonEqual(request.acceptanceContract, contractIdentity)
       || (request.reason !== "stale" && request.reason !== "inadequate")
+      || (request.eventVersion !== 1 && request.eventVersion !== 2 && request.eventVersion !== 3)
+      || (request.eventVersion === 1
+        ? request.requestIntentId !== null
+        : !isUuid(request.requestIntentId))
+      || (request.eventVersion === 3
+        ? !isUuid(request.executionId) || request.executionBinding !== "execution_bound"
+        : request.executionId !== null || request.executionBinding !== "legacy_request_only")
       || typeof request.requestedBy !== "string"
       || !request.requestedBy.startsWith("user:")
       || !UUID.test(request.requestedBy.slice("user:".length))
       || (request.requestedRole !== "owner" && request.requestedRole !== "admin")
       || !isIsoTimestamp(request.requestedAt)
       || request.authority !== "request_only" || request.status !== "request_recorded") return false;
-    const expectedKey = `context-pack-regeneration:${request.compiledPackId}:${request.reason}:${request.requestedBy.slice("user:".length)}`;
+    const expectedKey = request.eventVersion === 1
+      ? `context-pack-regeneration:${request.compiledPackId}:${request.reason}:${request.requestedBy.slice("user:".length)}`
+      : `context-pack-regeneration:${request.compiledPackId}:${request.requestIntentId}`;
     if (request.eventKey !== expectedKey) return false;
     seen.add(request.eventId);
     return true;
   });
 }
 
+function contextPackExecutionsAreBounded(value: unknown, record: unknown): value is ContextPackRegenerationExecution[] {
+  if (!Array.isArray(value) || value.length > 20 || !isObject(record)
+    || !isUuid(record.id) || !isUuid(record.workspaceId)) return false;
+  const statuses = new Set(["queued", "running", "replaced", "unchanged", "not_current", "not_proven", "held"]);
+  return value.every((execution) => isObject(execution) && hasExactKeys(execution, [
+    "id", "requestEventId", "parentExecutionId", "workspaceId", "recordId", "priorCompiledPackId", "headSha", "headCycleId",
+    "intentGeneration", "status", "attemptCount", "maxAttempts", "replacementCompiledPackId", "outcomeReason", "completedAt",
+    "createdAt", "updatedAt", "humanRetryable",
+  ]) && isUuid(execution.id) && isUuid(execution.requestEventId)
+    && (execution.parentExecutionId === null || isUuid(execution.parentExecutionId))
+    && execution.workspaceId === record.workspaceId && execution.recordId === record.id
+    && isUuid(execution.priorCompiledPackId) && SHA1.test(String(execution.headSha))
+    && typeof execution.intentGeneration === "number"
+    && Number.isInteger(execution.intentGeneration) && execution.intentGeneration > 0
+    && isUuid(execution.headCycleId) && statuses.has(String(execution.status))
+    && (execution.attemptCount === 0 || execution.attemptCount === 1)
+    && execution.maxAttempts === 1
+    && ((execution.status === "replaced") === isUuid(execution.replacementCompiledPackId))
+    && (execution.outcomeReason === null || (typeof execution.outcomeReason === "string"
+      && execution.outcomeReason.length >= 1 && execution.outcomeReason.length <= 128))
+    && (execution.completedAt === null || isIsoTimestamp(execution.completedAt))
+    && isIsoTimestamp(execution.createdAt) && isIsoTimestamp(execution.updatedAt)
+    && typeof execution.humanRetryable === "boolean");
+}
+
 export function isChangeRecordResponse(value: unknown): value is ChangeRecordResponse {
   return isObject(value) && hasExactKeys(value, [
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
     "dependencyObservations", "acceptanceDetail", "dependencyDraftProposal",
-    "criterionOutcomes", "contextPackRegenerationRequests", "canRecordFinalDecision", "canRecordReviewEffort",
+    "criterionOutcomes", "contextPackRegenerationRequests", "contextPackRegenerationExecutions", "canRecordFinalDecision", "canRecordReviewEffort",
     "canApproveDependencyObservation", "canRequestContextPackRegeneration", "canCreateGatedGithubIssue",
   ]) && isObject(value.record) && Array.isArray(value.events)
     && value.events.every(isSafeTimelineEvent)
@@ -3386,6 +3447,7 @@ export function isChangeRecordResponse(value: unknown): value is ChangeRecordRes
     && isCriterionOutcomesEnvelope(value.criterionOutcomes)
     && criterionOutcomesMatchDetail(value.criterionOutcomes, value.acceptanceDetail)
     && contextPackRequestsMatchDetail(value.contextPackRegenerationRequests, value.acceptanceDetail)
+    && contextPackExecutionsAreBounded(value.contextPackRegenerationExecutions, value.record)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
     && typeof value.canApproveDependencyObservation === "boolean"
@@ -3407,12 +3469,21 @@ export function dependencyObservationApprovalPatchBody(observationEventId: strin
 export function contextPackRegenerationPatchBody(
   compiledPackId: string,
   reason: "stale" | "inadequate",
+  requestIntentId: string,
 ): {
   action: "request_context_pack_regeneration";
   compiledPackId: string;
   reason: "stale" | "inadequate";
+  requestIntentId: string;
 } {
-  return { action: "request_context_pack_regeneration", compiledPackId, reason };
+  return { action: "request_context_pack_regeneration", compiledPackId, reason, requestIntentId };
+}
+
+export function contextPackRegenerationRetryPatchBody(executionId: string): {
+  action: "retry_context_pack_regeneration";
+  executionId: string;
+} {
+  return { action: "retry_context_pack_regeneration", executionId };
 }
 
 export function reviewEffortPatchBody(bindingId: string, minutes: number): {
@@ -4322,23 +4393,29 @@ export function AcceptanceRecordDetailPanel({
   workspaceId,
   recordId,
   regenerationRequests = [],
+  regenerationExecutions = [],
   canRequestRegeneration = false,
   requestingPackId = null,
+  retryingExecutionId = null,
   regenerationRequestError = null,
   onRequestRegeneration,
+  onRetryRegeneration,
 }: {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   workspaceId: string;
   recordId: string;
   regenerationRequests?: ContextPackRegenerationRequest[];
+  regenerationExecutions?: ContextPackRegenerationExecution[];
   canRequestRegeneration?: boolean;
   requestingPackId?: string | null;
+  retryingExecutionId?: string | null;
   regenerationRequestError?: string | null;
   onRequestRegeneration?: (
     compiledPackId: string,
     reason: "stale" | "inadequate",
   ) => void;
+  onRetryRegeneration?: (executionId: string) => void;
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
@@ -4617,13 +4694,45 @@ export function AcceptanceRecordDetailPanel({
                           <div className="mt-5 border-t border-[var(--gray-05)] pt-4">
                             <h5 className="text-xs font-semibold text-[var(--gray-12)]">Request a new Context Pack</h5>
                             <p className="mt-1 text-xs text-[var(--gray-09)]">
-                              Records a request for Jace. It does not start compilation, contact a builder, or change the PR.
+                              Starts or reuses one bounded exact-head regeneration. It does not contact a builder or change the PR.
                             </p>
                             {requests.map((request) => (
                               <p key={request.eventId} className="mt-2 text-xs text-[var(--gray-11)]">
-                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)} · request-only custody
+                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)}
+                                {request.executionBinding === "execution_bound" ? (
+                                  <> · execution <span className="font-mono">{request.executionId}</span></>
+                                ) : " · legacy request only · no execution"}
                               </p>
                             ))}
+                            {regenerationExecutions.filter((execution) => execution.priorCompiledPackId === pack.id).map((execution) => {
+                              const replacementIsInspectable = execution.replacementCompiledPackId != null
+                                && detail.contextPacks.some((item) => item.compiledPacks.some((candidate) =>
+                                  candidate.id === execution.replacementCompiledPackId));
+                              const retryable = execution.humanRetryable;
+                              return (
+                                <div key={execution.id} className="mt-2 text-xs text-[var(--gray-11)]">
+                                  Execution <span className="font-mono">{execution.id}</span> · {execution.status.replaceAll("_", " ")}
+                                  {execution.status === "replaced" && replacementIsInspectable ? (
+                                    <> · <a className="font-mono text-[var(--blue-11)] underline" href={`#context-pack-${execution.replacementCompiledPackId}`}>inspect replacement {execution.replacementCompiledPackId}</a></>
+                                  ) : ["unchanged", "not_current", "not_proven", "held"].includes(execution.status) ? (
+                                    <> · {execution.outcomeReason ?? "reason unavailable"}</>
+                                  ) : null}
+                                  {retryable && contextPack.occurrence.kind === "current"
+                                    && canRequestRegeneration && onRetryRegeneration ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="secondary"
+                                      className="ml-2"
+                                      disabled={retryingExecutionId !== null}
+                                      onClick={() => onRetryRegeneration(execution.id)}
+                                    >
+                                      {retryingExecutionId === execution.id ? "Retrying…" : "Retry regeneration"}
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
                             {contextPack.occurrence.kind !== "current" ? (
                               <p className="mt-2 text-xs text-[var(--gray-09)]">Historical Packs cannot be regenerated against an old head.</p>
                             ) : canRequestRegeneration && onRequestRegeneration ? (
@@ -4632,7 +4741,7 @@ export function AcceptanceRecordDetailPanel({
                                   type="button"
                                   size="sm"
                                   variant="secondary"
-                                  disabled={requesting || requests.some((request) => request.reason === "stale")}
+                                  disabled={requesting || requests.some((request) => request.executionBinding === "execution_bound" && request.reason === "stale")}
                                   onClick={() => onRequestRegeneration(pack.id, "stale")}
                                 >
                                   {requesting ? "Recording…" : "Report stale"}
@@ -4641,7 +4750,7 @@ export function AcceptanceRecordDetailPanel({
                                   type="button"
                                   size="sm"
                                   variant="secondary"
-                                  disabled={requesting || requests.some((request) => request.reason === "inadequate")}
+                                  disabled={requesting || requests.some((request) => request.executionBinding === "execution_bound" && request.reason === "inadequate")}
                                   onClick={() => onRequestRegeneration(pack.id, "inadequate")}
                                 >
                                   {requesting ? "Recording…" : "Report inadequate"}
@@ -5612,6 +5721,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [approvingObservationEventId, setApprovingObservationEventId] = useState<string | null>(null);
   const [dependencyApprovalError, setDependencyApprovalError] = useState<string | null>(null);
   const [requestingContextPackId, setRequestingContextPackId] = useState<string | null>(null);
+  const [retryingContextPackExecutionId, setRetryingContextPackExecutionId] = useState<string | null>(null);
   const [contextPackRequestError, setContextPackRequestError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -5793,7 +5903,11 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(contextPackRegenerationPatchBody(compiledPackId, reason)),
+        body: JSON.stringify(contextPackRegenerationPatchBody(
+          compiledPackId,
+          reason,
+          crypto.randomUUID(),
+        )),
       });
       const body = (await response.json().catch(() => ({}))) as {
         kind?: string;
@@ -5809,6 +5923,31 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       );
     } finally {
       setRequestingContextPackId(null);
+    }
+  }
+
+  async function retryContextPackRegeneration(executionId: string) {
+    if (!data || !data.canRequestContextPackRegeneration) {
+      setContextPackRequestError("This Context Pack retry is no longer authorized");
+      return;
+    }
+    setRetryingContextPackExecutionId(executionId);
+    setContextPackRequestError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(contextPackRegenerationRetryPatchBody(executionId)),
+      });
+      const body = (await response.json().catch(() => ({}))) as { kind?: string; error?: string };
+      if (!response.ok || (body.kind !== "retried" && body.kind !== "replayed")) {
+        throw new Error(body.error ?? `HTTP ${response.status}`);
+      }
+      setReloadVersion((current) => current + 1);
+    } catch (caught) {
+      setContextPackRequestError(caught instanceof Error ? caught.message : "Failed to retry Context Pack regeneration");
+    } finally {
+      setRetryingContextPackExecutionId(null);
     }
   }
 
@@ -5877,10 +6016,13 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           workspaceId={workspaceId}
           recordId={recordId}
           regenerationRequests={data.contextPackRegenerationRequests}
+          regenerationExecutions={data.contextPackRegenerationExecutions}
           canRequestRegeneration={data.canRequestContextPackRegeneration}
           requestingPackId={requestingContextPackId}
+          retryingExecutionId={retryingContextPackExecutionId}
           regenerationRequestError={contextPackRequestError}
           onRequestRegeneration={requestContextPackRegeneration}
+          onRetryRegeneration={retryContextPackRegeneration}
         />
         <CorrectionsSection correctionPackets={data.correctionPackets} />
       </RecordDetailDisclosure>

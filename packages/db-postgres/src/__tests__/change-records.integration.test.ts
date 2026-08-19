@@ -7,6 +7,9 @@ import { workspaces } from "../schema/workspaces.js";
 import { briefs, briefItems } from "../schema/briefs.js";
 import { repositories } from "../schema/repositories.js";
 import { wikiPages } from "../schema/wiki_pages.js";
+import { compileAndRecordAcceptanceContextPack } from "../../../../apps/console/lib/acceptance-context-pack-compiler.js";
+import { exactHeadContentMaterializationIdentity } from "../../../../apps/console/lib/github-exact-head-content.js";
+import type { ExactHeadGithubContextSnapshot } from "../../../../apps/console/lib/github-exact-head-context.js";
 import {
   acceptanceIntakeMessages,
   acceptanceBriefBindings,
@@ -22,6 +25,7 @@ import {
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceContextPackSnapshots,
+  acceptanceContextPackRegenerationExecutions,
   acceptanceContracts,
   changeRecordEvents,
   changeRecords,
@@ -60,9 +64,17 @@ import {
   recordAcceptanceBuilderRouteSelection,
   recordAcceptanceContextPackSnapshot,
   recordAcceptanceContextPackRegenerationRequest,
+  retryAcceptanceContextPackRegenerationExecution,
+  claimAcceptanceContextPackRegenerationExecution,
+  renewAcceptanceContextPackRegenerationExecutionLease,
+  prepareAcceptanceContextPackRegenerationExecution,
+  completeAcceptanceContextPackRegenerationExecution,
+  listAcceptanceContextPackRegenerationExecutions,
   resolveAcceptanceContextPackCustody,
+  resolveAcceptanceContextPackCustodyForRegeneration,
   recordAcceptanceCompiledContextPack,
   resolveAcceptanceCompiledContextPack,
+  listAcceptanceContextPacksForWorkspace,
   recordAcceptanceDependencyObservation,
   readCurrentAcceptanceDependencyObservations,
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
@@ -926,6 +938,11 @@ async function createAcceptanceDependencyObservationFixture(input: {
     draft,
     advanced,
     pack: persisted.pack,
+    sourceSnapshot: snapshot.snapshot,
+    wiki,
+    repository,
+    packet,
+    fileProofs,
     manifestBlobSha: manifestFile.blobSha,
     lockfileBlobSha: lockfile?.blobSha ?? null,
   };
@@ -2308,8 +2325,21 @@ describe.skipIf(!DB_AVAILABLE)(
           authority: "request_only",
           status: "request_recorded",
         },
+        execution: {
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          priorCompiledPackId: fixture.pack.id,
+          headSha: headA,
+          headCycleId: fixture.advanced.jobId,
+          status: "queued",
+          attemptCount: 0,
+        },
       });
-      expect(replay).toMatchObject({ kind: "replayed", request: first.request });
+      expect(replay).toMatchObject({
+        kind: "replayed",
+        request: first.request,
+        execution: first.execution,
+      });
       await expect(recordAcceptanceContextPackRegenerationRequest({
         ...input,
         reason: "stale",
@@ -2333,6 +2363,9 @@ describe.skipIf(!DB_AVAILABLE)(
           status: "request_recorded",
         },
       });
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.requestEventId, first.request.eventId),
+      )).toHaveLength(1);
       expect(await db.select().from(acceptanceCorrectionDispatches).where(
         eq(acceptanceCorrectionDispatches.recordId, fixture.draft.record.id),
       )).toHaveLength(0);
@@ -2418,6 +2451,1204 @@ describe.skipIf(!DB_AVAILABLE)(
         eq(changeRecordEvents.recordId, tampered.draft.record.id),
         eq(changeRecordEvents.stage, "human_context_request"),
       ))).toHaveLength(0);
+    });
+
+    it("keeps a current-main v1 request non-runnable while a fresh v3 intent creates the exact execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-legacy-v1",
+        prNumber: 621,
+        headSha: "d".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const record = (await db.select().from(changeRecords).where(
+        eq(changeRecords.id, fixture.draft.record.id),
+      ).limit(1))[0]!;
+      const legacyEventKey = `context-pack-regeneration:${fixture.pack.id}:stale:${owner.slice("user:".length)}`;
+      const legacy = await appendChangeRecordEvent({
+        recordId: fixture.draft.record.id,
+        eventKey: legacyEventKey,
+        stage: "human_context_request",
+        actor: owner,
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          version: 1,
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          sourceSnapshotId: fixture.sourceSnapshot.id,
+          compiledPackId: fixture.pack.id,
+          repo: fixture.repo,
+          prNumber: 621,
+          headSha: "d".repeat(40),
+          headCycleId: fixture.advanced.jobId,
+          authorityGeneration: record.currentPrHeadAuthorityGeneration,
+          acceptanceContract: {
+            id: fixture.sourceSnapshot.acceptanceContractId,
+            version: fixture.sourceSnapshot.acceptanceContractVersion,
+            sha256: fixture.sourceSnapshot.acceptanceContractSha256,
+          },
+          reason: "stale",
+          requestedBy: owner,
+          requestedRole: "owner",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+      });
+      expect(legacy.inserted).toBe(true);
+      expect(await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).toEqual([]);
+
+      const fresh = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: randomUUID(),
+      });
+      expect(fresh).toMatchObject({
+        kind: "recorded",
+        request: { eventVersion: 3, executionBinding: "execution_bound" },
+        execution: { status: "queued", intentGeneration: 1 },
+      });
+      if (fresh.kind !== "recorded") throw new Error("expected fresh v3 regeneration intent");
+      expect(fresh.request.executionId).toBe(fresh.execution.id);
+      expect(await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).toEqual([expect.objectContaining({ id: fresh.execution.id, status: "queued" })]);
+      const timeline = await readChangeRecordTimeline({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      const legacyStored = timeline?.events.find((event) => event.id === legacy.event.id);
+      expect(legacyStored?.payloadRef).toMatchObject({ version: 1, authority: "request_only" });
+      expect(Object.hasOwn(legacyStored?.payloadRef ?? {}, "executionId")).toBe(false);
+    });
+
+    it("keeps different regeneration reasons as receipts on one root execution lineage", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-reasons",
+        prNumber: 606,
+        headSha: "7".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const stale = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const inadequate = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: owner,
+      });
+
+      expect(stale.kind).toBe("recorded");
+      expect(inadequate.kind).toBe("recorded");
+      if (!("execution" in stale) || !("execution" in inadequate)) {
+        throw new Error("expected two accepted regeneration receipts");
+      }
+      expect(inadequate.execution.id).toBe(stale.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+    });
+
+    it("keeps different authorized actors as receipts on one root execution lineage", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-actors",
+        prNumber: 605,
+        headSha: "8".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const ownerRequest = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const adminRequest = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: admin,
+      });
+
+      expect(ownerRequest.kind).toBe("recorded");
+      expect(adminRequest.kind).toBe("recorded");
+      if (!("execution" in ownerRequest) || !("execution" in adminRequest)) {
+        throw new Error("expected two authorized regeneration receipts");
+      }
+      expect(adminRequest.execution.id).toBe(ownerRequest.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+    });
+
+    it("atomically collapses concurrent cross-actor and cross-reason receipts onto one root execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-concurrent",
+        prNumber: 604,
+        headSha: "9".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const [ownerRequest, adminRequest] = await Promise.all([
+        recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "stale",
+          requestedBy: owner,
+        }),
+        recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "inadequate",
+          requestedBy: admin,
+        }),
+      ]);
+
+      expect(ownerRequest.kind).toBe("recorded");
+      expect(adminRequest.kind).toBe("recorded");
+      if (!("execution" in ownerRequest) || !("execution" in adminRequest)) {
+        throw new Error("expected concurrent regeneration receipts");
+      }
+      expect(adminRequest.execution.id).toBe(ownerRequest.execution.id);
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+      const claims = await Promise.all([
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "root-concurrent-one" }),
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "root-concurrent-two" }),
+      ]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+    });
+
+    it("records later receipts after ambiguity without creating or redelivering an execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-root-ambiguous",
+        prNumber: 603,
+        headSha: "0".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const original = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (original.kind !== "recorded") throw new Error("expected original regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "root-ambiguous-first" });
+      if (!claim) throw new Error("expected original regeneration claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "execution_ambiguous",
+      });
+
+      const later = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: admin,
+      });
+      expect(later).toMatchObject({
+        kind: "recorded",
+        execution: { id: original.execution.id, status: "held", outcomeReason: "execution_ambiguous" },
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+      ))).toHaveLength(2);
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(1);
+      await expect(claimAcceptanceContextPackRegenerationExecution({
+        workerId: "root-ambiguous-redelivery",
+      })).resolves.toBeNull();
+    });
+
+    it("leases one opaque Context Pack regeneration execution to only one concurrent worker", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-claim",
+        prNumber: 618,
+        headSha: "6".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const requested = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (requested.kind !== "recorded") throw new Error("expected queued regeneration execution");
+
+      const claims = await Promise.all([
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "context-worker-one" }),
+        claimAcceptanceContextPackRegenerationExecution({ workerId: "context-worker-two" }),
+      ]);
+      const claimed = claims.filter((claim) => claim !== null);
+
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]).toMatchObject({
+        executionId: requested.execution.id,
+        attemptCount: 1,
+      });
+      expect(claimed[0]?.leaseToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+      expect(claimed[0]).not.toHaveProperty("workspaceId");
+      expect(claimed[0]).not.toHaveProperty("recordId");
+      expect(claimed[0]).not.toHaveProperty("headSha");
+      const stored = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, requested.execution.id),
+      ))[0]!;
+      expect(stored).toMatchObject({ status: "running", attemptCount: 1 });
+      expect(stored.claimedBy).toBe(claimed[0]?.workerId);
+      expect(stored.leaseTokenSha256).not.toBe(claimed[0]?.leaseToken);
+    });
+
+    it("renews a valid slow execution lease only within its bounded execution deadline", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-renew",
+        prNumber: 602,
+        headSha: "a".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "slow-valid-worker" });
+      if (!claim) throw new Error("expected regeneration execution claim");
+
+      const renewed = await renewAcceptanceContextPackRegenerationExecutionLease({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+      });
+      expect(renewed).toMatchObject({ kind: "renewed", leaseExpiresAt: expect.any(Date) });
+      if (renewed.kind !== "renewed") return;
+      const stored = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, claim.executionId),
+      ))[0]!;
+      expect(stored.executionDeadlineAt).toBeInstanceOf(Date);
+      expect(renewed.leaseExpiresAt.valueOf()).toBeGreaterThanOrEqual(claim.leaseExpiresAt.valueOf());
+      expect(renewed.leaseExpiresAt.valueOf()).toBeLessThanOrEqual(stored.executionDeadlineAt!.valueOf());
+      expect(stored).toMatchObject({ status: "running", attemptCount: 1, claimedBy: claim.workerId });
+    });
+
+    it("refuses a prior snapshot whose immutable Wiki identity was altered", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-wiki-identity-tamper",
+        prNumber: 609,
+        headSha: "3".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const baseIndex = fixture.sourceSnapshot.baseIndex as {
+        schemaVersion: 2;
+        backgroundOnly: true;
+        pages: Array<Record<string, unknown>>;
+        gaps: string[];
+        revisionSha256: string;
+      };
+      await db.update(acceptanceContextPackSnapshots).set({
+        baseIndex: {
+          ...baseIndex,
+          pages: baseIndex.pages.map((page) => ({ ...page, pageBodySha256: "9".repeat(64) })),
+        },
+      }).where(eq(acceptanceContextPackSnapshots.id, fixture.sourceSnapshot.id));
+
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      })).resolves.toEqual({ kind: "not_current" });
+      expect(await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.recordId, fixture.draft.record.id),
+      )).toHaveLength(0);
+    });
+
+    it("production compiler persists a new immutable Pack from a fresh Wiki snapshot and replays identical inputs", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-fresh-wiki",
+        prNumber: 612,
+        headSha: "e".repeat(40),
+        compiledPackCompilerVersion: "prior-compiler-v1",
+        compiledPackPolicyVersion: "prior-policy-v1",
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const freshWikiBody = "# Fresh dependency architecture\n\nUse the current exact-head dependency context.";
+      await db.update(wikiPages).set({
+        commitSha: "f".repeat(40),
+        inputsHash: "1".repeat(64),
+        bodyMd: freshWikiBody,
+      }).where(eq(wikiPages.id, fixture.wiki.id));
+      const requested = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      expect(requested).toMatchObject({
+        kind: "recorded",
+        execution: { status: "queued", priorCompiledPackId: fixture.pack.id },
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "fresh-wiki-worker" });
+      if (!claim) throw new Error("expected fresh Wiki regeneration claim");
+      const baseIndexCore = {
+        schemaVersion: 2 as const,
+        backgroundOnly: true as const,
+        pages: [{
+          id: fixture.wiki.id,
+          repositoryId: fixture.repository.id,
+          slug: fixture.wiki.slug,
+          commitSha: "f".repeat(40),
+          inputsHashSha256: "1".repeat(64),
+          pageBodySha256: wikiPageBodySha256(freshWikiBody),
+          stale: false,
+        }],
+        gaps: [],
+      };
+      const baseIndex = {
+        ...baseIndexCore,
+        revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore),
+      };
+      expect(baseIndex.revisionSha256).not.toBe(
+        (fixture.sourceSnapshot.baseIndex as { revisionSha256: string }).revisionSha256,
+      );
+      const freshSnapshot = await recordAcceptanceContextPackSnapshot({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        reviewJobId: fixture.advanced.jobId,
+        acceptanceContractId: fixture.sourceSnapshot.acceptanceContractId,
+        acceptanceContractVersion: fixture.sourceSnapshot.acceptanceContractVersion,
+        acceptanceContractSha256: fixture.sourceSnapshot.acceptanceContractSha256,
+        repo: fixture.repo,
+        prNumber: 612,
+        expectedHeadSha: "e".repeat(40),
+        baseSha: fixture.sourceSnapshot.baseSha,
+        mergeBaseSha: fixture.sourceSnapshot.mergeBaseSha,
+        headTreeSha: fixture.sourceSnapshot.headTreeSha,
+        packetIds: fixture.sourceSnapshot.packetIds,
+        packetSetSha256: fixture.sourceSnapshot.packetSetSha256,
+        correctionPacketPayloadSetSha256: fixture.sourceSnapshot.correctionPacketPayloadSetSha256,
+        compilerVersion: `exact-head-regeneration-v1-${baseIndex.revisionSha256}`,
+        baseIndex,
+        overlay: fixture.sourceSnapshot.overlay as never,
+        provenance: {
+          schemaVersion: 1,
+          included: [
+            { path: fixture.wiki.slug, source: "base_index", reason: "server_wiki_background" },
+            ...fixture.fileProofs.map(({ path }) => ({ path, source: "overlay" as const, reason: "exact_base_to_head_compare" })),
+          ],
+          excluded: [],
+        },
+        status: "admitted",
+        reason: null,
+      }, { regenerationExecutionId: claim.executionId });
+      const custody = await resolveAcceptanceContextPackCustodyForRegeneration({
+        workspaceId: wsId,
+        sourceSnapshotId: freshSnapshot.snapshot.id,
+        regenerationExecutionId: claim.executionId,
+      });
+      const changedFiles = fixture.fileProofs.map((file) => ({
+        path: file.path,
+        status: "modified" as const,
+        blobSha: file.blobSha,
+        previousPath: null,
+        patchSha256: file.patchSha256,
+        patchByteCount: file.patchByteCount,
+        headRanges: [{ startLine: 1, endLine: file.lineCount }],
+      }));
+      const exact: ExactHeadGithubContextSnapshot = {
+        repo: fixture.repo,
+        prNumber: 612,
+        baseSha: fixture.sourceSnapshot.baseSha!,
+        mergeBaseSha: fixture.sourceSnapshot.mergeBaseSha!,
+        headSha: "e".repeat(40),
+        headTreeSha: fixture.sourceSnapshot.headTreeSha!,
+        changedFiles,
+        manifestSha256: acceptanceContextOverlayManifestSha256({
+          schemaVersion: 1,
+          baseSha: fixture.sourceSnapshot.baseSha!,
+          mergeBaseSha: fixture.sourceSnapshot.mergeBaseSha!,
+          headSha: "e".repeat(40),
+          files: changedFiles.map(({ path, status, blobSha, previousPath }) => ({ path, status, blobSha, previousPath })),
+        }),
+        provenance: {
+          schemaVersion: 1,
+          included: changedFiles.map(({ path }) => ({ path, source: "overlay", reason: "exact_base_to_head_compare" })),
+          excluded: [],
+        },
+      };
+      const records = fixture.fileProofs.map((file) => ({
+        path: file.path,
+        blobSha: file.blobSha,
+        previousPath: null,
+        contentSha256: file.contentSha256,
+        byteCount: file.bytes.length,
+        lineCount: file.lineCount,
+        content: file.content,
+        source: "exact_head_overlay" as const,
+        reason: "exact_base_to_head_compare" as const,
+      }));
+      const exclusions: never[] = [];
+      const materialization = {
+        content: {
+          identitySha256: exactHeadContentMaterializationIdentity({ snapshot: exact, records, exclusions }),
+          headTreeSha: exact.headTreeSha,
+          records,
+          exclusions,
+        },
+        readExactPath: async () => ({ ok: false as const, kind: "not_proven" as const, reason: "path_not_found" as const }),
+      };
+      const first = await compileAndRecordAcceptanceContextPack({
+        custody,
+        snapshot: exact,
+        materialization,
+        regenerationExecutionId: claim.executionId,
+      });
+      const replay = await compileAndRecordAcceptanceContextPack({
+        custody,
+        snapshot: exact,
+        materialization,
+        regenerationExecutionId: claim.executionId,
+      });
+      expect(first.ok).toBe(true);
+      expect(replay.ok).toBe(true);
+      if (!first.ok || !replay.ok) return;
+      expect(first.persistence).toMatchObject({ inserted: true, pack: { sourceSnapshotId: freshSnapshot.snapshot.id } });
+      expect(replay.persistence).toMatchObject({ inserted: false, pack: { id: first.persistence.pack.id } });
+      expect(first.persistence.pack.id).not.toBe(fixture.pack.id);
+      expect(freshSnapshot.snapshot).toMatchObject({
+        generationStatus: "provisional",
+        regenerationExecutionId: claim.executionId,
+      });
+      expect(first.persistence.pack).toMatchObject({
+        generationStatus: "provisional",
+        regenerationExecutionId: claim.executionId,
+      });
+      await expect(resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: freshSnapshot.snapshot.id,
+      })).rejects.toThrow(/missing, legacy, or not admitted/u);
+      await expect(resolveAcceptanceCompiledContextPack({
+        workspaceId: wsId,
+        sourceSnapshotId: freshSnapshot.snapshot.id,
+        compilerVersion: first.persistence.pack.compilerVersion,
+        policyVersion: first.persistence.pack.policyVersion,
+      })).resolves.toBeNull();
+      const beforeSummary = (await readAcceptanceRecordSummaries({ workspaceId: wsId })).records
+        .find(({ recordId }) => recordId === fixture.draft.record.id);
+      expect(beforeSummary?.suppliedContext).toMatchObject({
+        kind: "compiled",
+        compiledPack: { id: fixture.pack.id },
+      });
+      expect(JSON.stringify(await readAcceptanceRecordDetail({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      }))).not.toContain(first.persistence.pack.id);
+      expect(await listAcceptanceContextPacksForWorkspace({ workspaceId: wsId })).toEqual(
+        expect.not.arrayContaining([expect.objectContaining({ id: first.persistence.pack.id })]),
+      );
+      await expect(completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "replaced",
+        replacementCompiledPackId: first.persistence.pack.id,
+        reason: "compiler_output_replaced",
+      })).resolves.toMatchObject({
+        kind: "completed",
+        execution: { status: "replaced", replacementCompiledPackId: first.persistence.pack.id },
+      });
+      expect(await db.select().from(acceptanceCompiledContextPacks).where(inArray(
+        acceptanceCompiledContextPacks.id, [fixture.pack.id, first.persistence.pack.id],
+      ))).toHaveLength(2);
+      expect((await readAcceptanceRecordSummaries({ workspaceId: wsId })).records
+        .find(({ recordId }) => recordId === fixture.draft.record.id)?.suppliedContext).toMatchObject({
+        kind: "compiled",
+        compiledPack: { id: first.persistence.pack.id },
+      });
+      expect(await listAcceptanceContextPacksForWorkspace({ workspaceId: wsId })).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: first.persistence.pack.id })]),
+      );
+    });
+
+    it("derives exact regeneration custody from a valid lease and rejects a forged lease", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-prepare",
+        prNumber: 617,
+        headSha: "7".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({
+        workerId: "context-worker-prepare",
+      });
+      if (!claim) throw new Error("expected regeneration execution claim");
+
+      await expect(prepareAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: `${claim.leaseToken.slice(0, -1)}x`,
+      })).resolves.toEqual({ kind: "not_owned" });
+      const ready = await prepareAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+      });
+
+      expect(ready).toMatchObject({
+        kind: "ready",
+        executionId: claim.executionId,
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        sourceSnapshotId: expect.any(String),
+        priorCompiledPackId: fixture.pack.id,
+        priorSourceSnapshot: {
+          recordId: fixture.draft.record.id,
+          expectedHeadSha: "7".repeat(40),
+          reviewJobId: fixture.advanced.jobId,
+        },
+        priorCompilerVersion: expect.any(String),
+        priorPolicyVersion: expect.any(String),
+      });
+    });
+
+    it("terminalizes a claimed execution when the exact head changes", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-head-drift",
+        prNumber: 616,
+        headSha: "8".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "head-drift-worker" });
+      if (!claim) throw new Error("expected regeneration execution claim");
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 616,
+        headSha: "9".repeat(40),
+        event: "synchronize",
+        deliveryId: "context-pack-regeneration-head-drift:next",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: "8".repeat(40), afterHeadSha: "9".repeat(40) },
+        source: "github_webhook",
+      });
+
+      await expect(prepareAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+      })).resolves.toEqual({ kind: "not_current" });
+      const stored = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, claim.executionId),
+      ))[0]!;
+      expect(stored).toMatchObject({ status: "not_current", outcomeReason: "record_head_or_authority_not_current" });
+      expect(stored.claimedBy).toBeNull();
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.eventKey, `context-pack-regeneration-outcome:${claim.executionId}`),
+      ))).toHaveLength(1);
+    });
+
+    it("bounds stale leases, holds exhausted work, and never auto-redelivers", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-lease-exhaustion",
+        prNumber: 615,
+        headSha: "a".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const first = await claimAcceptanceContextPackRegenerationExecution({ workerId: "lease-worker-one" });
+      if (!first) throw new Error("expected first claim");
+      await db.update(acceptanceContextPackRegenerationExecutions).set({ leaseExpiresAt: new Date(0) }).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, first.executionId),
+      );
+      await expect(claimAcceptanceContextPackRegenerationExecution({ workerId: "lease-worker-two" })).resolves.toBeNull();
+      await expect(claimAcceptanceContextPackRegenerationExecution({ workerId: "lease-worker-three" })).resolves.toBeNull();
+      await expect(claimAcceptanceContextPackRegenerationExecution({ workerId: "lease-worker-four" })).resolves.toBeNull();
+      const stored = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, first.executionId),
+      ))[0]!;
+      expect(stored).toMatchObject({ status: "held", outcomeReason: "lease_attempts_exhausted", attemptCount: 1 });
+      const attachedReceipt = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: owner,
+        requestIntentId: randomUUID(),
+      });
+      expect(attachedReceipt).toMatchObject({
+        kind: "recorded",
+        request: { executionId: first.executionId },
+        execution: { id: first.executionId, status: "held" },
+      });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+        eq(changeRecordEvents.stage, "human_context_request"),
+        sql`${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_context_pack_regeneration_request'`,
+      ))).toHaveLength(2);
+    });
+
+    it("replays an exact unchanged intent and permits a new intent after Wiki inputs change", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-unchanged",
+        prNumber: 614,
+        headSha: "b".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const firstIntentId = randomUUID();
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: firstIntentId,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "unchanged-worker" });
+      if (!claim) throw new Error("expected claim");
+      const completed = await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "unchanged",
+        replacementCompiledPackId: undefined,
+        reason: "compiler_output_unchanged",
+      });
+      expect(completed).toMatchObject({ kind: "completed", execution: { status: "unchanged" } });
+      await expect(listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toEqual([expect.objectContaining({ id: claim.executionId, status: "unchanged" })]);
+      await expect(listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: randomUUID(),
+        recordId: fixture.draft.record.id,
+      })).resolves.toEqual([]);
+      await expect(completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "unchanged",
+        replacementCompiledPackId: undefined,
+        reason: "compiler_output_unchanged",
+      })).resolves.toEqual({ kind: "not_owned" });
+      await expect(recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: firstIntentId,
+      })).resolves.toMatchObject({
+        kind: "replayed",
+        execution: { id: claim.executionId, status: "unchanged", intentGeneration: 1 },
+      });
+      await db.update(wikiPages).set({
+        commitSha: "c".repeat(40),
+        inputsHash: "2".repeat(64),
+        bodyMd: "Dependency observation background changed after the unchanged result",
+      }).where(eq(wikiPages.id, fixture.wiki.id));
+      const nextIntent = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: randomUUID(),
+      });
+      expect(nextIntent).toMatchObject({
+        kind: "recorded",
+        execution: { status: "queued", intentGeneration: 2 },
+      });
+      expect((nextIntent as { execution: { id: string } }).execution.id).not.toBe(claim.executionId);
+    });
+
+    it("terminalizes a replacement Pack from a different exact binding as not proven", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-foreign-replacement",
+        prNumber: 611,
+        headSha: "1".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "foreign-pack-worker" });
+      if (!claim) throw new Error("expected claim");
+      const foreign = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-foreign-pack",
+        prNumber: 610,
+        headSha: "2".repeat(40),
+      });
+
+      await expect(completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "replaced",
+        replacementCompiledPackId: foreign.pack.id,
+        reason: "compiler_output_replaced",
+      })).resolves.toMatchObject({
+        kind: "completed",
+        execution: { status: "not_proven", outcomeReason: "replacement_binding_not_proven" },
+      });
+      await expect(completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "replaced",
+        replacementCompiledPackId: foreign.pack.id,
+        reason: "compiler_output_replaced",
+      })).resolves.toEqual({ kind: "not_owned" });
+    });
+
+    it("allows one idempotent human retry for a credential hold and never creates a grandchild", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-human-retry",
+        prNumber: 608,
+        headSha: "4".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const admin = await addAcceptanceDecisionActor(wsId, "admin");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const first = await claimAcceptanceContextPackRegenerationExecution({ workerId: "human-retry-first" });
+      if (!first) throw new Error("expected first claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: first.executionId,
+        workerId: first.workerId,
+        leaseToken: first.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "github_credential_unavailable",
+      });
+
+      const retried = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: first.executionId,
+        requestedBy: owner,
+      });
+      const replay = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: first.executionId,
+        requestedBy: owner,
+      });
+      expect(retried).toMatchObject({
+        kind: "retried",
+        execution: { status: "queued", priorCompiledPackId: fixture.pack.id, attemptCount: 0 },
+      });
+      expect(replay).toMatchObject({ kind: "replayed", execution: (retried as { execution: unknown }).execution });
+      const listed = await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      expect(listed.find((execution) => execution.id === first.executionId)?.humanRetryable).toBe(false);
+      const retryClaim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "human-retry-second" });
+      expect(retryClaim?.executionId).toBe((retried as { execution: { id: string } }).execution.id);
+      if (!retryClaim) throw new Error("expected retry claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: retryClaim.executionId,
+        workerId: retryClaim.workerId,
+        leaseToken: retryClaim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "github_credential_unavailable",
+      });
+      const afterRetry = await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      expect(afterRetry.find(({ id }) => id === retryClaim.executionId)?.humanRetryable).toBe(false);
+      const laterReceipt = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "inadequate",
+        requestedBy: admin,
+      });
+      expect(laterReceipt).toMatchObject({
+        kind: "recorded",
+        execution: { id: first.executionId, status: "held", humanRetryable: false },
+      });
+      await expect(retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: retryClaim.executionId,
+        requestedBy: owner,
+      })).resolves.toEqual({ kind: "not_retryable" });
+    });
+
+    it("omits corrupt cross-tenant prior and replacement Pack custody from readback", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-readback-custody",
+        prNumber: 602,
+        headSha: "1".repeat(40),
+      });
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "regeneration foreign custody",
+        slug: `regeneration-foreign-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        const foreign = await createAcceptanceDependencyObservationFixture({
+          workspaceId: otherWorkspace.id,
+          workKey: "context-pack-regeneration-readback-foreign",
+          prNumber: 601,
+          headSha: "2".repeat(40),
+        });
+        const owner = await addAcceptanceDecisionActor(wsId, "owner");
+        const request = await recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          compiledPackId: fixture.pack.id,
+          reason: "stale",
+          requestedBy: owner,
+        });
+        if (request.kind !== "recorded") throw new Error("expected regeneration request");
+
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          priorCompiledPackId: foreign.pack.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id))).rejects.toThrow();
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            priorCompiledPackId: foreign.pack.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        await expect(listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        })).resolves.toEqual([]);
+        await db.update(acceptanceContextPackRegenerationExecutions).set({
+          priorCompiledPackId: fixture.pack.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          status: "replaced",
+          replacementCompiledPackId: foreign.pack.id,
+          outcomeReason: "compiler_output_replaced",
+          completedAt: new Date(),
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id))).rejects.toThrow();
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            status: "replaced",
+            replacementCompiledPackId: foreign.pack.id,
+            outcomeReason: "compiler_output_replaced",
+            completedAt: new Date(),
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        await expect(listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        })).resolves.toEqual([]);
+        await db.update(acceptanceContextPackRegenerationExecutions).set({
+          status: "queued",
+          replacementCompiledPackId: null,
+          outcomeReason: null,
+          completedAt: null,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, request.execution.id));
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("omits a corrupt cross-tenant retry child and refuses a second retry", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-retry-child-custody",
+        prNumber: 600,
+        headSha: "3".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "retry-child-root" });
+      if (!claim) throw new Error("expected root claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "github_credential_unavailable",
+      });
+      const retried = await retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: request.execution.id,
+        requestedBy: owner,
+      });
+      if (retried.kind !== "retried") throw new Error("expected retry child");
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "regeneration foreign retry parent",
+        slug: `regeneration-retry-foreign-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        const foreign = await createAcceptanceDependencyObservationFixture({
+          workspaceId: otherWorkspace.id,
+          workKey: "context-pack-regeneration-retry-parent-foreign",
+          prNumber: 599,
+          headSha: "4".repeat(40),
+        });
+        const foreignOwner = await addAcceptanceDecisionActor(otherWorkspace.id, "owner");
+        const foreignRequest = await recordAcceptanceContextPackRegenerationRequest({
+          workspaceId: otherWorkspace.id,
+          recordId: foreign.draft.record.id,
+          compiledPackId: foreign.pack.id,
+          reason: "stale",
+          requestedBy: foreignOwner,
+        });
+        if (foreignRequest.kind !== "recorded") throw new Error("expected foreign root");
+        await expect(db.update(acceptanceContextPackRegenerationExecutions).set({
+          parentExecutionId: foreignRequest.execution.id,
+        }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id))).rejects.toThrow();
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            parentExecutionId: foreignRequest.execution.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+        const listed = await listAcceptanceContextPackRegenerationExecutions({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+        });
+        expect(listed.map(({ id }) => id)).toEqual([request.execution.id]);
+        expect(listed[0]?.humanRetryable).toBe(false);
+        await expect(retryAcceptanceContextPackRegenerationExecution({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          executionId: request.execution.id,
+          requestedBy: owner,
+        })).resolves.toEqual({ kind: "not_retryable" });
+
+        await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions DISABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        try {
+          await db.update(acceptanceContextPackRegenerationExecutions).set({
+            parentExecutionId: request.execution.id,
+          }).where(eq(acceptanceContextPackRegenerationExecutions.id, retried.execution.id));
+        } finally {
+          await db.execute(sql`ALTER TABLE acceptance_context_pack_regeneration_executions ENABLE TRIGGER acceptance_context_pack_regeneration_executions_custody_trigger`);
+        }
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("does not deadlock concurrent retry against terminal completion", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-retry-complete-lock-order",
+        prNumber: 598,
+        headSha: "5".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const request = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      if (request.kind !== "recorded") throw new Error("expected regeneration request");
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "retry-complete-lock-order" });
+      if (!claim) throw new Error("expected regeneration claim");
+      const concurrent = Promise.all([
+        completeAcceptanceContextPackRegenerationExecution({
+          executionId: claim.executionId,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+          outcome: "held",
+          replacementCompiledPackId: undefined,
+          reason: "github_credential_unavailable",
+        }),
+        retryAcceptanceContextPackRegenerationExecution({
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          executionId: claim.executionId,
+          requestedBy: owner,
+        }),
+      ]);
+      const settled = await Promise.race([
+        concurrent,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("retry/complete deadlocked")), 2_000)),
+      ]);
+      expect(settled[0]).toMatchObject({ kind: "completed", execution: { status: "held" } });
+      expect(["not_retryable", "retried"]).toContain(settled[1].kind);
+    });
+
+    it("refuses a deliberate retry after the exact head changes", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-retry-head-race",
+        prNumber: 607,
+        headSha: "5".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "retry-head-race" });
+      if (!claim) throw new Error("expected claim");
+      await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        outcome: "held",
+        replacementCompiledPackId: undefined,
+        reason: "github_credential_unavailable",
+      });
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        repo: fixture.repo,
+        prNumber: 607,
+        headSha: "6".repeat(40),
+        event: "synchronize",
+        deliveryId: "context-pack-regeneration-retry-head-race:next",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: "5".repeat(40), afterHeadSha: "6".repeat(40) },
+        source: "github_webhook",
+      });
+      await expect(retryAcceptanceContextPackRegenerationExecution({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        executionId: claim.executionId,
+        requestedBy: owner,
+      })).resolves.toEqual({ kind: "not_current" });
+    });
+
+    it("revalidates the exact binding at completion after a head race", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId, workKey: "context-pack-regeneration-completion-race", prNumber: 613,
+        headSha: "c".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId, recordId: fixture.draft.record.id, compiledPackId: fixture.pack.id,
+        reason: "stale", requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "completion-race-worker" });
+      if (!claim) throw new Error("expected claim");
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: fixture.draft.record.id, repo: fixture.repo, prNumber: 613,
+        headSha: "d".repeat(40), event: "synchronize", deliveryId: "completion-race:next",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: "c".repeat(40), afterHeadSha: "d".repeat(40) },
+        source: "github_webhook",
+      });
+      const completed = await completeAcceptanceContextPackRegenerationExecution({
+        executionId: claim.executionId, workerId: claim.workerId, leaseToken: claim.leaseToken,
+        outcome: "unchanged", replacementCompiledPackId: undefined, reason: "compiler_output_unchanged",
+      });
+      expect(completed).toMatchObject({ kind: "completed", execution: { status: "not_current", outcomeReason: "completion_binding_not_current" } });
     });
 
     it("keeps all deterministic A-to-B-to-A occurrences distinct and occurrence-binds historical context", async () => {

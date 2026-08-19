@@ -723,6 +723,13 @@
       "when": 1793300000000,
       "tag": "0102_acceptance_mcp_turn_dispatches",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1793400000000,
+      "tag": "0103_acceptance_context_pack_regeneration_executions",
+      "breakpoints": true
     }
   ]
 }

@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   readAcceptanceContracts: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
   recordAcceptanceContextPackSnapshot: vi.fn(),
-  resolveAcceptanceCompiledContextPack: vi.fn(),
+  resolveActiveAcceptanceCompiledContextPackForRecord: vi.fn(),
   resolveAcceptanceBuilderRouteCapabilityProfile: vi.fn(),
   resolveAcceptanceContextPackCustody: vi.fn(),
   validateReviewJobCorrectionPacketPayload: vi.fn(() => true),
@@ -53,7 +53,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   readAcceptanceContracts: mocks.readAcceptanceContracts,
   readChangeRecordTimelineByPr: mocks.readChangeRecordTimelineByPr,
   recordAcceptanceContextPackSnapshot: mocks.recordAcceptanceContextPackSnapshot,
-  resolveAcceptanceCompiledContextPack: mocks.resolveAcceptanceCompiledContextPack,
+  resolveActiveAcceptanceCompiledContextPackForRecord:
+    mocks.resolveActiveAcceptanceCompiledContextPackForRecord,
   resolveAcceptanceBuilderRouteCapabilityProfile: mocks.resolveAcceptanceBuilderRouteCapabilityProfile,
   resolveAcceptanceContextPackCustody: mocks.resolveAcceptanceContextPackCustody,
   validateReviewJobCorrectionPacketPayload: mocks.validateReviewJobCorrectionPacketPayload,
@@ -256,7 +257,7 @@ beforeEach(() => {
     snapshot: { id: SNAPSHOT_ID },
     inserted: true,
   });
-  mocks.resolveAcceptanceCompiledContextPack.mockResolvedValue(null);
+  mocks.resolveActiveAcceptanceCompiledContextPackForRecord.mockResolvedValue(null);
   mocks.resolveAcceptanceContextPackCustody
     .mockRejectedValueOnce(new Error("snapshot missing"))
     .mockResolvedValue(admittedCustody);
@@ -446,7 +447,7 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
   });
 
   it("replays an existing exact compiled Pack before reading mutable source or Wiki state", async () => {
-    mocks.resolveAcceptanceCompiledContextPack.mockResolvedValue({ id: PACK_ID });
+    mocks.resolveActiveAcceptanceCompiledContextPackForRecord.mockResolvedValue({ id: PACK_ID });
     mocks.listWikiPages.mockRejectedValue(new Error("Wiki changed after carrier acceptance"));
 
     await expect(produceAndRunGithubCorrectionDispatch({
@@ -454,9 +455,10 @@ describe("produceAndRunGithubCorrectionDispatch", () => {
       jobId: JOB_ID,
     })).resolves.toMatchObject({ kind: "carrier_accepted", dispatchId: DISPATCH_ID });
 
-    expect(mocks.resolveAcceptanceCompiledContextPack).toHaveBeenCalledWith({
+    expect(mocks.resolveActiveAcceptanceCompiledContextPackForRecord).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
-      sourceSnapshotId: SNAPSHOT_ID,
+      recordId: RECORD_ID,
+      reviewJobId: JOB_ID,
       compilerVersion: "exact-head-correction-pack-v6",
       policyVersion: "bounded-exact-ranges-v4",
     });

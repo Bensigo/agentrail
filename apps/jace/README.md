@@ -29,6 +29,17 @@ HTTP sidecar.
 
 Jace never merges pull requests, runs the factory, or triggers builds.
 
+The non-LLM Context Pack regeneration worker is a separate, default-off
+process (`npm run context-pack-regeneration-worker`). It starts only with
+`JACE_CONTEXT_PACK_REGENERATION_WORKER=1` and authenticates its opaque
+claim/execute calls with the dedicated
+`JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN`. That capability must differ
+from `JACE_CONSOLE_TOKEN` and is not accepted by other Jace coordinator routes.
+Run this process with a credential-minimal environment containing the Console
+base URL, enable switch, and dedicated token only. Startup fails closed if the
+broad `JACE_CONSOLE_TOKEN` is present, so a compromised worker cannot inherit
+the coordinator capability from Jace's service environment.
+
 ## Channels
 
 Jace's platform channels are native Eve channels — files under

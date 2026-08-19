@@ -14,6 +14,8 @@ import {
   ReviewerEvidenceTimeline,
   RecordDetailDisclosure,
   changeRecordApiPath,
+  contextPackRegenerationRetryPatchBody,
+  contextPackRegenerationPatchBody,
   dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
   formatChangeRecordDate,
@@ -40,6 +42,7 @@ import {
   type ChangeRecord,
   type ChangeRecordEvent,
   type ContextPackRegenerationRequest,
+  type ContextPackRegenerationExecution,
 } from "./change-record-view";
 
 type ElementLike = {
@@ -2961,17 +2964,21 @@ describe("Change Record detail view", () => {
     expect(content).not.toMatch(/(?:Create issue|Merge PR|Delivered|Acknowledged|Repaired)/u);
   });
 
-  it("offers owner/admin request-only controls for the current Pack and renders immutable receipts", () => {
+  it("offers owner/admin regeneration controls and renders the bounded execution status", () => {
     const onRequest = vi.fn();
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
-      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:stale:00000000-0000-4000-8000-000000000002`,
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
+      executionId: "00000000-0000-4000-8000-000000000046",
+      executionBinding: "execution_bound",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       acceptanceContract: detailContract.identity,
       reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
       requestedBy: "user:00000000-0000-4000-8000-000000000002",
       requestedRole: "owner",
       requestedAt: "2026-08-11T09:05:00.000Z",
@@ -2983,7 +2990,36 @@ describe("Change Record detail view", () => {
       criterionOutcomes: criterionOutcomesNotReady,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      regenerationRequests: [request],
+      regenerationRequests: [request, {
+        ...request,
+        eventId: "00000000-0000-4000-8000-000000000047",
+        eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:inadequate:00000000-0000-4000-8000-000000000002`,
+        eventVersion: 1,
+        executionId: null,
+        executionBinding: "legacy_request_only",
+        requestIntentId: null,
+        reason: "inadequate",
+      }],
+      regenerationExecutions: [{
+        id: "00000000-0000-4000-8000-000000000046",
+        requestEventId: request.eventId,
+        parentExecutionId: null,
+        workspaceId: record.workspaceId,
+        recordId: record.id,
+        priorCompiledPackId: DETAIL_PACK_ID,
+        intentGeneration: 1,
+        headSha: DETAIL_CURRENT_HEAD,
+        headCycleId: currentFinalDecision.binding.headCycleId,
+        status: "queued",
+        attemptCount: 0,
+        maxAttempts: 1,
+        replacementCompiledPackId: null,
+        outcomeReason: null,
+        completedAt: null,
+        createdAt: "2026-08-11T09:05:00.000Z",
+        updatedAt: "2026-08-11T09:05:00.000Z",
+        humanRetryable: false,
+      }],
       canRequestRegeneration: true,
       onRequestRegeneration: onRequest,
     });
@@ -2992,10 +3028,126 @@ describe("Change Record detail view", () => {
     expect(buttons[0]?.props?.disabled).toBe(true);
     expect(buttons[1]?.props?.disabled).toBe(false);
     expect(textContent(rendered)).toContain("Stale request recorded");
-    expect(textContent(rendered)).toContain("request-only custody");
-    expect(textContent(rendered)).toContain("does not start compilation, contact a builder, or change the PR");
+    expect(textContent(rendered)).toContain(`execution ${request.executionId}`);
+    expect(textContent(rendered)).toContain("legacy request only · no execution");
+    expect(textContent(rendered)).toContain("· queued");
+    expect(textContent(rendered)).toContain("Starts or reuses one bounded exact-head regeneration");
+    expect(textContent(rendered)).toContain("does not contact a builder or change the PR");
     (buttons[1]?.props?.onClick as (() => void))();
     expect(onRequest).toHaveBeenCalledWith(DETAIL_PACK_ID, "inadequate");
+  });
+
+  it("links a replaced execution to the exact immutable Pack and shows terminal refusal reasons", () => {
+    const request: ContextPackRegenerationRequest = {
+      eventId: "00000000-0000-4000-8000-000000000045",
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
+      executionId: "00000000-0000-4000-8000-000000000046",
+      executionBinding: "execution_bound",
+      sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+      compiledPackId: DETAIL_PACK_ID,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      acceptanceContract: detailContract.identity,
+      reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
+      requestedBy: "user:00000000-0000-4000-8000-000000000002",
+      requestedRole: "owner",
+      requestedAt: "2026-08-11T09:05:00.000Z",
+      authority: "request_only",
+      status: "request_recorded",
+    };
+    const replacementId = "00000000-0000-4000-8000-000000000057";
+    const detailWithReplacement = structuredClone(currentAcceptanceDetail);
+    if (detailWithReplacement.kind !== "record") throw new Error("expected record detail");
+    detailWithReplacement.detail.contextPacks[0]!.compiledPacks.push({
+      ...detailWithReplacement.detail.contextPacks[0]!.compiledPacks[0]!,
+      id: replacementId,
+    });
+    const base = {
+      id: "00000000-0000-4000-8000-000000000046",
+      requestEventId: request.eventId,
+      parentExecutionId: null,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      attemptCount: 1 as const,
+      maxAttempts: 1 as const,
+      completedAt: "2026-08-11T09:06:00.000Z",
+      createdAt: "2026-08-11T09:05:00.000Z",
+      updatedAt: "2026-08-11T09:06:00.000Z",
+      humanRetryable: false,
+    };
+    const replaced = AcceptanceRecordDetailPanel({
+      acceptanceDetail: detailWithReplacement,
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      regenerationRequests: [request],
+      regenerationExecutions: [{ ...base, status: "replaced", replacementCompiledPackId: replacementId, outcomeReason: "compiler_output_replaced" }],
+    });
+    const links = elementsOfType(replaced, "a");
+    expect(links.some((link) => link.props?.href === `#context-pack-${replacementId}`)).toBe(true);
+
+    const held = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      regenerationRequests: [request],
+      regenerationExecutions: [{ ...base, status: "held", replacementCompiledPackId: null, outcomeReason: "execution_ambiguous" }],
+    });
+    expect(textContent(held)).toContain("held · execution_ambiguous");
+  });
+
+  it("offers deliberate retry only for the bounded recoverable terminal policy", () => {
+    const onRetry = vi.fn();
+    const retryable: ContextPackRegenerationExecution = {
+      id: "00000000-0000-4000-8000-000000000046",
+      requestEventId: "00000000-0000-4000-8000-000000000045",
+      parentExecutionId: null,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      status: "held",
+      attemptCount: 1,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: "github_credential_unavailable",
+      completedAt: "2026-08-11T09:06:00.000Z",
+      createdAt: "2026-08-11T09:05:00.000Z",
+      updatedAt: "2026-08-11T09:06:00.000Z",
+      humanRetryable: true,
+    };
+    const rendered = AcceptanceRecordDetailPanel({
+      acceptanceDetail: currentAcceptanceDetail,
+      criterionOutcomes: criterionOutcomesNotReady,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      regenerationExecutions: [retryable, {
+        ...retryable,
+        id: "00000000-0000-4000-8000-000000000047",
+        status: "held",
+        outcomeReason: "execution_ambiguous",
+        humanRetryable: false,
+      }],
+      canRequestRegeneration: true,
+      onRetryRegeneration: onRetry,
+    });
+    expect(buttonLabels(rendered)).toContain("Retry regeneration");
+    const retryButton = elementsOfType(rendered, "button").find((button) => textContent(button) === "Retry regeneration");
+    (retryButton?.props?.onClick as (() => void))();
+    expect(onRetry).toHaveBeenCalledExactlyOnceWith(retryable.id);
+    expect(contextPackRegenerationRetryPatchBody(retryable.id)).toEqual({
+      action: "retry_context_pack_regeneration",
+      executionId: retryable.id,
+    });
   });
 
   it("strictly validates current gated-issue binding and terminal GitHub receipt custody", () => {
@@ -3334,6 +3486,7 @@ describe("Change Record detail view", () => {
       dependencyDraftProposal: draftDependencyProposal,
       criterionOutcomes: criterionOutcomesNotReady,
       contextPackRegenerationRequests: [],
+      contextPackRegenerationExecutions: [],
       canRecordFinalDecision: true,
       canRecordReviewEffort: true,
       canApproveDependencyObservation: true,
@@ -3341,6 +3494,64 @@ describe("Change Record detail view", () => {
       canCreateGatedGithubIssue: true,
     };
     expect(isChangeRecordResponse(validResponse)).toBe(true);
+    const boundedExecution = {
+      id: "00000000-0000-4000-8000-000000000046",
+      requestEventId: "00000000-0000-4000-8000-000000000045",
+      parentExecutionId: null,
+      workspaceId: record.workspaceId,
+      recordId: record.id,
+      priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      status: "held",
+      attemptCount: 1,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: "execution_ambiguous",
+      completedAt: "2026-08-11T09:06:00.000Z",
+      createdAt: "2026-08-11T09:05:00.000Z",
+      updatedAt: "2026-08-11T09:06:00.000Z",
+      humanRetryable: false,
+    };
+    const boundedRequest = {
+      eventId: "00000000-0000-4000-8000-000000000045",
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
+      executionId: boundedExecution.id,
+      executionBinding: "execution_bound",
+      sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+      compiledPackId: DETAIL_PACK_ID,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      acceptanceContract: detailContract.identity,
+      reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
+      requestedBy: "user:00000000-0000-4000-8000-000000000002",
+      requestedRole: "owner",
+      requestedAt: "2026-08-11T09:05:00.000Z",
+      authority: "request_only",
+      status: "request_recorded",
+    };
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      contextPackRegenerationRequests: [boundedRequest],
+      contextPackRegenerationExecutions: [boundedExecution],
+    })).toBe(true);
+    expect(contextPackRegenerationPatchBody(
+      DETAIL_PACK_ID,
+      "stale",
+      boundedRequest.requestIntentId,
+    )).toEqual({
+      action: "request_context_pack_regeneration",
+      compiledPackId: DETAIL_PACK_ID,
+      reason: "stale",
+      requestIntentId: boundedRequest.requestIntentId,
+    });
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      contextPackRegenerationExecutions: [{ ...boundedExecution, leaseToken: "must-not-leak" }],
+    })).toBe(false);
     expect(isChangeRecordResponse({
       ...validResponse,
       criterionOutcomes: currentCriterionOutcomes,

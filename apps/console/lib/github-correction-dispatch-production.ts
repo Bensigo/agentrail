@@ -5,7 +5,6 @@ import {
   acceptanceContextOverlayManifestSha256,
   acceptanceContextPacketSetSha256,
   acceptanceContextPackSnapshotId,
-  acceptanceContextPackCustodyBaseIndexRevisionSha256,
   getInstallationToken,
   getRepositoryByName,
   getReviewJobById,
@@ -18,12 +17,10 @@ import {
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
   recordAcceptanceContextPackSnapshot,
-  resolveAcceptanceCompiledContextPack,
+  resolveActiveAcceptanceCompiledContextPackForRecord,
   resolveAcceptanceBuilderRouteCapabilityProfile,
   resolveAcceptanceContextPackCustody,
   validateReviewJobCorrectionPacketPayload,
-  wikiPageBodySha256,
-  type AcceptanceContextPackCustodyBaseIndexIdentity,
   type AcceptanceContextPackCustodyResolution,
 } from "@agentrail/db-postgres";
 import {
@@ -31,6 +28,7 @@ import {
   ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
   compileAndRecordAcceptanceContextPack,
 } from "./acceptance-context-pack-compiler";
+import { buildAcceptanceContextPackWikiBaseIndex } from "./acceptance-context-pack-wiki-base-index";
 import { materializeExactHeadGithubContent } from "./github-exact-head-content";
 import {
   exactHeadContextCustodyOverlay,
@@ -48,13 +46,7 @@ import {
  * recipient, body, and dispatch coordinate is re-derived server-side.
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const SHA1 = /^[a-f0-9]{40}$/iu;
-const SHA256 = /^[a-f0-9]{64}$/iu;
-const SAFE_PATH = /^(?!\/)(?!.*\\)(?!.*(?:^|\/)\.\.?(?:\/|$))[^\u0000-\u001f\u007f]+$/u;
 const SOURCE_SNAPSHOT_COMPILER_VERSION = "exact-head-overlay-v2";
-const MAX_WIKI_PAGES = 100;
-const MAX_WIKI_PAGE_BYTES = 512 * 1024;
-const MAX_WIKI_TOTAL_BYTES = 4 * 1024 * 1024;
 
 export type GithubCorrectionDispatchProductionInput = {
   workspaceId: string;
@@ -91,11 +83,6 @@ function isInput(value: unknown): value is GithubCorrectionDispatchProductionInp
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function safeWikiPath(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 512
-    && value === value.trim() && SAFE_PATH.test(value) && !value.endsWith("/");
 }
 
 function exactPacketSet(input: {
@@ -136,58 +123,6 @@ function exactPacketSet(input: {
   return new Set(packets.map((packet) => packet["packetId"])).size === packets.length
     ? packets
     : null;
-}
-
-function buildWikiBaseIndex(input: {
-  workspaceId: string;
-  repositoryId: string;
-  pages: Awaited<ReturnType<typeof listWikiPages>>;
-}): AcceptanceContextPackCustodyBaseIndexIdentity {
-  const selected: AcceptanceContextPackCustodyBaseIndexIdentity["pages"] = [];
-  const gaps = new Set<string>();
-  let totalBytes = 0;
-  const ordered = [...input.pages].sort((left, right) =>
-    compareText(`${left.slug}\u0000${left.id}`, `${right.slug}\u0000${right.id}`));
-  for (const page of ordered) {
-    if (selected.length >= MAX_WIKI_PAGES) {
-      gaps.add("Compiled Wiki page count exceeded the 100-page custody limit");
-      break;
-    }
-    const bodyBytes = Buffer.byteLength(page.bodyMd, "utf8");
-    if (page.workspaceId !== input.workspaceId || page.repositoryId !== input.repositoryId
-      || !UUID.test(page.id) || !safeWikiPath(page.slug) || !SHA1.test(page.commitSha)
-      || !SHA256.test(page.inputsHash) || bodyBytes < 1 || bodyBytes > MAX_WIKI_PAGE_BYTES) {
-      gaps.add("Some compiled Wiki pages were excluded because their immutable identity or body bounds were invalid");
-      continue;
-    }
-    if (totalBytes + bodyBytes > MAX_WIKI_TOTAL_BYTES) {
-      gaps.add("Compiled Wiki bodies exceeded the 4 MiB custody limit");
-      continue;
-    }
-    totalBytes += bodyBytes;
-    selected.push({
-      id: page.id,
-      repositoryId: page.repositoryId,
-      slug: page.slug,
-      commitSha: page.commitSha.toLowerCase(),
-      inputsHashSha256: page.inputsHash.toLowerCase(),
-      pageBodySha256: wikiPageBodySha256(page.bodyMd),
-      stale: page.stale,
-    });
-  }
-  if (selected.length === 0 && gaps.size === 0) {
-    gaps.add("No compiled Wiki pages exist for this repository");
-  }
-  const core = {
-    schemaVersion: 2 as const,
-    backgroundOnly: true as const,
-    pages: selected,
-    gaps: [...gaps].sort(compareText),
-  };
-  return {
-    ...core,
-    revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(core),
-  };
 }
 
 function mappedCarrierResult(
@@ -429,9 +364,10 @@ export async function produceAndRunGithubCorrectionDispatch(
       compilerVersion: SOURCE_SNAPSHOT_COMPILER_VERSION,
       packetSetSha256,
     });
-    const existingPack = await resolveAcceptanceCompiledContextPack({
+    const existingPack = await resolveActiveAcceptanceCompiledContextPackForRecord({
       workspaceId: input.workspaceId,
-      sourceSnapshotId,
+      recordId: timeline.record.id,
+      reviewJobId: job.id,
       compilerVersion: ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION,
       policyVersion: ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
     });
@@ -490,7 +426,7 @@ export async function produceAndRunGithubCorrectionDispatch(
     if (!overlay) return { kind: "not_proven", stage: "exact_context" };
 
     const wikiPages = await listWikiPages(input.workspaceId, repository.id);
-    const baseIndex = buildWikiBaseIndex({
+    const baseIndex = buildAcceptanceContextPackWikiBaseIndex({
       workspaceId: input.workspaceId,
       repositoryId: repository.id,
       pages: wikiPages,

@@ -823,6 +823,50 @@ boundary, and the bounded authenticated browser proof above is established at
 CI-runtime level. R11 remains **FAIL / not release-ready** until the separate
 deployed/live and customer proof exists.
 
+This branch adds a narrow R11.2 Context Pack regeneration execution path to
+the existing human request receipt. The request event and one deterministic
+execution are inserted atomically. A central-Jace-authenticated,
+out-of-process worker can claim only an opaque execution/lease identity; the
+Console then re-derives and revalidates the exact workspace, Acceptance Record,
+authoritative head occurrence, confirmed Contract, prior compiled Pack, source
+snapshot, and tree custody. It derives the current Wiki base index from
+server-held Wiki data. Identical Wiki/compiler/policy inputs terminate
+unchanged; changed Wiki inputs admit a new immutable generation snapshot that
+preserves the exact old head/tree/Contract/overlay bindings, then
+re-materializes exact-head GitHub bytes through the existing deterministic
+non-LLM compiler. The prior snapshot and Pack remain immutable. The outcome is
+append-only and terminal: immutable replacement, explicit unchanged,
+not-current, not-proven, or held. Leases are single-attempt; an expired or
+ambiguous execution is held and cannot be automatically recompiled.
+An owner/admin may deliberately create one new idempotent execution from a
+terminal credential hold or exact-content GitHub availability/rejection only,
+after the server revalidates the same current Record/head-cycle/Contract/prior
+Pack custody. Ambiguous execution, exhausted lease, custody, compiler/proof,
+and not-current outcomes never expose a retry action.
+
+The worker is a standalone process and is default-off behind
+`JACE_CONTEXT_PACK_REGENERATION_WORKER=1`. It uses the dedicated
+`JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN`, which is accepted only by the
+opaque claim/execute routes and must differ from the deployment-wide
+`JACE_CONSOLE_TOKEN`. Deploy the worker with a credential-minimal environment;
+its startup fails closed whenever the broad `JACE_CONSOLE_TOKEN` is present.
+The routes accept no tenant, Record,
+Contract, Pack, repository, head, source, correction, builder, PR-mutation,
+merge, or deployment coordinates from the worker. Focused source tests and
+fresh PostgreSQL transaction tests prove queue idempotency, concurrent claim,
+opaque lease custody, head-drift refusal, stale-lease holding, bounded request
+bodies, deterministic execution, immutable fresh-snapshot compilation with the
+production compiler, identical-input replay, and readback. This is source/test
+and local PostgreSQL proof only. The worker has not been enabled against a
+deployed Console; no live GitHub bytes were regenerated, no deployment
+occurred, and no customer proof exists.
+
+The additive execution schema is registered as migration `0103` at journal
+index 108, directly after current main's `0101`/`0102` MCP migrations. It has
+no source or migration dependency on the separate, still-unmerged external
+builder-handoff draft; that post-launch work must take the next free migration
+slot if it proceeds.
+
 ## R12 progress
 
 PR #1690 originally closed the canonical R12.1 and R12.2 source/test slice.

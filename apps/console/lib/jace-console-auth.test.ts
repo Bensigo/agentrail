@@ -75,6 +75,14 @@ describe("requireJaceConsoleSecret", () => {
     expect((result as NextResponse).status).toBe(401);
   });
 
+  it("rejects the regeneration-worker capability at legacy Jace routes", () => {
+    const workerSecret = "context-pack-regeneration-only";
+    process.env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN = workerSecret;
+    const result = requireJaceConsoleSecret(req(workerSecret));
+    expect((result as NextResponse).status).toBe(401);
+    delete process.env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN;
+  });
+
   it("401s (not 500) on a wrong token of a DIFFERENT length — timingSafeEqual throws on mismatched-length buffers, so the length check must run first", () => {
     const result = requireJaceConsoleSecret(req("short"));
     expect((result as NextResponse).status).toBe(401);

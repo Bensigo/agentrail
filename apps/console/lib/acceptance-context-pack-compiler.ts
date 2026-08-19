@@ -219,6 +219,7 @@ export type CompileAcceptanceContextPackInput = {
   custody: AcceptanceContextPackCustodyResolution;
   snapshot: ExactHeadGithubContextSnapshot;
   materialization: Extract<ExactHeadContentMaterializationResult, { ok: true }>["materialization"];
+  regenerationExecutionId?: string;
 };
 
 type InternalCompileAcceptanceContextPackResult =
@@ -1244,6 +1245,9 @@ export async function compileAndRecordAcceptanceContextPack(
   const persistence = await recordAcceptanceCompiledContextPack({
     workspaceId: input.custody.sourceSnapshot.workspaceId,
     sourceSnapshotId: input.custody.sourceSnapshot.id,
+    ...(input.regenerationExecutionId
+      ? { regenerationExecutionId: input.regenerationExecutionId }
+      : {}),
     compiled: publicResult.compiled,
     exactSourceProofs,
     exactGitTreeInclusionProofs,

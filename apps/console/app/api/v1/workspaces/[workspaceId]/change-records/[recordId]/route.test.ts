@@ -24,8 +24,10 @@ vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptancePrDecision: vi.fn(),
   recordAcceptancePrReviewEffort: vi.fn(),
   recordAcceptanceContextPackRegenerationRequest: vi.fn(),
+  retryAcceptanceContextPackRegenerationExecution: vi.fn(),
+  listAcceptanceContextPackRegenerationExecutions: vi.fn(),
   changeRecordEventId: vi.fn(({ recordId, eventKey }: { recordId: string; eventKey: string }) =>
-    eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:stale:00000000-0000-4000-8000-000000000777"
+    eventKey === "context-pack-regeneration:00000000-0000-4000-8000-000000000049:00000000-0000-4000-8000-000000000051"
       ? "00000000-0000-4000-8000-000000000048"
       : recordId),
 }));
@@ -49,6 +51,8 @@ import {
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
   recordAcceptanceContextPackRegenerationRequest,
+  retryAcceptanceContextPackRegenerationExecution,
+  listAcceptanceContextPackRegenerationExecutions,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
 
@@ -76,6 +80,8 @@ const EXTERNAL_BUILDER_PACK_EVENT_ID = "00000000-0000-4000-8000-000000000051";
 const EXTERNAL_BUILDER_PACK_ID = "00000000-0000-4000-8000-000000000050";
 const COMPILED_PACK_ID = "00000000-0000-4000-8000-000000000049";
 const REGENERATION_REQUEST_EVENT_ID = "00000000-0000-4000-8000-000000000048";
+const REGENERATION_EXECUTION_ID = "00000000-0000-4000-8000-000000000050";
+const REGENERATION_REQUEST_INTENT_ID = "00000000-0000-4000-8000-000000000051";
 const CANDIDATE_FINGERPRINT = `sha256:${"9".repeat(64)}`;
 const DEPENDENCY_OBSERVED_AT = new Date("2026-08-03T12:03:00.000Z");
 const DEPENDENCY_APPROVED_AT = new Date("2026-08-03T12:08:00.000Z");
@@ -599,7 +605,10 @@ beforeEach(() => {
     kind: "recorded",
     request: {
       eventId: REGENERATION_REQUEST_EVENT_ID,
-      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`,
+      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`,
+      eventVersion: 3,
+      executionId: REGENERATION_EXECUTION_ID,
+      executionBinding: "execution_bound",
       workspaceId: WS,
       recordId: RECORD,
       sourceSnapshotId: "00000000-0000-4000-8000-000000000047",
@@ -611,11 +620,54 @@ beforeEach(() => {
       authorityGeneration: 1,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
       requestedBy: `user:${USER}`,
       requestedRole: "owner",
       requestedAt: EFFORT_AT,
       authority: "request_only",
       status: "request_recorded",
+    },
+    execution: {
+      id: REGENERATION_EXECUTION_ID,
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: null,
+      completedAt: null,
+      createdAt: EFFORT_AT,
+      updatedAt: EFFORT_AT,
+      humanRetryable: false,
+    },
+  } as never);
+  vi.mocked(listAcceptanceContextPackRegenerationExecutions).mockResolvedValue([] as never);
+  vi.mocked(retryAcceptanceContextPackRegenerationExecution).mockResolvedValue({
+    kind: "retried",
+    execution: {
+      id: "00000000-0000-4000-8000-000000000051",
+      requestEventId: "00000000-0000-4000-8000-000000000052",
+      parentExecutionId: REGENERATION_EXECUTION_ID,
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: null,
+      completedAt: null,
+      createdAt: EFFORT_AT,
+      updatedAt: EFFORT_AT,
+      humanRetryable: false,
     },
   } as never);
 });
@@ -758,6 +810,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         reason: "criterion_outcome_bundle_not_recorded",
       },
       contextPackRegenerationRequests: [],
+      contextPackRegenerationExecutions: [],
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
@@ -784,6 +837,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(listAcceptanceContextPackRegenerationExecutions).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
     expect(readDependencyDraftProposalDetail).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
@@ -792,6 +849,40 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+  });
+
+  it("returns bounded tenant-scoped Context Pack regeneration execution readback", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000046";
+    vi.mocked(listAcceptanceContextPackRegenerationExecutions).mockResolvedValue([{
+      id: executionId,
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
+      workspaceId: WS,
+      recordId: RECORD,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      status: "held",
+      attemptCount: 1,
+      maxAttempts: 1,
+      replacementCompiledPackId: null,
+      outcomeReason: "execution_ambiguous",
+      completedAt: UPDATED,
+      createdAt: CREATED,
+      updatedAt: UPDATED,
+      humanRetryable: false,
+    }] as never);
+    const response = await GET(req(), { params: params() });
+    const body = await response.json();
+    expect(body.contextPackRegenerationExecutions).toEqual([expect.objectContaining({
+      id: executionId,
+      workspaceId: WS,
+      recordId: RECORD,
+      status: "held",
+      outcomeReason: "execution_ambiguous",
+      completedAt: UPDATED.toISOString(),
+    })]);
+    expect(JSON.stringify(body.contextPackRegenerationExecutions)).not.toMatch(/lease|token|sourceSnapshot|acceptanceContract/iu);
   });
 
   it("redacts dependency proposal commands from the raw audit timeline", async () => {
@@ -997,15 +1088,44 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canCreateGatedGithubIssue).toBe(false);
   });
 
-  it("projects only the current actor's exact current request-only Context Pack receipt", async () => {
+  it("projects execution-bound v3 and legacy v1 receipts without inventing legacy authority", async () => {
     const sourceSnapshotId = "00000000-0000-4000-8000-000000000047";
-    const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:stale:${USER}`;
+    const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`;
     vi.mocked(readChangeRecordTimeline).mockResolvedValue({
       ...timeline,
       events: [...timeline.events, {
         id: REGENERATION_REQUEST_EVENT_ID,
         recordId: RECORD,
         eventKey,
+        stage: "human_context_request",
+        at: EFFORT_AT,
+        actor: `user:${USER}`,
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          version: 3,
+          workspaceId: WS,
+          recordId: RECORD,
+          sourceSnapshotId,
+          compiledPackId: COMPILED_PACK_ID,
+          executionId: REGENERATION_EXECUTION_ID,
+          repo: "ada/widgets",
+          prNumber: 98,
+          headSha: HEAD,
+          headCycleId: CYCLE,
+          authorityGeneration: 1,
+          acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+          reason: "stale",
+          requestIntentId: REGENERATION_REQUEST_INTENT_ID,
+          requestedBy: `user:${USER}`,
+          requestedRole: "owner",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+        createdAt: EFFORT_AT,
+      }, {
+        id: RECORD,
+        recordId: RECORD,
+        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:${USER}`,
         stage: "human_context_request",
         at: EFFORT_AT,
         actor: `user:${USER}`,
@@ -1022,36 +1142,9 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           headCycleId: CYCLE,
           authorityGeneration: 1,
           acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
-          reason: "stale",
+          reason: "inadequate",
           requestedBy: `user:${USER}`,
           requestedRole: "owner",
-          authority: "request_only",
-          status: "request_recorded",
-        },
-        createdAt: EFFORT_AT,
-      }, {
-        id: RECORD,
-        recordId: RECORD,
-        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:00000000-0000-4000-8000-000000000778`,
-        stage: "human_context_request",
-        at: EFFORT_AT,
-        actor: "user:00000000-0000-4000-8000-000000000778",
-        payloadRef: {
-          kind: "acceptance_context_pack_regeneration_request",
-          version: 1,
-          workspaceId: WS,
-          recordId: RECORD,
-          sourceSnapshotId,
-          compiledPackId: COMPILED_PACK_ID,
-          repo: "ada/widgets",
-          prNumber: 98,
-          headSha: HEAD,
-          headCycleId: CYCLE,
-          authorityGeneration: 1,
-          acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
-          reason: "inadequate",
-          requestedBy: "user:00000000-0000-4000-8000-000000000778",
-          requestedRole: "admin",
           authority: "request_only",
           status: "request_recorded",
         },
@@ -1082,12 +1175,34 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.contextPackRegenerationRequests).toEqual([{
       eventId: REGENERATION_REQUEST_EVENT_ID,
       eventKey,
+      eventVersion: 3,
       sourceSnapshotId,
       compiledPackId: COMPILED_PACK_ID,
+      executionId: REGENERATION_EXECUTION_ID,
+      executionBinding: "execution_bound",
       headSha: HEAD,
       headCycleId: CYCLE,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
+      requestedBy: `user:${USER}`,
+      requestedRole: "owner",
+      requestedAt: EFFORT_AT.toISOString(),
+      authority: "request_only",
+      status: "request_recorded",
+    }, {
+      eventId: RECORD,
+      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:${USER}`,
+      eventVersion: 1,
+      sourceSnapshotId,
+      compiledPackId: COMPILED_PACK_ID,
+      executionId: null,
+      executionBinding: "legacy_request_only",
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      reason: "inadequate",
+      requestIntentId: null,
       requestedBy: `user:${USER}`,
       requestedRole: "owner",
       requestedAt: EFFORT_AT.toISOString(),
@@ -1637,11 +1752,13 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
   });
 
-  it("records only a request against a server-revalidated Pack binding", async () => {
+  it("records a request and queues one server-derived execution against the same Pack binding", async () => {
+    const requestIntentId = "00000000-0000-4000-8000-000000000051";
     const response = await PATCH(patchReq({
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId,
     }), { params: params() });
 
     expect(response.status).toBe(201);
@@ -1651,19 +1768,56 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
       requestedBy: `user:${USER}`,
+      requestIntentId,
     });
     const body = await response.json();
     expect(body.kind).toBe("recorded");
     expect(body.request.authority).toBe("request_only");
     expect(body.request.status).toBe("request_recorded");
+    expect(body.execution).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000050",
+      requestEventId: REGENERATION_REQUEST_EVENT_ID,
+      parentExecutionId: null,
+      priorCompiledPackId: COMPILED_PACK_ID,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: 1,
+    });
+  });
+
+  it("records a distinct intent visibly bound to an existing terminal execution", async () => {
+    vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValueOnce({
+      kind: "recorded",
+      request: { executionId: REGENERATION_EXECUTION_ID },
+      execution: {
+        id: REGENERATION_EXECUTION_ID,
+        status: "held",
+        outcomeReason: "lease_attempts_exhausted",
+      },
+    } as never);
+    const response = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
+    }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      kind: "recorded",
+      request: { executionId: REGENERATION_EXECUTION_ID },
+      execution: { id: REGENERATION_EXECUTION_ID, status: "held" },
+    });
   });
 
   it("rejects regeneration bodies that try to supply head or execution authority", async () => {
     for (const body of [
       { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "missing" },
       { action: "request_context_pack_regeneration", compiledPackId: "not-a-uuid", reason: "stale" },
-      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", headSha: HEAD },
-      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", dispatch: true },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale" },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "invalid" },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "00000000-0000-4000-8000-000000000051", headSha: HEAD },
+      { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "stale", requestIntentId: "00000000-0000-4000-8000-000000000051", dispatch: true },
     ]) {
       const response = await PATCH(patchReq(body), { params: params() });
       expect(response.status).toBe(400);
@@ -1671,16 +1825,41 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(recordAcceptanceContextPackRegenerationRequest).not.toHaveBeenCalled();
   });
 
+  it("records a deliberate retry using only one terminal execution id", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000050";
+    const response = await PATCH(patchReq({
+      action: "retry_context_pack_regeneration",
+      executionId,
+    }), { params: params() });
+    expect(response.status).toBe(201);
+    expect(retryAcceptanceContextPackRegenerationExecution).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      executionId,
+      requestedBy: `user:${USER}`,
+    });
+    expect(await response.json()).toMatchObject({ kind: "retried", execution: { status: "queued" } });
+  });
+
+  it("rejects widened or invalid deliberate retry bodies", async () => {
+    for (const body of [
+      { action: "retry_context_pack_regeneration", executionId: "invalid" },
+      { action: "retry_context_pack_regeneration", executionId: "00000000-0000-4000-8000-000000000050", dispatch: true },
+    ]) expect((await PATCH(patchReq(body), { params: params() })).status).toBe(400);
+    expect(retryAcceptanceContextPackRegenerationExecution).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ kind: "not_found" }, 404],
     [{ kind: "not_authorized" }, 403],
     [{ kind: "not_current" }, 409],
-  ] as const)("maps the closed Context Pack request result %# without inventing regeneration", async (result, status) => {
+  ] as const)("maps the closed Context Pack request result %# without queuing an execution", async (result, status) => {
     vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValue(result as never);
     const response = await PATCH(patchReq({
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "inadequate",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual(result);
@@ -1694,6 +1873,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({
@@ -1707,6 +1887,7 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       action: "request_context_pack_regeneration",
       compiledPackId: COMPILED_PACK_ID,
       reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });

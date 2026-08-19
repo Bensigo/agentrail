@@ -861,6 +861,12 @@ and local PostgreSQL proof only. The worker has not been enabled against a
 deployed Console; no live GitHub bytes were regenerated, no deployment
 occurred, and no customer proof exists.
 
+The additive execution schema is registered as migration `0103` at journal
+index 108, directly after current main's `0101`/`0102` MCP migrations. It has
+no source or migration dependency on the separate, still-unmerged external
+builder-handoff draft; that post-launch work must take the next free migration
+slot if it proceeds.
+
 ## R12 progress
 
 PR #1690 originally closed the canonical R12.1 and R12.2 source/test slice.

@@ -1,8 +1,10 @@
-const REQUEST_TIMEOUT_MS = 8000;
+const SHORT_REQUEST_TIMEOUT_MS = 8_000;
+export const EXECUTION_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 2 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const LEASE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 export const CLAIM_PATH = "/api/v1/runner/context-pack-regenerations/claim";
+export const RENEW_PATH = "/api/v1/runner/context-pack-regenerations/renew";
 export const EXECUTE_PATH = "/api/v1/runner/context-pack-regenerations/execute";
 
 export class ContextPackRegenerationWorkerFatalError extends Error {
@@ -87,10 +89,10 @@ export function assertContextPackRegenerationWorkerConfig(env) {
   return { baseUrl: parsed.href.replace(/\/+$/, ""), token };
 }
 
-async function request(path, body, env, transport = fetch) {
+async function request(path, body, env, transport = fetch, timeoutMs = SHORT_REQUEST_TIMEOUT_MS) {
   const { baseUrl, token } = assertContextPackRegenerationWorkerConfig(env);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await transport(`${baseUrl}${path}`, {
       method: "POST",
@@ -114,12 +116,32 @@ export async function claimContextPackRegeneration({ workerId, env = process.env
   return claim;
 }
 
+export async function renewContextPackRegenerationLease({ claim, env = process.env, transport = fetch }) {
+  const response = await request(RENEW_PATH, {
+    executionId: claim.executionId,
+    workerId: claim.workerId,
+    leaseToken: claim.leaseToken,
+  }, env, transport);
+  if (response.status === 401 || response.status === 403) {
+    throw new ContextPackRegenerationWorkerFatalError("Context Pack regeneration worker authentication failed");
+  }
+  if (!response.ok) throw new Error(`Context Pack regeneration lease renewal failed (${response.status})`);
+  const body = await readBoundedJson(response);
+  if (!exactKeys(body, ["renewed"]) || !exactKeys(body.renewed, ["leaseExpiresAt"])
+    || typeof body.renewed.leaseExpiresAt !== "string"
+    || body.renewed.leaseExpiresAt.length > 64
+    || !Number.isFinite(Date.parse(body.renewed.leaseExpiresAt))) {
+    throw new Error("Context Pack regeneration lease renewal response was invalid");
+  }
+  return body.renewed;
+}
+
 export async function executeContextPackRegeneration({ claim, env = process.env, transport = fetch }) {
   const response = await request(EXECUTE_PATH, {
     executionId: claim.executionId,
     workerId: claim.workerId,
     leaseToken: claim.leaseToken,
-  }, env, transport);
+  }, env, transport, EXECUTION_REQUEST_TIMEOUT_MS);
   if (response.status === 401 || response.status === 403) {
     throw new ContextPackRegenerationWorkerFatalError("Context Pack regeneration worker authentication failed");
   }

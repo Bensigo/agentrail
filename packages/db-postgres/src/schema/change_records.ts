@@ -1425,6 +1425,7 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
     claimedBy: text("claimed_by"),
     leaseTokenSha256: text("lease_token_sha256"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    executionDeadlineAt: timestamp("execution_deadline_at", { withTimezone: true }),
     replacementCompiledPackId: uuid("replacement_compiled_pack_id")
       .references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
     outcomeReason: text("outcome_reason"),
@@ -1479,6 +1480,8 @@ export const acceptanceContextPackRegenerationExecutions = pgTable(
         AND ((${t.status} = 'running') = (${t.claimedBy} IS NOT NULL))
         AND ((${t.status} = 'running') = (${t.leaseTokenSha256} IS NOT NULL))
         AND ((${t.status} = 'running') = (${t.leaseExpiresAt} IS NOT NULL))
+        AND ((${t.attemptCount} = 0) = (${t.executionDeadlineAt} IS NULL))
+        AND (${t.leaseExpiresAt} IS NULL OR ${t.leaseExpiresAt} <= ${t.executionDeadlineAt})
         AND (${t.leaseTokenSha256} IS NULL OR ${t.leaseTokenSha256} ~ '^[a-f0-9]{64}$')
         AND ((${t.status} IN ('queued', 'running')) = (${t.completedAt} IS NULL))
         AND ((${t.status} NOT IN ('queued', 'running')) = (${t.outcomeReason} IS NOT NULL))

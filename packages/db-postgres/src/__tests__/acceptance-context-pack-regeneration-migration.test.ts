@@ -19,6 +19,8 @@ describe("0103 Context Pack regeneration executions migration", () => {
     expect(sql).toContain('CREATE TRIGGER "acceptance_context_pack_regeneration_executions_custody_trigger"');
     expect(sql).toContain('"replacement_compiled_pack_id" uuid REFERENCES "acceptance_compiled_context_packs"');
     expect(sql).toContain('"lease_token_sha256" IS NOT NULL');
+    expect(sql).toContain('"execution_deadline_at" timestamp with time zone');
+    expect(sql).toContain('"lease_expires_at" <= "execution_deadline_at"');
     expect(sql).toContain('"status" = \'replaced\'');
   });
 });

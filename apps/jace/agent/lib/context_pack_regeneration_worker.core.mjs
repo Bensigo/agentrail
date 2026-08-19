@@ -1,4 +1,13 @@
-export function createContextPackRegenerationWorker({ claim, execute, intervalMs = 30_000, setTimer = setTimeout }) {
+export function createContextPackRegenerationWorker({
+  claim,
+  execute,
+  renew,
+  intervalMs = 30_000,
+  renewIntervalMs = 30_000,
+  setTimer = setTimeout,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+}) {
   let stopped = false;
   let inFlight = false;
   async function runOnce() {
@@ -6,7 +15,24 @@ export function createContextPackRegenerationWorker({ claim, execute, intervalMs
     inFlight = true;
     try {
       const lease = await claim();
-      return lease ? await execute(lease) : null;
+      if (!lease) return null;
+      if (!renew) return await execute(lease);
+      let renewing = false;
+      let renewalError = null;
+      const timer = setIntervalFn(async () => {
+        if (renewing || renewalError) return;
+        renewing = true;
+        try { await renew(lease); }
+        catch (error) { renewalError = error; }
+        finally { renewing = false; }
+      }, renewIntervalMs);
+      try {
+        const result = await execute(lease);
+        if (renewalError) throw renewalError;
+        return result;
+      } finally {
+        clearIntervalFn(timer);
+      }
     } finally { inFlight = false; }
   }
   async function loop() {

@@ -7,6 +7,7 @@ import {
   assertContextPackRegenerationWorkerCredentialIsolation,
   claimContextPackRegeneration,
   executeContextPackRegeneration,
+  renewContextPackRegenerationLease,
 } from "../agent/lib/context_pack_regeneration_console.mjs";
 
 test("startup validates the complete worker configuration before polling", () => {
@@ -41,6 +42,34 @@ test("one claim triggers one opaque execution", async () => {
   assert.deepEqual(seen, [claim]);
 });
 
+test("slow valid execution renews its opaque lease before returning", async () => {
+  const claim = { executionId: "e", workerId: "w", leaseToken: "t" };
+  const events = [];
+  let finishExecution;
+  const executionDone = new Promise((resolve) => { finishExecution = resolve; });
+  const worker = createContextPackRegenerationWorker({
+    claim: async () => claim,
+    execute: async () => {
+      events.push("execute-started");
+      await executionDone;
+      events.push("execute-finished");
+      return "done";
+    },
+    renew: async (value) => {
+      events.push(`renewed:${value.executionId}`);
+      finishExecution();
+    },
+    renewIntervalMs: 30_000,
+    setIntervalFn: (callback) => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearIntervalFn: () => {},
+  });
+  assert.equal(await worker.runOnce(), "done");
+  assert.deepEqual(events, ["execute-started", "renewed:e", "execute-finished"]);
+});
+
 test("transport sends only worker identity for claim and opaque lease for execution", async () => {
   const calls = [];
   const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
@@ -53,16 +82,22 @@ test("transport sends only worker identity for claim and opaque lease for execut
   } };
   const transport = async (url, init) => {
     calls.push({ url, body: JSON.parse(init.body), redirect: init.redirect, authorization: init.headers.Authorization });
-    return Response.json(calls.length === 1 ? claimBody : { result: { kind: "completed", status: "replaced" } });
+    return Response.json(calls.length === 1
+      ? claimBody
+      : calls.length === 2
+        ? { renewed: { leaseExpiresAt: "2026-08-14T06:01:00.000Z" } }
+        : { result: { kind: "completed", status: "replaced" } });
   };
   const claim = await claimContextPackRegeneration({ workerId: "w", env, transport });
+  await renewContextPackRegenerationLease({ claim, env, transport });
   await executeContextPackRegeneration({ claim, env, transport });
   assert.deepEqual(calls.map(({ body }) => body), [
     { workerId: "w" },
     { executionId: claimBody.claim.executionId, workerId: "w", leaseToken: claimBody.claim.leaseToken },
+    { executionId: claimBody.claim.executionId, workerId: "w", leaseToken: claimBody.claim.leaseToken },
   ]);
-  assert.deepEqual(calls.map(({ redirect }) => redirect), ["error", "error"]);
-  assert.deepEqual(calls.map(({ authorization }) => authorization), ["Bearer secret", "Bearer secret"]);
+  assert.deepEqual(calls.map(({ redirect }) => redirect), ["error", "error", "error"]);
+  assert.deepEqual(calls.map(({ authorization }) => authorization), ["Bearer secret", "Bearer secret", "Bearer secret"]);
 });
 
 test("console configuration rejects unsafe bearer destinations and oversized tokens", async () => {

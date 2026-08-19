@@ -66,6 +66,7 @@ import {
   recordAcceptanceContextPackRegenerationRequest,
   retryAcceptanceContextPackRegenerationExecution,
   claimAcceptanceContextPackRegenerationExecution,
+  renewAcceptanceContextPackRegenerationExecutionLease,
   prepareAcceptanceContextPackRegenerationExecution,
   completeAcceptanceContextPackRegenerationExecution,
   listAcceptanceContextPackRegenerationExecutions,
@@ -2662,6 +2663,40 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(stored).toMatchObject({ status: "running", attemptCount: 1 });
       expect(stored.claimedBy).toBe(claimed[0]?.workerId);
       expect(stored.leaseTokenSha256).not.toBe(claimed[0]?.leaseToken);
+    });
+
+    it("renews a valid slow execution lease only within its bounded execution deadline", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-renew",
+        prNumber: 602,
+        headSha: "a".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+      });
+      const claim = await claimAcceptanceContextPackRegenerationExecution({ workerId: "slow-valid-worker" });
+      if (!claim) throw new Error("expected regeneration execution claim");
+
+      const renewed = await renewAcceptanceContextPackRegenerationExecutionLease({
+        executionId: claim.executionId,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+      });
+      expect(renewed).toMatchObject({ kind: "renewed", leaseExpiresAt: expect.any(Date) });
+      if (renewed.kind !== "renewed") return;
+      const stored = (await db.select().from(acceptanceContextPackRegenerationExecutions).where(
+        eq(acceptanceContextPackRegenerationExecutions.id, claim.executionId),
+      ))[0]!;
+      expect(stored.executionDeadlineAt).toBeInstanceOf(Date);
+      expect(renewed.leaseExpiresAt.valueOf()).toBeGreaterThanOrEqual(claim.leaseExpiresAt.valueOf());
+      expect(renewed.leaseExpiresAt.valueOf()).toBeLessThanOrEqual(stored.executionDeadlineAt!.valueOf());
+      expect(stored).toMatchObject({ status: "running", attemptCount: 1, claimedBy: claim.workerId });
     });
 
     it("refuses a prior snapshot whose immutable Wiki identity was altered", async () => {

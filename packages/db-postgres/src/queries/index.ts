@@ -3362,6 +3362,7 @@ export {
   retryAcceptanceContextPackRegenerationExecution,
   canHumanRetryAcceptanceContextPackRegenerationExecution,
   claimAcceptanceContextPackRegenerationExecution,
+  renewAcceptanceContextPackRegenerationExecutionLease,
   prepareAcceptanceContextPackRegenerationExecution,
   completeAcceptanceContextPackRegenerationExecution,
   listAcceptanceContextPackRegenerationExecutions,

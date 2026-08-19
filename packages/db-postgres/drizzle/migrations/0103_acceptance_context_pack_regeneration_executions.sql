@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS "acceptance_context_pack_regeneration_executions" (
   "claimed_by" text,
   "lease_token_sha256" text,
   "lease_expires_at" timestamp with time zone,
+  "execution_deadline_at" timestamp with time zone,
   "replacement_compiled_pack_id" uuid REFERENCES "acceptance_compiled_context_packs"("id") ON DELETE restrict,
   "outcome_reason" text,
   "completed_at" timestamp with time zone,
@@ -49,6 +50,8 @@ CREATE TABLE IF NOT EXISTS "acceptance_context_pack_regeneration_executions" (
     AND (("status" = 'running') = ("claimed_by" IS NOT NULL))
     AND (("status" = 'running') = ("lease_token_sha256" IS NOT NULL))
     AND (("status" = 'running') = ("lease_expires_at" IS NOT NULL))
+    AND (("attempt_count" = 0) = ("execution_deadline_at" IS NULL))
+    AND ("lease_expires_at" IS NULL OR "lease_expires_at" <= "execution_deadline_at")
     AND ("lease_token_sha256" IS NULL OR "lease_token_sha256" ~ '^[a-f0-9]{64}$')
     AND (("status" IN ('queued', 'running')) = ("completed_at" IS NULL))
     AND (("status" NOT IN ('queued', 'running')) = ("outcome_reason" IS NOT NULL))

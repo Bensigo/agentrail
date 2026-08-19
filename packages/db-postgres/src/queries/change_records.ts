@@ -9831,7 +9831,8 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
   });
 }
 
-export const ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS = 2 * 60 * 1000;
+export const ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS = 60 * 1000;
+export const ACCEPTANCE_CONTEXT_PACK_REGENERATION_EXECUTION_BUDGET_MS = 6 * 60 * 1000;
 
 const ACCEPTANCE_CONTEXT_PACK_REGENERATION_OUTCOME_STAGE = "context_pack_regeneration";
 
@@ -9960,12 +9961,16 @@ export async function claimAcceptanceContextPackRegenerationExecution(input: {
     if (!candidate) return null;
     const leaseToken = randomBytes(32).toString("base64url");
     const leaseExpiresAt = new Date(now.getTime() + ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS);
+    const executionDeadlineAt = new Date(
+      now.getTime() + ACCEPTANCE_CONTEXT_PACK_REGENERATION_EXECUTION_BUDGET_MS,
+    );
     const rows = await tx.update(acceptanceContextPackRegenerationExecutions).set({
       status: "running",
       attemptCount: candidate.attemptCount + 1,
       claimedBy: input["workerId"],
       leaseTokenSha256: createHash("sha256").update(leaseToken, "utf8").digest("hex"),
       leaseExpiresAt,
+      executionDeadlineAt,
       updatedAt: now,
     }).where(eq(acceptanceContextPackRegenerationExecutions.id, candidate.id)).returning();
     if (rows.length !== 1) throw new Error("Context Pack regeneration claim lost custody");
@@ -9976,6 +9981,55 @@ export async function claimAcceptanceContextPackRegenerationExecution(input: {
       attemptCount: candidate.attemptCount + 1,
       leaseExpiresAt,
     };
+  });
+}
+
+export type RenewAcceptanceContextPackRegenerationExecutionLeaseResult =
+  | { kind: "renewed"; leaseExpiresAt: Date }
+  | { kind: "not_owned" };
+
+/** Extends one opaque owned lease without exceeding its fixed execution budget. */
+export async function renewAcceptanceContextPackRegenerationExecutionLease(input: {
+  executionId: string;
+  workerId: string;
+  leaseToken: string;
+}): Promise<RenewAcceptanceContextPackRegenerationExecutionLeaseResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["executionId", "workerId", "leaseToken"])
+    || !isUuid(input["executionId"])
+    || typeof input["workerId"] !== "string" || input["workerId"].length < 1
+    || input["workerId"].length > 128 || input["workerId"] !== input["workerId"].trim()
+    || /[\u0000-\u001f\u007f]/u.test(input["workerId"])
+    || typeof input["leaseToken"] !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(input["leaseToken"])) return { kind: "not_owned" };
+  const now = new Date();
+  const tokenSha256 = createHash("sha256").update(input["leaseToken"], "utf8").digest("hex");
+  return db.transaction(async (tx) => {
+    const execution = (await tx.select().from(acceptanceContextPackRegenerationExecutions)
+      .where(and(
+        eq(acceptanceContextPackRegenerationExecutions.id, input["executionId"]),
+        eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+        eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+        eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, tokenSha256),
+        gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, now),
+        gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, now),
+      )).limit(1).for("update"))[0];
+    if (!execution?.executionDeadlineAt) return { kind: "not_owned" as const };
+    const leaseExpiresAt = new Date(Math.min(
+      now.getTime() + ACCEPTANCE_CONTEXT_PACK_REGENERATION_LEASE_MS,
+      execution.executionDeadlineAt.valueOf(),
+    ));
+    const rows = await tx.update(acceptanceContextPackRegenerationExecutions).set({
+      leaseExpiresAt,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceContextPackRegenerationExecutions.id, execution.id),
+      eq(acceptanceContextPackRegenerationExecutions.status, "running"),
+      eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
+      eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, tokenSha256),
+    )).returning({ leaseExpiresAt: acceptanceContextPackRegenerationExecutions.leaseExpiresAt });
+    return rows[0]?.leaseExpiresAt
+      ? { kind: "renewed" as const, leaseExpiresAt: rows[0].leaseExpiresAt }
+      : { kind: "not_owned" as const };
   });
 }
 
@@ -10017,6 +10071,7 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
         eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
         eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
         gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+        gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
       )).limit(1))[0];
     if (!candidate) return { kind: "not_owned" as const };
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
@@ -10032,6 +10087,7 @@ export async function prepareAcceptanceContextPackRegenerationExecution(input: {
         eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
         eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
         gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+        gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
       )).limit(1).for("update"))[0];
     if (!execution) return { kind: "not_owned" as const };
     const record = (await tx.select().from(changeRecords).where(and(
@@ -10132,6 +10188,7 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
       eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
       eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
       gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+      gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
     )).limit(1))[0];
     if (!candidate) return { kind: "not_owned" as const };
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
@@ -10146,6 +10203,7 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
       eq(acceptanceContextPackRegenerationExecutions.claimedBy, input["workerId"]),
       eq(acceptanceContextPackRegenerationExecutions.leaseTokenSha256, leaseTokenSha256),
       gte(acceptanceContextPackRegenerationExecutions.leaseExpiresAt, new Date()),
+      gte(acceptanceContextPackRegenerationExecutions.executionDeadlineAt, new Date()),
     )).limit(1).for("update"))[0];
     if (!execution) return { kind: "not_owned" as const };
     if (input["outcome"] !== "held") {

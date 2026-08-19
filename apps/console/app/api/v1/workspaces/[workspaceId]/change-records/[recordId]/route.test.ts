@@ -606,7 +606,9 @@ beforeEach(() => {
     request: {
       eventId: REGENERATION_REQUEST_EVENT_ID,
       eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`,
+      eventVersion: 3,
       executionId: REGENERATION_EXECUTION_ID,
+      executionBinding: "execution_bound",
       workspaceId: WS,
       recordId: RECORD,
       sourceSnapshotId: "00000000-0000-4000-8000-000000000047",
@@ -1086,7 +1088,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canCreateGatedGithubIssue).toBe(false);
   });
 
-  it("projects only the current actor's exact current request-only Context Pack receipt", async () => {
+  it("projects execution-bound v3 and legacy v1 receipts without inventing legacy authority", async () => {
     const sourceSnapshotId = "00000000-0000-4000-8000-000000000047";
     const eventKey = `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`;
     vi.mocked(readChangeRecordTimeline).mockResolvedValue({
@@ -1123,18 +1125,17 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       }, {
         id: RECORD,
         recordId: RECORD,
-        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:00000000-0000-4000-8000-000000000052`,
+        eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:${USER}`,
         stage: "human_context_request",
         at: EFFORT_AT,
-        actor: "user:00000000-0000-4000-8000-000000000778",
+        actor: `user:${USER}`,
         payloadRef: {
           kind: "acceptance_context_pack_regeneration_request",
-          version: 3,
+          version: 1,
           workspaceId: WS,
           recordId: RECORD,
           sourceSnapshotId,
           compiledPackId: COMPILED_PACK_ID,
-          executionId: REGENERATION_EXECUTION_ID,
           repo: "ada/widgets",
           prNumber: 98,
           headSha: HEAD,
@@ -1142,9 +1143,8 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           authorityGeneration: 1,
           acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
           reason: "inadequate",
-          requestIntentId: "00000000-0000-4000-8000-000000000052",
-          requestedBy: "user:00000000-0000-4000-8000-000000000778",
-          requestedRole: "admin",
+          requestedBy: `user:${USER}`,
+          requestedRole: "owner",
           authority: "request_only",
           status: "request_recorded",
         },
@@ -1175,14 +1175,34 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.contextPackRegenerationRequests).toEqual([{
       eventId: REGENERATION_REQUEST_EVENT_ID,
       eventKey,
+      eventVersion: 3,
       sourceSnapshotId,
       compiledPackId: COMPILED_PACK_ID,
       executionId: REGENERATION_EXECUTION_ID,
+      executionBinding: "execution_bound",
       headSha: HEAD,
       headCycleId: CYCLE,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
       reason: "stale",
       requestIntentId: REGENERATION_REQUEST_INTENT_ID,
+      requestedBy: `user:${USER}`,
+      requestedRole: "owner",
+      requestedAt: EFFORT_AT.toISOString(),
+      authority: "request_only",
+      status: "request_recorded",
+    }, {
+      eventId: RECORD,
+      eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:inadequate:${USER}`,
+      eventVersion: 1,
+      sourceSnapshotId,
+      compiledPackId: COMPILED_PACK_ID,
+      executionId: null,
+      executionBinding: "legacy_request_only",
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      reason: "inadequate",
+      requestIntentId: null,
       requestedBy: `user:${USER}`,
       requestedRole: "owner",
       requestedAt: EFFORT_AT.toISOString(),

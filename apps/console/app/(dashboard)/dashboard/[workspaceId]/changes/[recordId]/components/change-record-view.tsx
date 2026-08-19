@@ -655,14 +655,16 @@ export type ChangeRecordResponse = {
 export type ContextPackRegenerationRequest = {
   eventId: string;
   eventKey: string;
-  executionId: string;
+  eventVersion: 1 | 2 | 3;
+  executionId: string | null;
+  executionBinding: "legacy_request_only" | "execution_bound";
   sourceSnapshotId: string;
   compiledPackId: string;
   headSha: string;
   headCycleId: string;
   acceptanceContract: { id: string; version: number; sha256: string };
   reason: "stale" | "inadequate";
-  requestIntentId: string;
+  requestIntentId: string | null;
   requestedBy: string;
   requestedRole: "owner" | "admin";
   requestedAt: string;
@@ -3373,21 +3375,30 @@ function contextPackRequestsMatchDetail(
   return requests.every((request) => {
     if (!isObject(request) || !hasExactKeys(request, [
       "eventId", "eventKey", "sourceSnapshotId", "compiledPackId", "headSha", "headCycleId",
-      "acceptanceContract", "reason", "requestIntentId", "executionId", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
-    ]) || !isUuid(request.eventId) || !isUuid(request.executionId) || seen.has(request.eventId)
+      "eventVersion", "acceptanceContract", "reason", "requestIntentId", "executionId", "executionBinding",
+      "requestedBy", "requestedRole", "requestedAt", "authority", "status",
+    ]) || !isUuid(request.eventId) || seen.has(request.eventId)
       || !isUuid(request.sourceSnapshotId) || !isUuid(request.compiledPackId)
       || packSnapshots.get(request.compiledPackId) !== request.sourceSnapshotId
       || request.headSha !== current.headSha || request.headCycleId !== current.headCycleId
       || !exactJsonEqual(request.acceptanceContract, contractIdentity)
       || (request.reason !== "stale" && request.reason !== "inadequate")
-      || !isUuid(request.requestIntentId)
+      || (request.eventVersion !== 1 && request.eventVersion !== 2 && request.eventVersion !== 3)
+      || (request.eventVersion === 1
+        ? request.requestIntentId !== null
+        : !isUuid(request.requestIntentId))
+      || (request.eventVersion === 3
+        ? !isUuid(request.executionId) || request.executionBinding !== "execution_bound"
+        : request.executionId !== null || request.executionBinding !== "legacy_request_only")
       || typeof request.requestedBy !== "string"
       || !request.requestedBy.startsWith("user:")
       || !UUID.test(request.requestedBy.slice("user:".length))
       || (request.requestedRole !== "owner" && request.requestedRole !== "admin")
       || !isIsoTimestamp(request.requestedAt)
       || request.authority !== "request_only" || request.status !== "request_recorded") return false;
-    const expectedKey = `context-pack-regeneration:${request.compiledPackId}:${request.requestIntentId}`;
+    const expectedKey = request.eventVersion === 1
+      ? `context-pack-regeneration:${request.compiledPackId}:${request.reason}:${request.requestedBy.slice("user:".length)}`
+      : `context-pack-regeneration:${request.compiledPackId}:${request.requestIntentId}`;
     if (request.eventKey !== expectedKey) return false;
     seen.add(request.eventId);
     return true;
@@ -4687,7 +4698,10 @@ export function AcceptanceRecordDetailPanel({
                             </p>
                             {requests.map((request) => (
                               <p key={request.eventId} className="mt-2 text-xs text-[var(--gray-11)]">
-                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)} · execution <span className="font-mono">{request.executionId}</span>
+                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)}
+                                {request.executionBinding === "execution_bound" ? (
+                                  <> · execution <span className="font-mono">{request.executionId}</span></>
+                                ) : " · legacy request only · no execution"}
                               </p>
                             ))}
                             {regenerationExecutions.filter((execution) => execution.priorCompiledPackId === pack.id).map((execution) => {
@@ -4727,7 +4741,7 @@ export function AcceptanceRecordDetailPanel({
                                   type="button"
                                   size="sm"
                                   variant="secondary"
-                                  disabled={requesting || requests.some((request) => request.reason === "stale")}
+                                  disabled={requesting || requests.some((request) => request.executionBinding === "execution_bound" && request.reason === "stale")}
                                   onClick={() => onRequestRegeneration(pack.id, "stale")}
                                 >
                                   {requesting ? "Recording…" : "Report stale"}
@@ -4736,7 +4750,7 @@ export function AcceptanceRecordDetailPanel({
                                   type="button"
                                   size="sm"
                                   variant="secondary"
-                                  disabled={requesting || requests.some((request) => request.reason === "inadequate")}
+                                  disabled={requesting || requests.some((request) => request.executionBinding === "execution_bound" && request.reason === "inadequate")}
                                   onClick={() => onRequestRegeneration(pack.id, "inadequate")}
                                 >
                                   {requesting ? "Recording…" : "Report inadequate"}

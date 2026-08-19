@@ -9207,7 +9207,9 @@ export type AcceptanceContextPackRegenerationReason = "stale" | "inadequate";
 export type AcceptanceContextPackRegenerationRequest = {
   eventId: string;
   eventKey: string;
-  executionId: string;
+  eventVersion: 1 | 2 | 3;
+  executionId: string | null;
+  executionBinding: "legacy_request_only" | "execution_bound";
   workspaceId: string;
   recordId: string;
   sourceSnapshotId: string;
@@ -9219,7 +9221,7 @@ export type AcceptanceContextPackRegenerationRequest = {
   authorityGeneration: number;
   acceptanceContract: AcceptanceRecordSummaryContractIdentity;
   reason: AcceptanceContextPackRegenerationReason;
-  requestIntentId: string;
+  requestIntentId: string | null;
   requestedBy: string;
   requestedRole: "owner" | "admin";
   requestedAt: Date;
@@ -9373,6 +9375,14 @@ function acceptanceContextPackRegenerationRequestEventKey(input: {
   return `context-pack-regeneration:${input.compiledPackId}:${input.requestIntentId}`;
 }
 
+function legacyAcceptanceContextPackRegenerationRequestEventKey(input: {
+  compiledPackId: string;
+  reason: AcceptanceContextPackRegenerationReason;
+  requestedByUserId: string;
+}): string {
+  return `context-pack-regeneration:${input.compiledPackId}:${input.reason}:${input.requestedByUserId}`;
+}
+
 function parseAcceptanceContextPackRegenerationRequestEvent(input: {
   event: ChangeRecordEventRow;
   workspaceId: string;
@@ -9388,13 +9398,22 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
 }): AcceptanceContextPackRegenerationRequest | null {
   const { event } = input;
   const payload = event.payloadRef;
-  if (!isRecord(payload) || !hasExactKeys(payload, [
+  if (!isRecord(payload)) return null;
+  const version = payload["version"];
+  const commonKeys = [
     "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
     "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
     "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
-    "requestIntentId", "executionId",
-  ]) || payload["kind"] !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND
-    || payload["version"] !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION
+  ];
+  const exactVersionKeys = version === 1
+    ? commonKeys
+    : version === 2
+      ? [...commonKeys, "requestIntentId"]
+      : version === ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION
+        ? [...commonKeys, "requestIntentId", "executionId"]
+        : null;
+  if (!exactVersionKeys || !hasExactKeys(payload, exactVersionKeys)
+    || payload["kind"] !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_KIND
     || payload["workspaceId"] !== input.workspaceId || payload["recordId"] !== input.recordId
     || payload["sourceSnapshotId"] !== input.sourceSnapshotId
     || payload["compiledPackId"] !== input.compiledPackId || payload["repo"] !== input.repo
@@ -9403,16 +9422,22 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
     || payload["authorityGeneration"] !== input.authorityGeneration
     || !isDeepStrictEqual(payload["acceptanceContract"], input.acceptanceContract)
     || (payload["reason"] !== "stale" && payload["reason"] !== "inadequate")
-    || !isUuid(payload["requestIntentId"])
-    || !isUuid(payload["executionId"])
+    || (version !== 1 && !isUuid(payload["requestIntentId"]))
+    || (version === ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION && !isUuid(payload["executionId"]))
     || typeof payload["requestedBy"] !== "string" || !HUMAN_DECISION_ACTOR.test(payload["requestedBy"])
     || (payload["requestedRole"] !== "owner" && payload["requestedRole"] !== "admin")
     || payload["authority"] !== "request_only" || payload["status"] !== "request_recorded"
     || event.recordId !== input.recordId
-    || event.eventKey !== acceptanceContextPackRegenerationRequestEventKey({
-      compiledPackId: input.compiledPackId,
-      requestIntentId: payload["requestIntentId"],
-    })
+    || event.eventKey !== (version === 1
+      ? legacyAcceptanceContextPackRegenerationRequestEventKey({
+        compiledPackId: input.compiledPackId,
+        reason: payload["reason"],
+        requestedByUserId: payload["requestedBy"].slice("user:".length),
+      })
+      : acceptanceContextPackRegenerationRequestEventKey({
+        compiledPackId: input.compiledPackId,
+        requestIntentId: payload["requestIntentId"] as string,
+      }))
     || event.id !== changeRecordEventId({ recordId: input.recordId, eventKey: event.eventKey })
     || event.stage !== ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_STAGE
     || event.actor !== payload["requestedBy"]
@@ -9420,7 +9445,13 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
   return {
     eventId: event.id,
     eventKey: event.eventKey,
-    executionId: payload["executionId"],
+    eventVersion: version as 1 | 2 | 3,
+    executionId: version === ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION
+      ? payload["executionId"] as string
+      : null,
+    executionBinding: version === ACCEPTANCE_CONTEXT_PACK_REGENERATION_REQUEST_VERSION
+      ? "execution_bound"
+      : "legacy_request_only",
     workspaceId: input.workspaceId,
     recordId: input.recordId,
     sourceSnapshotId: input.sourceSnapshotId,
@@ -9432,7 +9463,7 @@ function parseAcceptanceContextPackRegenerationRequestEvent(input: {
     authorityGeneration: input.authorityGeneration,
     acceptanceContract: { ...input.acceptanceContract },
     reason: payload["reason"],
-    requestIntentId: payload["requestIntentId"],
+    requestIntentId: version === 1 ? null : payload["requestIntentId"] as string,
     requestedBy: payload["requestedBy"],
     requestedRole: payload["requestedRole"],
     requestedAt: event.at,
@@ -9606,7 +9637,7 @@ export async function recordAcceptanceContextPackRegenerationRequest(
     if (existingIntentEvent && !existingIntentRequest) {
       throw new AcceptanceContextPackRegenerationRequestConflictError();
     }
-    const exactExecution = existingIntentRequest
+    const exactExecution = existingIntentRequest?.executionId
       ? (await tx.select().from(acceptanceContextPackRegenerationExecutions)
         .where(eq(acceptanceContextPackRegenerationExecutions.id, existingIntentRequest.executionId))
         .limit(1))[0]

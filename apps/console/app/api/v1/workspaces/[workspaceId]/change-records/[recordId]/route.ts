@@ -327,26 +327,39 @@ function contextPackRegenerationRequests(
     const payload = event.payloadRef;
     if (!object(payload) || payload.kind !== "acceptance_context_pack_regeneration_request"
       || event.actor !== requestedBy) return [];
-    const expectedKeys = [
+    const commonKeys = [
       "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
       "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
-      "acceptanceContract", "reason", "requestIntentId", "executionId", "requestedBy", "requestedRole", "authority", "status",
+      "acceptanceContract", "reason", "requestedBy", "requestedRole", "authority", "status",
     ];
-    if (Object.keys(payload).length !== expectedKeys.length
+    const expectedKeys = payload.version === 1
+      ? commonKeys
+      : payload.version === 2
+        ? [...commonKeys, "requestIntentId"]
+        : payload.version === 3
+          ? [...commonKeys, "requestIntentId", "executionId"]
+          : null;
+    if (!expectedKeys || Object.keys(payload).length !== expectedKeys.length
       || Object.keys(payload).some((key) => !expectedKeys.includes(key))
-      || payload.version !== 3 || typeof payload.compiledPackId !== "string"
+      || typeof payload.compiledPackId !== "string"
       || !UUID.test(payload.compiledPackId) || typeof payload.sourceSnapshotId !== "string"
       || !UUID.test(payload.sourceSnapshotId)
       || (payload.reason !== "stale" && payload.reason !== "inadequate")
-      || typeof payload.requestIntentId !== "string" || !UUID.test(payload.requestIntentId)
-      || typeof payload.executionId !== "string" || !UUID.test(payload.executionId)
+      || (payload.version !== 1
+        && (typeof payload.requestIntentId !== "string" || !UUID.test(payload.requestIntentId)))
+      || (payload.version === 3
+        && (typeof payload.executionId !== "string" || !UUID.test(payload.executionId)))
       || typeof payload.requestedBy !== "string"
       || !payload.requestedBy.startsWith("user:")
       || !UUID.test(payload.requestedBy.slice("user:".length))
       || (payload.requestedRole !== "owner" && payload.requestedRole !== "admin")
       || payload.authority !== "request_only" || payload.status !== "request_recorded") return [];
     const found = packs.get(payload.compiledPackId);
-    const eventKey = `context-pack-regeneration:${payload.compiledPackId}:${payload.requestIntentId}`;
+    const requestIntentId = payload.version === 1 ? null : payload.requestIntentId as string;
+    const executionId = payload.version === 3 ? payload.executionId as string : null;
+    const eventKey = payload.version === 1
+      ? `context-pack-regeneration:${payload.compiledPackId}:${payload.reason}:${payload.requestedBy.slice("user:".length)}`
+      : `context-pack-regeneration:${payload.compiledPackId}:${requestIntentId}`;
     if (!found || found.snapshotId !== payload.sourceSnapshotId
       || payload.workspaceId !== timeline.record.workspaceId || payload.recordId !== timeline.record.id
       || payload.repo !== timeline.record.repo || payload.prNumber !== timeline.record.prNumber
@@ -363,14 +376,16 @@ function contextPackRegenerationRequests(
     return [{
       eventId: event.id,
       eventKey: event.eventKey,
+      eventVersion: payload.version,
       sourceSnapshotId: payload.sourceSnapshotId,
       compiledPackId: payload.compiledPackId,
       headSha: payload.headSha,
       headCycleId: payload.headCycleId,
       acceptanceContract: payload.acceptanceContract,
       reason: payload.reason,
-      requestIntentId: payload.requestIntentId,
-      executionId: payload.executionId,
+      requestIntentId,
+      executionId,
+      executionBinding: payload.version === 3 ? "execution_bound" : "legacy_request_only",
       requestedBy: payload.requestedBy,
       requestedRole: payload.requestedRole,
       requestedAt: event.at.toISOString(),

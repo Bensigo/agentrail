@@ -2969,7 +2969,9 @@ describe("Change Record detail view", () => {
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
       executionId: "00000000-0000-4000-8000-000000000046",
+      executionBinding: "execution_bound",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
@@ -2988,7 +2990,16 @@ describe("Change Record detail view", () => {
       criterionOutcomes: criterionOutcomesNotReady,
       workspaceId: record.workspaceId,
       recordId: record.id,
-      regenerationRequests: [request],
+      regenerationRequests: [request, {
+        ...request,
+        eventId: "00000000-0000-4000-8000-000000000047",
+        eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:inadequate:00000000-0000-4000-8000-000000000002`,
+        eventVersion: 1,
+        executionId: null,
+        executionBinding: "legacy_request_only",
+        requestIntentId: null,
+        reason: "inadequate",
+      }],
       regenerationExecutions: [{
         id: "00000000-0000-4000-8000-000000000046",
         requestEventId: request.eventId,
@@ -3018,6 +3029,7 @@ describe("Change Record detail view", () => {
     expect(buttons[1]?.props?.disabled).toBe(false);
     expect(textContent(rendered)).toContain("Stale request recorded");
     expect(textContent(rendered)).toContain(`execution ${request.executionId}`);
+    expect(textContent(rendered)).toContain("legacy request only · no execution");
     expect(textContent(rendered)).toContain("· queued");
     expect(textContent(rendered)).toContain("Starts or reuses one bounded exact-head regeneration");
     expect(textContent(rendered)).toContain("does not contact a builder or change the PR");
@@ -3029,7 +3041,9 @@ describe("Change Record detail view", () => {
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
       executionId: "00000000-0000-4000-8000-000000000046",
+      executionBinding: "execution_bound",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
@@ -3503,7 +3517,9 @@ describe("Change Record detail view", () => {
     const boundedRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      eventVersion: 3,
       executionId: boundedExecution.id,
+      executionBinding: "execution_bound",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,

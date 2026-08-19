@@ -2453,6 +2453,81 @@ describe.skipIf(!DB_AVAILABLE)(
       ))).toHaveLength(0);
     });
 
+    it("keeps a current-main v1 request non-runnable while a fresh v3 intent creates the exact execution", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "context-pack-regeneration-legacy-v1",
+        prNumber: 621,
+        headSha: "d".repeat(40),
+      });
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const record = (await db.select().from(changeRecords).where(
+        eq(changeRecords.id, fixture.draft.record.id),
+      ).limit(1))[0]!;
+      const legacyEventKey = `context-pack-regeneration:${fixture.pack.id}:stale:${owner.slice("user:".length)}`;
+      const legacy = await appendChangeRecordEvent({
+        recordId: fixture.draft.record.id,
+        eventKey: legacyEventKey,
+        stage: "human_context_request",
+        actor: owner,
+        payloadRef: {
+          kind: "acceptance_context_pack_regeneration_request",
+          version: 1,
+          workspaceId: wsId,
+          recordId: fixture.draft.record.id,
+          sourceSnapshotId: fixture.sourceSnapshot.id,
+          compiledPackId: fixture.pack.id,
+          repo: fixture.repo,
+          prNumber: 621,
+          headSha: "d".repeat(40),
+          headCycleId: fixture.advanced.jobId,
+          authorityGeneration: record.currentPrHeadAuthorityGeneration,
+          acceptanceContract: {
+            id: fixture.sourceSnapshot.acceptanceContractId,
+            version: fixture.sourceSnapshot.acceptanceContractVersion,
+            sha256: fixture.sourceSnapshot.acceptanceContractSha256,
+          },
+          reason: "stale",
+          requestedBy: owner,
+          requestedRole: "owner",
+          authority: "request_only",
+          status: "request_recorded",
+        },
+      });
+      expect(legacy.inserted).toBe(true);
+      expect(await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).toEqual([]);
+
+      const fresh = await recordAcceptanceContextPackRegenerationRequest({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        reason: "stale",
+        requestedBy: owner,
+        requestIntentId: randomUUID(),
+      });
+      expect(fresh).toMatchObject({
+        kind: "recorded",
+        request: { eventVersion: 3, executionBinding: "execution_bound" },
+        execution: { status: "queued", intentGeneration: 1 },
+      });
+      if (fresh.kind !== "recorded") throw new Error("expected fresh v3 regeneration intent");
+      expect(fresh.request.executionId).toBe(fresh.execution.id);
+      expect(await listAcceptanceContextPackRegenerationExecutions({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).toEqual([expect.objectContaining({ id: fresh.execution.id, status: "queued" })]);
+      const timeline = await readChangeRecordTimeline({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      const legacyStored = timeline?.events.find((event) => event.id === legacy.event.id);
+      expect(legacyStored?.payloadRef).toMatchObject({ version: 1, authority: "request_only" });
+      expect(Object.hasOwn(legacyStored?.payloadRef ?? {}, "executionId")).toBe(false);
+    });
+
     it("keeps different regeneration reasons as receipts on one root execution lineage", async () => {
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,

@@ -1019,13 +1019,6 @@ export const acceptanceDependencyBuilderDeliveries = pgTable(
     githubCommentId: text("github_comment_id"),
     githubCommentUrl: text("github_comment_url"),
     resultReason: text("result_reason"),
-    githubDeliveryId: text("github_delivery_id"),
-    githubDeliveryEventId: uuid("github_delivery_event_id"),
-    githubHeadAdvanceEventId: uuid("github_head_advance_event_id"),
-    successorHeadSha: text("successor_head_sha"),
-    successorHeadCycleId: uuid("successor_head_cycle_id"),
-    successorReviewJobId: uuid("successor_review_job_id").references(() => reviewJobs.id, { onDelete: "restrict" }),
-    reenteredAt: timestamp("reentered_at", { withTimezone: true }),
     reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1065,23 +1058,15 @@ export const acceptanceDependencyBuilderDeliveries = pgTable(
     ),
     stateCheck: check(
       "acceptance_dependency_builder_deliveries_state_check",
-      sql`${t.status} IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold', 'reentered')
+      sql`${t.status} IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold')
         AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
-        AND ((${t.status} IN ('carrier_accepted', 'reentered')) = (${t.githubCommentId} IS NOT NULL))
-        AND ((${t.status} IN ('carrier_accepted', 'reentered')) = (${t.githubCommentUrl} IS NOT NULL))
+        AND ((${t.status} = 'carrier_accepted') = (${t.githubCommentId} IS NOT NULL))
+        AND ((${t.status} = 'carrier_accepted') = (${t.githubCommentUrl} IS NOT NULL))
         AND (${t.githubCommentId} IS NULL OR (char_length(${t.githubCommentId}) BETWEEN 1 AND 40 AND ${t.githubCommentId} ~ '^[1-9][0-9]*$'))
         AND (${t.githubCommentUrl} IS NULL OR ${t.githubCommentUrl} = 'https://github.com/' || ${t.repo} || '/pull/' || (${t.prNumber})::text || '#issuecomment-' || ${t.githubCommentId})
         AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
         AND (${t.status} <> 'bounded_failed' OR ${t.resultReason} IN ('credential_unavailable', 'github_rejected', 'invalid_db_issued_body'))
-        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN ('github_unavailable', 'ambiguous_response', 'storage_unavailable'))
-        AND ((${t.status} = 'reentered') = (${t.reenteredAt} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.successorHeadSha} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.successorHeadCycleId} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.successorReviewJobId} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.githubDeliveryId} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.githubDeliveryEventId} IS NOT NULL))
-        AND ((${t.status} = 'reentered') = (${t.githubHeadAdvanceEventId} IS NOT NULL))
-        AND (${t.successorHeadSha} IS NULL OR ${t.successorHeadSha} ~ '^[A-Fa-f0-9]{40}$')`
+        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN ('github_unavailable', 'ambiguous_response', 'storage_unavailable'))`
     ),
   })
 );

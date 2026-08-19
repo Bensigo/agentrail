@@ -798,7 +798,6 @@ export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
       previewBootsTornDown: number;
       previousHeadSha: string | null;
       headChanged: boolean;
-      dependencyBuilderReentriesRecorded: number;
     }
   | { kind: "not_found" | "not_confirmed" | "already_attached" }
   | {
@@ -819,181 +818,6 @@ export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
       currentAuthoritative: boolean;
       authorityGeneration: number;
     };
-
-async function recordDependencyBuilderReentriesForHeadAdvanceInTransaction(
-  tx: DbTransaction,
-  input: {
-    workspaceId: string;
-    recordId: string;
-    repo: string;
-    prNumber: number;
-    event: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput["event"];
-    deliveryId: string;
-    deliveryEventId: string;
-    headTransition: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput["headTransition"];
-    previousHeadCycleId: string | null;
-    successorHeadSha: string;
-    successorHeadCycleId: string;
-    successorReviewJobId: string;
-    authorityEventId: string | null;
-    headChanged: boolean;
-    admitReviewJob: boolean;
-  },
-): Promise<number> {
-  if (input.event !== "synchronize" || !input.headChanged || !input.admitReviewJob
-    || !input.headTransition || input.headTransition.afterHeadSha !== input.successorHeadSha
-    || input.headTransition.beforeHeadSha === input.successorHeadSha
-    || !input.previousHeadCycleId || !input.authorityEventId) return 0;
-  const job = (await tx.select().from(reviewJobs).where(and(
-    eq(reviewJobs.id, input.successorReviewJobId),
-    eq(reviewJobs.workspaceId, input.workspaceId),
-    eq(reviewJobs.repo, input.repo),
-    eq(reviewJobs.prNumber, input.prNumber),
-    eq(reviewJobs.headSha, input.successorHeadSha),
-  )).limit(1))[0];
-  if (!job || job.event !== "synchronize" || job.id !== input.successorHeadCycleId) return 0;
-  const deliveryEvent = (await tx.select().from(changeRecordEvents).where(and(
-    eq(changeRecordEvents.id, input.deliveryEventId),
-    eq(changeRecordEvents.recordId, input.recordId),
-    eq(changeRecordEvents.eventKey, `external-pr:delivery:${input.prNumber}:${input.deliveryId}`),
-  )).limit(1))[0];
-  const authorityEvent = (await tx.select().from(changeRecordEvents).where(and(
-    eq(changeRecordEvents.id, input.authorityEventId),
-    eq(changeRecordEvents.recordId, input.recordId),
-    eq(changeRecordEvents.eventKey, `external-pr:head-advanced:${input.prNumber}:${input.successorHeadCycleId}`),
-  )).limit(1))[0];
-  if (!deliveryEvent || deliveryEvent.actor !== "github_webhook"
-    || deliveryEvent.payloadRef["kind"] !== "external_pr_delivery"
-    || deliveryEvent.payloadRef["event"] !== "synchronize"
-    || deliveryEvent.payloadRef["deliveryId"] !== input.deliveryId
-    || !isDeepStrictEqual(deliveryEvent.payloadRef["headTransition"], input.headTransition)
-    || !authorityEvent || authorityEvent.actor !== "github_webhook"
-    || authorityEvent.payloadRef["kind"] !== "external_pr_head_advanced"
-    || authorityEvent.payloadRef["previousHeadSha"] !== input.headTransition.beforeHeadSha
-    || authorityEvent.payloadRef["headSha"] !== input.successorHeadSha
-    || authorityEvent.payloadRef["headCycleId"] !== input.successorHeadCycleId) return 0;
-  const deliveries = await tx.select().from(acceptanceDependencyBuilderDeliveries).where(and(
-    eq(acceptanceDependencyBuilderDeliveries.workspaceId, input.workspaceId),
-    eq(acceptanceDependencyBuilderDeliveries.recordId, input.recordId),
-    eq(acceptanceDependencyBuilderDeliveries.repo, input.repo),
-    eq(acceptanceDependencyBuilderDeliveries.prNumber, input.prNumber),
-    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadSha, input.headTransition.beforeHeadSha),
-    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, input.previousHeadCycleId),
-    eq(acceptanceDependencyBuilderDeliveries.status, "carrier_accepted"),
-  )).orderBy(asc(acceptanceDependencyBuilderDeliveries.id));
-  let recorded = 0;
-  for (const delivery of deliveries) {
-    const resultEvent = (await tx.select().from(changeRecordEvents).where(and(
-      eq(changeRecordEvents.recordId, input.recordId),
-      eq(changeRecordEvents.eventKey, `acceptance-dependency-builder-delivery:result:${delivery.externalBuilderPackEventId}`),
-    )).limit(1))[0];
-    if (!await dependencyBuilderDeliveryHasValidReservationCustody(tx, delivery)
-      || !resultEvent
-      || resultEvent.actor !== ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR
-      || resultEvent.stage !== "builder_handoff"
-      || !isDeepStrictEqual(resultEvent.payloadRef, dependencyBuilderDeliveryEventPayload(delivery, "result"))) {
-      // Re-entry attribution is optional custody. Corruption must fail it
-      // closed without rolling back the authoritative signed head transition
-      // or keeping the reviewer on a stale occurrence.
-      continue;
-    }
-    const now = new Date();
-    const projected = {
-      ...delivery,
-      status: "reentered",
-      githubDeliveryId: input.deliveryId,
-      githubDeliveryEventId: input.deliveryEventId,
-      githubHeadAdvanceEventId: input.authorityEventId,
-      successorHeadSha: input.successorHeadSha,
-      successorHeadCycleId: input.successorHeadCycleId,
-      successorReviewJobId: input.successorReviewJobId,
-      reenteredAt: now,
-      updatedAt: now,
-    } as AcceptanceDependencyBuilderDeliveryRow;
-    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
-      recordId: input.recordId,
-      eventKey: `acceptance-dependency-builder-delivery:reentry:${delivery.id}:${input.successorHeadCycleId}`,
-      stage: "builder_reentry",
-      actor: "github_webhook",
-      payloadRef: dependencyBuilderDeliveryEventPayload(projected, "reentry"),
-    }]);
-    if (!event.events[0]!.inserted) throw new Error("Dependency Builder delivery re-entry event unexpectedly replayed");
-    const updated = await tx.update(acceptanceDependencyBuilderDeliveries).set({
-      status: "reentered",
-      githubDeliveryId: input.deliveryId,
-      githubDeliveryEventId: input.deliveryEventId,
-      githubHeadAdvanceEventId: input.authorityEventId,
-      successorHeadSha: input.successorHeadSha,
-      successorHeadCycleId: input.successorHeadCycleId,
-      successorReviewJobId: input.successorReviewJobId,
-      reenteredAt: now,
-      updatedAt: now,
-    }).where(and(
-      eq(acceptanceDependencyBuilderDeliveries.id, delivery.id),
-      eq(acceptanceDependencyBuilderDeliveries.status, "carrier_accepted"),
-      eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, input.previousHeadCycleId),
-    )).returning({ id: acceptanceDependencyBuilderDeliveries.id });
-    if (updated.length !== 1) throw new Error("Dependency Builder delivery re-entry lost its accepted precondition");
-    recorded += 1;
-  }
-  return recorded;
-}
-
-/** Closes the report-vs-webhook race when the signed successor won the PR lock first. */
-async function recordAcceptedDependencyBuilderLateReentryInTransaction(
-  tx: DbTransaction,
-  delivery: AcceptanceDependencyBuilderDeliveryRow,
-): Promise<number> {
-  if (delivery.status !== "carrier_accepted") return 0;
-  const record = (await tx.select().from(changeRecords).where(and(
-    eq(changeRecords.id, delivery.recordId),
-    eq(changeRecords.workspaceId, delivery.workspaceId),
-    eq(changeRecords.repo, delivery.repo),
-    eq(changeRecords.prNumber, delivery.prNumber),
-  )).limit(1))[0];
-  if (!record || !record.currentPrHeadAuthoritative || !record.currentPrHeadSha
-    || !record.currentPrHeadCycleId || record.currentPrHeadSha === delivery.deliveredHeadSha
-    || record.currentPrHeadAuthorityGeneration !== delivery.authorityGeneration + 1) return 0;
-  const authorityEvent = (await tx.select().from(changeRecordEvents).where(and(
-    eq(changeRecordEvents.recordId, delivery.recordId),
-    eq(changeRecordEvents.eventKey, `external-pr:head-advanced:${delivery.prNumber}:${record.currentPrHeadCycleId}`),
-  )).limit(1))[0];
-  const payload = authorityEvent?.payloadRef;
-  const githubDeliveryId = payload && typeof payload["deliveryId"] === "string"
-    ? payload["deliveryId"] : null;
-  if (!authorityEvent || !githubDeliveryId || payload["kind"] !== "external_pr_head_advanced"
-    || payload["event"] !== "synchronize" || payload["previousHeadSha"] !== delivery.deliveredHeadSha
-    || payload["headSha"] !== record.currentPrHeadSha
-    || payload["headCycleId"] !== record.currentPrHeadCycleId
-    || !isRecord(payload["headTransition"])
-    || payload["headTransition"]["beforeHeadSha"] !== delivery.deliveredHeadSha
-    || payload["headTransition"]["afterHeadSha"] !== record.currentPrHeadSha) return 0;
-  const deliveryEvent = (await tx.select().from(changeRecordEvents).where(and(
-    eq(changeRecordEvents.recordId, delivery.recordId),
-    eq(changeRecordEvents.eventKey, `external-pr:delivery:${delivery.prNumber}:${githubDeliveryId}`),
-  )).limit(1))[0];
-  if (!deliveryEvent) return 0;
-  return recordDependencyBuilderReentriesForHeadAdvanceInTransaction(tx, {
-    workspaceId: delivery.workspaceId,
-    recordId: delivery.recordId,
-    repo: delivery.repo,
-    prNumber: delivery.prNumber,
-    event: "synchronize",
-    deliveryId: githubDeliveryId,
-    deliveryEventId: deliveryEvent.id,
-    headTransition: {
-      beforeHeadSha: delivery.deliveredHeadSha,
-      afterHeadSha: record.currentPrHeadSha,
-    },
-    previousHeadCycleId: delivery.deliveredHeadCycleId,
-    successorHeadSha: record.currentPrHeadSha,
-    successorHeadCycleId: record.currentPrHeadCycleId,
-    successorReviewJobId: record.currentPrHeadCycleId,
-    authorityEventId: authorityEvent.id,
-    headChanged: true,
-    admitReviewJob: true,
-  });
-}
 
 /**
  * Establish or advance the mutable exact PR tip for one confirmed Acceptance
@@ -1210,7 +1034,6 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       throw new Error("Authoritative PR head is missing its current cycle");
     }
     let authorityEventInserted = false;
-    let authorityEventId: string | null = null;
     if (headChanged || !wasAttached) {
       const eventKey = wasAttached
         ? `external-pr:head-advanced:${input.prNumber}:${cycleId}`
@@ -1235,7 +1058,6 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
         },
       }]);
       authorityEventInserted = provenance.events[0]!.inserted;
-      authorityEventId = provenance.events[0]!.event.id;
     }
 
     let advanced = record;
@@ -1309,24 +1131,6 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       });
     }
 
-    const dependencyBuilderReentriesRecorded = await recordDependencyBuilderReentriesForHeadAdvanceInTransaction(tx, {
-      workspaceId: input.workspaceId,
-      recordId: input.recordId,
-      repo: input.repo,
-      prNumber: input.prNumber,
-      event: input.event,
-      deliveryId: input.deliveryId,
-      deliveryEventId: deliveryReceipt.events[0]!.event.id,
-      headTransition: input.headTransition,
-      previousHeadCycleId: record.currentPrHeadCycleId,
-      successorHeadSha: input.headSha,
-      successorHeadCycleId: cycleId,
-      successorReviewJobId: jobId,
-      authorityEventId,
-      headChanged,
-      admitReviewJob: input.admitReviewJob,
-    });
-
     return {
       kind: "advanced",
       record: advanced,
@@ -1338,7 +1142,6 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       previewBootsTornDown,
       previousHeadSha,
       headChanged,
-      dependencyBuilderReentriesRecorded,
     };
   });
 }
@@ -10050,6 +9853,54 @@ export function canHumanRetryAcceptanceContextPackRegenerationExecution(input: {
     )));
 }
 
+async function deliveryAllowsHeldContextPackRegenerationContinuation(
+  connection: Pick<DbTransaction, "select">,
+  execution: AcceptanceContextPackRegenerationExecutionRow,
+  requireProvisionalCandidate = false,
+): Promise<boolean> {
+  if (execution.parentExecutionId !== null || execution.status !== "held"
+    || execution.outcomeReason !== "builder_delivery_in_flight") return false;
+  const binding = and(
+    eq(acceptanceDependencyBuilderDeliveries.workspaceId, execution.workspaceId),
+    eq(acceptanceDependencyBuilderDeliveries.recordId, execution.recordId),
+    eq(acceptanceDependencyBuilderDeliveries.compiledPackId, execution.priorCompiledPackId),
+    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadSha, execution.headSha),
+    eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, execution.headCycleId),
+    eq(acceptanceDependencyBuilderDeliveries.authorityGeneration, execution.authorityGeneration),
+    eq(acceptanceDependencyBuilderDeliveries.acceptanceContractId, execution.acceptanceContractId),
+    eq(acceptanceDependencyBuilderDeliveries.acceptanceContractVersion, execution.acceptanceContractVersion),
+    eq(acceptanceDependencyBuilderDeliveries.acceptanceContractSha256, execution.acceptanceContractSha256),
+  );
+  const [terminalDelivery, unresolvedDelivery, provisionalPacks, provisionalSnapshots] = await Promise.all([
+    connection.select({ id: acceptanceDependencyBuilderDeliveries.id })
+      .from(acceptanceDependencyBuilderDeliveries).where(and(
+        binding,
+        inArray(acceptanceDependencyBuilderDeliveries.status, ["carrier_accepted", "bounded_failed"]),
+      )).limit(1).then((rows) => rows[0]),
+    connection.select({ id: acceptanceDependencyBuilderDeliveries.id })
+      .from(acceptanceDependencyBuilderDeliveries).where(and(
+        binding,
+        inArray(acceptanceDependencyBuilderDeliveries.status, ["reserved", "ambiguous_hold"]),
+      )).limit(1).then((rows) => rows[0]),
+    connection.select({ id: acceptanceCompiledContextPacks.id, sourceSnapshotId: acceptanceCompiledContextPacks.sourceSnapshotId })
+      .from(acceptanceCompiledContextPacks).where(and(
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "provisional"),
+        eq(acceptanceCompiledContextPacks.regenerationExecutionId, execution.id),
+      )).limit(2),
+    connection.select({ id: acceptanceContextPackSnapshots.id })
+      .from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+        eq(acceptanceContextPackSnapshots.generationStatus, "provisional"),
+        eq(acceptanceContextPackSnapshots.regenerationExecutionId, execution.id),
+      )).limit(2),
+  ]);
+  return Boolean(terminalDelivery) && !unresolvedDelivery && (!requireProvisionalCandidate
+    || (provisionalPacks.length === 1 && provisionalSnapshots.length <= 1
+      && (provisionalPacks[0]!.sourceSnapshotId === execution.sourceSnapshotId
+        || provisionalPacks[0]!.sourceSnapshotId === provisionalSnapshots[0]?.id)));
+}
+
 export async function retryAcceptanceContextPackRegenerationExecution(input: {
   workspaceId: string;
   recordId: string;
@@ -10093,7 +9944,8 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       eq(acceptanceContextPackRegenerationExecutions.recordId, input["recordId"]),
     )).limit(1).for("update"))[0];
     if (!execution) return { kind: "not_found" as const };
-    if (!canHumanRetryAcceptanceContextPackRegenerationExecution(execution)) {
+    const deliveryContinuation = await deliveryAllowsHeldContextPackRegenerationContinuation(tx, execution);
+    if (!canHumanRetryAcceptanceContextPackRegenerationExecution(execution) && !deliveryContinuation) {
       return { kind: "not_retryable" as const };
     }
     const record = (await tx.select().from(changeRecords).where(and(
@@ -10153,6 +10005,26 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
         && existingRetry.requestEventKey === eventKey
         ? { kind: "replayed" as const, execution: contextPackRegenerationExecutionReceipt(existingRetry) }
         : { kind: "not_retryable" as const };
+    }
+    const continuationPack = deliveryContinuation
+      ? (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "provisional"),
+        eq(acceptanceCompiledContextPacks.regenerationExecutionId, execution.id),
+      )).limit(2))
+      : [];
+    const continuationSnapshot = deliveryContinuation
+      ? (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+        eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+        eq(acceptanceContextPackSnapshots.generationStatus, "provisional"),
+        eq(acceptanceContextPackSnapshots.regenerationExecutionId, execution.id),
+      )).limit(2))
+      : [];
+    if (deliveryContinuation && (continuationPack.length !== 1
+      || continuationSnapshot.length > 1
+      || (continuationPack[0]!.sourceSnapshotId !== execution.sourceSnapshotId
+        && continuationPack[0]!.sourceSnapshotId !== continuationSnapshot[0]?.id))) {
+      return { kind: "not_retryable" as const };
     }
     const payloadRef = {
       kind: "acceptance_context_pack_regeneration_retry",
@@ -10229,6 +10101,29 @@ export async function retryAcceptanceContextPackRegenerationExecution(input: {
       acceptanceContractSha256: next.acceptanceContractSha256, reason: next.reason,
       intentGeneration: next.intentGeneration,
     }, nextIdentity)) throw new AcceptanceContextPackRegenerationRequestConflictError();
+    if (deliveryContinuation) {
+      const transferredPack = await tx.update(acceptanceCompiledContextPacks).set({
+        regenerationExecutionId: next.id,
+      }).where(and(
+        eq(acceptanceCompiledContextPacks.id, continuationPack[0]!.id),
+        eq(acceptanceCompiledContextPacks.workspaceId, execution.workspaceId),
+        eq(acceptanceCompiledContextPacks.generationStatus, "provisional"),
+        eq(acceptanceCompiledContextPacks.regenerationExecutionId, execution.id),
+      )).returning({ id: acceptanceCompiledContextPacks.id });
+      const transferredSnapshot = continuationSnapshot.length === 0 ? []
+        : await tx.update(acceptanceContextPackSnapshots).set({
+          regenerationExecutionId: next.id,
+        }).where(and(
+          eq(acceptanceContextPackSnapshots.id, continuationSnapshot[0]!.id),
+          eq(acceptanceContextPackSnapshots.workspaceId, execution.workspaceId),
+          eq(acceptanceContextPackSnapshots.generationStatus, "provisional"),
+          eq(acceptanceContextPackSnapshots.regenerationExecutionId, execution.id),
+        )).returning({ id: acceptanceContextPackSnapshots.id });
+      if (transferredPack.length !== 1
+        || transferredSnapshot.length !== continuationSnapshot.length) {
+        throw new AcceptanceContextPackRegenerationRequestConflictError();
+      }
+    }
     return {
       kind: appended.events[0]!.inserted ? "retried" as const : "replayed" as const,
       execution: contextPackRegenerationExecutionReceipt(next),
@@ -10695,6 +10590,25 @@ export async function completeAcceptanceContextPackRegenerationExecution(input: 
         );
         return { kind: "completed" as const, execution: receipt };
       }
+      const deliveryInFlight = (await tx.select({ id: acceptanceDependencyBuilderDeliveries.id })
+        .from(acceptanceDependencyBuilderDeliveries).where(and(
+          eq(acceptanceDependencyBuilderDeliveries.workspaceId, execution.workspaceId),
+          eq(acceptanceDependencyBuilderDeliveries.recordId, execution.recordId),
+          eq(acceptanceDependencyBuilderDeliveries.compiledPackId, execution.priorCompiledPackId),
+          eq(acceptanceDependencyBuilderDeliveries.deliveredHeadSha, execution.headSha),
+          eq(acceptanceDependencyBuilderDeliveries.deliveredHeadCycleId, execution.headCycleId),
+          eq(acceptanceDependencyBuilderDeliveries.authorityGeneration, execution.authorityGeneration),
+          eq(acceptanceDependencyBuilderDeliveries.acceptanceContractId, execution.acceptanceContractId),
+          eq(acceptanceDependencyBuilderDeliveries.acceptanceContractVersion, execution.acceptanceContractVersion),
+          eq(acceptanceDependencyBuilderDeliveries.acceptanceContractSha256, execution.acceptanceContractSha256),
+          inArray(acceptanceDependencyBuilderDeliveries.status, ["reserved", "ambiguous_hold"]),
+        )).limit(1))[0];
+      if (deliveryInFlight) {
+        const receipt = await terminalizeAcceptanceContextPackRegenerationExecutionInTransaction(
+          tx, execution, "held", "builder_delivery_in_flight",
+        );
+        return { kind: "completed" as const, execution: receipt };
+      }
       const priorPackSwap = await tx.update(acceptanceCompiledContextPacks).set({
         generationStatus: "superseded",
       }).where(and(
@@ -10893,9 +10807,14 @@ export async function listAcceptanceContextPackRegenerationExecutions(input: {
       && parent.acceptanceContractSha256 === row.acceptanceContractSha256
       && parent.intentGeneration === row.intentGeneration);
   }));
+  const deliveryContinuations = await Promise.all(rows.map((row) =>
+    retriedParents.has(row.id)
+      ? Promise.resolve(false)
+      : deliveryAllowsHeldContextPackRegenerationContinuation(db, row, true)));
   return rows.filter((_, index) => proven[index]).map((row) => contextPackRegenerationExecutionReceipt(
     row,
-    canHumanRetryAcceptanceContextPackRegenerationExecution(row) && !retriedParents.has(row.id),
+    (canHumanRetryAcceptanceContextPackRegenerationExecution(row) || deliveryContinuations[rows.indexOf(row)]!)
+      && !retriedParents.has(row.id),
   ));
 }
 
@@ -13438,7 +13357,6 @@ export type AcceptanceDependencyBuilderHandoffCapability = {
   recipient: "claude";
   activation: "single_initial_vendor_mention";
   receipt: "exact_github_issue_comment";
-  reentry: "signed_github_synchronize";
   vendorAvailability: "not_asserted";
   scopeBoundary: "dependency_initial_builder_handoff_only";
   authority: {
@@ -13456,9 +13374,9 @@ export type AcceptanceDependencyBuilderDeliveryOutcome =
 export type ReserveAcceptanceDependencyBuilderDeliveryResult =
   | { kind: "reserved"; delivery: AcceptanceDependencyBuilderDeliveryRow; body: string }
   | { kind: "held"; reason: "reserved" | "ambiguous_hold"; deliveryId: string }
-  | { kind: "terminal"; status: "carrier_accepted" | "bounded_failed" | "reentered"; deliveryId: string }
+  | { kind: "terminal"; status: "carrier_accepted" | "bounded_failed"; deliveryId: string }
   | { kind: "not_found" | "not_current" | "not_authorized" }
-  | { kind: "not_ready"; reason: AcceptanceDependencyExternalBuilderNotReadyReason | "selected_route_not_github_claude" | "github_installation_unavailable" | "invalid_rendering" };
+  | { kind: "not_ready"; reason: AcceptanceDependencyExternalBuilderNotReadyReason | "selected_route_not_github_claude" | "github_installation_unavailable" | "invalid_rendering" | "context_pack_regeneration_in_progress" };
 
 const ACCEPTANCE_DEPENDENCY_BUILDER_DELIVERY_ACTOR = "server:dependency-builder-delivery";
 
@@ -13472,7 +13390,6 @@ function dependencyBuilderDeliveryCapability(): AcceptanceDependencyBuilderHando
     recipient: "claude",
     activation: "single_initial_vendor_mention",
     receipt: "exact_github_issue_comment",
-    reentry: "signed_github_synchronize",
     vendorAvailability: "not_asserted",
     scopeBoundary: "dependency_initial_builder_handoff_only",
     authority: { jaceImplementation: "not_granted", merge: "not_granted", deployment: "not_granted" },
@@ -13559,13 +13476,6 @@ async function dependencyBuilderDeliveryHasValidReservationCustody(
     githubCommentId: null,
     githubCommentUrl: null,
     resultReason: null,
-    githubDeliveryId: null,
-    githubDeliveryEventId: null,
-    githubHeadAdvanceEventId: null,
-    successorHeadSha: null,
-    successorHeadCycleId: null,
-    successorReviewJobId: null,
-    reenteredAt: null,
   } as AcceptanceDependencyBuilderDeliveryRow;
   const event = (await tx.select().from(changeRecordEvents).where(and(
     eq(changeRecordEvents.recordId, row.recordId),
@@ -13578,7 +13488,7 @@ async function dependencyBuilderDeliveryHasValidReservationCustody(
 
 function dependencyBuilderDeliveryEventPayload(
   row: AcceptanceDependencyBuilderDeliveryRow,
-  event: "reserved" | "result" | "reentry",
+  event: "reserved" | "result",
 ): Record<string, unknown> {
   return {
     kind: `acceptance_dependency_builder_delivery_${event}`,
@@ -13620,18 +13530,6 @@ function dependencyBuilderDeliveryEventPayload(
       githubCommentId: row.githubCommentId,
       githubCommentUrl: row.githubCommentUrl,
       reason: row.resultReason,
-    },
-    reentry: event !== "reentry" ? null : {
-      attribution: "head_successor_after_delivery",
-      authorship: "not_independently_proven",
-      proof: "not_proven",
-      reviewRequirement: "exact_head_r7_reentry",
-      githubDeliveryId: row.githubDeliveryId,
-      githubDeliveryEventId: row.githubDeliveryEventId,
-      githubHeadAdvanceEventId: row.githubHeadAdvanceEventId,
-      successorHeadSha: row.successorHeadSha,
-      successorHeadCycleId: row.successorHeadCycleId,
-      successorReviewJobId: row.successorReviewJobId,
     },
   };
 }
@@ -13691,6 +13589,21 @@ export async function reserveAcceptanceDependencyBuilderDelivery(input: {
       return { kind: "not_ready" as const, reason: "invalid_approval_pack_custody" as const };
     }
     const pack = pair.externalBuilderPack;
+    const regenerating = (await tx.select({ id: acceptanceContextPackRegenerationExecutions.id })
+      .from(acceptanceContextPackRegenerationExecutions).where(and(
+        eq(acceptanceContextPackRegenerationExecutions.workspaceId, parsed.workspaceId),
+        eq(acceptanceContextPackRegenerationExecutions.recordId, parsed.recordId),
+        eq(acceptanceContextPackRegenerationExecutions.priorCompiledPackId, pack.binding.compiledPack.id),
+        eq(acceptanceContextPackRegenerationExecutions.headSha, pack.binding.headSha),
+        eq(acceptanceContextPackRegenerationExecutions.headCycleId, pack.binding.headCycleId),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractId, pack.binding.acceptanceContract.id),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractVersion, pack.binding.acceptanceContract.version),
+        eq(acceptanceContextPackRegenerationExecutions.acceptanceContractSha256, pack.binding.acceptanceContract.sha256),
+        inArray(acceptanceContextPackRegenerationExecutions.status, ["queued", "running"]),
+      )).limit(1))[0];
+    if (regenerating) {
+      return { kind: "not_ready" as const, reason: "context_pack_regeneration_in_progress" as const };
+    }
     if (pack.route.adapter !== "github_claude") return { kind: "not_ready" as const, reason: "selected_route_not_github_claude" as const };
     const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
       eq(acceptanceBuilderRoutes.id, pack.route.id),
@@ -13750,7 +13663,7 @@ export async function reserveAcceptanceDependencyBuilderDelivery(input: {
     const rendering = render(deliveryIdentitySha256);
     if (!rendering.ok) return { kind: "not_ready" as const, reason: "invalid_rendering" as const };
     const values = { ...identityInput, deliveryIdentitySha256, body: rendering.body, bodySha256: rendering.bodySha256, status: "reserved" as const };
-    const projected = { ...values, githubCommentId: null, githubCommentUrl: null, resultReason: null, githubDeliveryId: null, githubDeliveryEventId: null, githubHeadAdvanceEventId: null, successorHeadSha: null, successorHeadCycleId: null, successorReviewJobId: null, reenteredAt: null, completedAt: null, reservedAt: new Date(), createdAt: new Date(), updatedAt: new Date() } as AcceptanceDependencyBuilderDeliveryRow;
+    const projected = { ...values, githubCommentId: null, githubCommentUrl: null, resultReason: null, completedAt: null, reservedAt: new Date(), createdAt: new Date(), updatedAt: new Date() } as AcceptanceDependencyBuilderDeliveryRow;
     const existing = (await tx.select().from(acceptanceDependencyBuilderDeliveries).where(and(
       eq(acceptanceDependencyBuilderDeliveries.id, id), eq(acceptanceDependencyBuilderDeliveries.workspaceId, parsed.workspaceId),
     )).limit(1))[0];
@@ -13775,7 +13688,7 @@ export async function reserveAcceptanceDependencyBuilderDelivery(input: {
       }
       if (existing.status === "reserved") return { kind: "held" as const, reason: "reserved" as const, deliveryId: existing.id };
       if (existing.status === "ambiguous_hold") return { kind: "held" as const, reason: "ambiguous_hold" as const, deliveryId: existing.id };
-      return { kind: "terminal" as const, status: existing.status as "carrier_accepted" | "bounded_failed" | "reentered", deliveryId: existing.id };
+      return { kind: "terminal" as const, status: existing.status as "carrier_accepted" | "bounded_failed", deliveryId: existing.id };
     }
     const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
       recordId: parsed.recordId,
@@ -13844,18 +13757,6 @@ export async function reportAcceptanceDependencyBuilderDelivery(input: {
     const rows = await tx.update(acceptanceDependencyBuilderDeliveries).set({ status, githubCommentId, githubCommentUrl, resultReason, completedAt: projected.completedAt, updatedAt: projected.updatedAt })
       .where(and(eq(acceptanceDependencyBuilderDeliveries.id, delivery.id), eq(acceptanceDependencyBuilderDeliveries.status, "reserved"))).returning();
     if (rows.length !== 1) throw new Error("Dependency Builder delivery report lost its reserved precondition");
-    if (rows[0]!.status === "carrier_accepted") {
-      const reentered = await recordAcceptedDependencyBuilderLateReentryInTransaction(tx, rows[0]!);
-      if (reentered > 0) {
-        const final = (await tx.select().from(acceptanceDependencyBuilderDeliveries).where(
-          eq(acceptanceDependencyBuilderDeliveries.id, rows[0]!.id),
-        ).limit(1))[0];
-        if (!final || final.status !== "reentered") {
-          throw new Error("Dependency Builder late re-entry did not close atomically");
-        }
-        return { kind: "reported" as const, delivery: final };
-      }
-    }
     return { kind: "reported" as const, delivery: rows[0]! };
   });
 }
@@ -14192,7 +14093,7 @@ export function acceptanceBuilderRouteCapabilityProfileId(input: {
   );
 }
 
-function githubInstallationIdentitySha256(input: {
+export function githubInstallationIdentitySha256(input: {
   workspaceId: string;
   installationId: unknown;
   accountLogin: unknown;

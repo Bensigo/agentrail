@@ -38,13 +38,6 @@ CREATE TABLE IF NOT EXISTS "acceptance_dependency_builder_deliveries" (
   "github_comment_id" text,
   "github_comment_url" text,
   "result_reason" text,
-  "github_delivery_id" text,
-  "github_delivery_event_id" uuid,
-  "github_head_advance_event_id" uuid,
-  "successor_head_sha" text,
-  "successor_head_cycle_id" uuid,
-  "successor_review_job_id" uuid REFERENCES "review_jobs"("id") ON DELETE restrict,
-  "reentered_at" timestamp with time zone,
   "reserved_at" timestamp with time zone NOT NULL DEFAULT now(),
   "completed_at" timestamp with time zone,
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
@@ -75,23 +68,15 @@ CREATE TABLE IF NOT EXISTS "acceptance_dependency_builder_deliveries" (
     AND "body_sha256" ~ '^[A-Fa-f0-9]{64}$'
   ),
   CONSTRAINT "acceptance_dependency_builder_deliveries_state_check" CHECK (
-    "status" IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold', 'reentered')
+    "status" IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold')
     AND (("status" = 'reserved') = ("completed_at" IS NULL))
-    AND (("status" IN ('carrier_accepted', 'reentered')) = ("github_comment_id" IS NOT NULL))
-    AND (("status" IN ('carrier_accepted', 'reentered')) = ("github_comment_url" IS NOT NULL))
+    AND (("status" = 'carrier_accepted') = ("github_comment_id" IS NOT NULL))
+    AND (("status" = 'carrier_accepted') = ("github_comment_url" IS NOT NULL))
     AND ("github_comment_id" IS NULL OR (char_length("github_comment_id") BETWEEN 1 AND 40 AND "github_comment_id" ~ '^[1-9][0-9]*$'))
     AND ("github_comment_url" IS NULL OR "github_comment_url" = 'https://github.com/' || "repo" || '/pull/' || ("pr_number")::text || '#issuecomment-' || "github_comment_id")
     AND (("status" IN ('bounded_failed', 'ambiguous_hold')) = ("result_reason" IS NOT NULL))
     AND ("status" <> 'bounded_failed' OR "result_reason" IN ('credential_unavailable', 'github_rejected', 'invalid_db_issued_body'))
     AND ("status" <> 'ambiguous_hold' OR "result_reason" IN ('github_unavailable', 'ambiguous_response', 'storage_unavailable'))
-    AND (("status" = 'reentered') = ("reentered_at" IS NOT NULL))
-    AND (("status" = 'reentered') = ("successor_head_sha" IS NOT NULL))
-    AND (("status" = 'reentered') = ("successor_head_cycle_id" IS NOT NULL))
-    AND (("status" = 'reentered') = ("successor_review_job_id" IS NOT NULL))
-    AND (("status" = 'reentered') = ("github_delivery_id" IS NOT NULL))
-    AND (("status" = 'reentered') = ("github_delivery_event_id" IS NOT NULL))
-    AND (("status" = 'reentered') = ("github_head_advance_event_id" IS NOT NULL))
-    AND ("successor_head_sha" IS NULL OR "successor_head_sha" ~ '^[A-Fa-f0-9]{40}$')
   )
 );
 --> statement-breakpoint

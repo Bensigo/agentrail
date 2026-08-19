@@ -11,7 +11,7 @@ export type GithubDependencyBuilderDeliveryResult =
   | { kind: "carrier_accepted"; deliveryId: string; githubCommentId: string; githubCommentUrl: string }
   | { kind: "held"; reason: "reserved" | "ambiguous_hold" | "storage_unavailable" }
   | { kind: "bounded_failed"; deliveryId: string }
-  | { kind: "terminal"; deliveryId: string; status: "carrier_accepted" | "bounded_failed" | "reentered" }
+  | { kind: "terminal"; deliveryId: string; status: "carrier_accepted" | "bounded_failed" }
   | { kind: "not_found" | "not_current" | "not_authorized" | "not_ready" | "invalid_input" };
 
 async function close(input: Parameters<typeof reportAcceptanceDependencyBuilderDelivery>[0]): Promise<boolean> {
@@ -47,7 +47,11 @@ export async function runGithubDependencyBuilderDelivery(input: {
   const { delivery, body } = reservation;
   let credential: Awaited<ReturnType<typeof getGithubDependencyBuilderCredential>>;
   try {
-    credential = await getGithubDependencyBuilderCredential({ workspaceId: input.workspaceId, repo: delivery.repo });
+    credential = await getGithubDependencyBuilderCredential({
+      workspaceId: input.workspaceId,
+      repo: delivery.repo,
+      expectedInstallationIdentitySha256: delivery.githubInstallationIdentitySha256,
+    });
   } catch {
     const closed = await close({ workspaceId: input.workspaceId, deliveryId: delivery.id, outcome: { kind: "unknown_post_outcome", reason: "storage_unavailable" } });
     return closed ? { kind: "held", reason: "ambiguous_hold" } : { kind: "held", reason: "storage_unavailable" };

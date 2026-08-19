@@ -18,9 +18,11 @@ import {
 import {
   getInstallationToken,
   getGithubCorrectionCarrierCredential,
+  getGithubDependencyBuilderCredential,
   consumeGithubInstallState,
   getUserGithubIdentityById,
 } from "../queries/github-app-token.js";
+import { githubInstallationIdentitySha256 } from "../queries/change_records.js";
 
 const mockDb = vi.mocked(db);
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -179,6 +181,59 @@ describe("getGithubCorrectionCarrierCredential", () => {
       });
     }
     expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("getGithubDependencyBuilderCredential", () => {
+  const expectedInstallationIdentitySha256 = githubInstallationIdentitySha256({
+    workspaceId: WORKSPACE_ID,
+    installationId: "777",
+    accountLogin: "acme",
+    accountType: "Organization",
+  })!;
+
+  it("mints only from the exact installation identity captured by the delivery reservation", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "777", accountLogin: "acme", accountType: "Organization" }]) as never
+    );
+    vi.mocked(mintCorrectionCarrierInstallationToken).mockResolvedValue({
+      ok: true,
+      token: "ghs_scoped",
+      expiresAt: "2030-01-01T00:00:00Z",
+      permissionBasis: {
+        repository: "scoped_installation_token",
+        issues: "write",
+        pullRequests: "write",
+      },
+    });
+
+    await expect(getGithubDependencyBuilderCredential({
+      workspaceId: WORKSPACE_ID,
+      repo: "acme/widgets",
+      expectedInstallationIdentitySha256,
+    })).resolves.toMatchObject({ ok: true });
+    expect(mintCorrectionCarrierInstallationToken).toHaveBeenCalledWith(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      expect.objectContaining({ appId: "12345" }),
+    );
+  });
+
+  it("fails closed before minting when the workspace was rebound after reservation", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "888", accountLogin: "acme", accountType: "Organization" }]) as never
+    );
+
+    await expect(getGithubDependencyBuilderCredential({
+      workspaceId: WORKSPACE_ID,
+      repo: "acme/widgets",
+      expectedInstallationIdentitySha256,
+    })).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    });
+    expect(resolveGithubAppConfig).not.toHaveBeenCalled();
     expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
   });
 });

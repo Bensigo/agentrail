@@ -82,4 +82,23 @@ describe("POST dependency Builder delivery", () => {
       requestedBy: `user:${USER_ID}`,
     });
   });
+
+  it.each([
+    [{ kind: "terminal", deliveryId: "delivery-1", status: "carrier_accepted" }, 200],
+    [{ kind: "not_found" }, 404],
+    [{ kind: "not_authorized" }, 403],
+    [{ kind: "invalid_input" }, 400],
+    [{ kind: "not_current" }, 409],
+    [{ kind: "not_ready" }, 409],
+    [{ kind: "bounded_failed", deliveryId: "delivery-1" }, 409],
+    [{ kind: "held", reason: "ambiguous_hold" }, 503],
+  ] as const)("maps %s without overstating delivery", async (result, status) => {
+    mockRun.mockResolvedValueOnce(result);
+    const response = await POST(
+      request(JSON.stringify({ externalBuilderPackEventId: PACK_EVENT_ID })),
+      params,
+    );
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual(result);
+  });
 });

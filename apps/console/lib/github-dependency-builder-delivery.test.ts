@@ -28,6 +28,7 @@ const delivery = {
   repo: "acme/widgets",
   prNumber: 42,
   bodySha256: "a".repeat(64),
+  githubInstallationIdentitySha256: "b".repeat(64),
 };
 
 beforeEach(() => vi.clearAllMocks());
@@ -56,6 +57,11 @@ describe("runGithubDependencyBuilderDelivery", () => {
     expect(vi.mocked(reserveAcceptanceDependencyBuilderDelivery).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(postGithubDependencyBuilderComment).mock.invocationCallOrder[0]!);
     expect(postGithubDependencyBuilderComment).toHaveBeenCalledOnce();
+    expect(getGithubDependencyBuilderCredential).toHaveBeenCalledWith({
+      workspaceId: command.workspaceId,
+      repo: delivery.repo,
+      expectedInstallationIdentitySha256: delivery.githubInstallationIdentitySha256,
+    });
     expect(reportAcceptanceDependencyBuilderDelivery).toHaveBeenCalledWith({
       workspaceId: command.workspaceId,
       deliveryId: delivery.id,
@@ -64,6 +70,36 @@ describe("runGithubDependencyBuilderDelivery", () => {
         githubCommentUrl: "https://github.com/acme/widgets/pull/42#issuecomment-901",
         bodySha256: "a".repeat(64),
       },
+    });
+  });
+
+  it("fails closed without posting when the reserved installation identity no longer matches", async () => {
+    vi.mocked(reserveAcceptanceDependencyBuilderDelivery).mockResolvedValue({
+      kind: "reserved", delivery, body: "@claude\nJace dependency handoff",
+    } as never);
+    vi.mocked(getGithubDependencyBuilderCredential).mockResolvedValue({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    });
+    vi.mocked(reportAcceptanceDependencyBuilderDelivery).mockResolvedValue({
+      kind: "reported", delivery: { status: "bounded_failed" },
+    } as never);
+
+    await expect(runGithubDependencyBuilderDelivery(command)).resolves.toEqual({
+      kind: "bounded_failed",
+      deliveryId: delivery.id,
+    });
+    expect(getGithubDependencyBuilderCredential).toHaveBeenCalledWith({
+      workspaceId: command.workspaceId,
+      repo: delivery.repo,
+      expectedInstallationIdentitySha256: delivery.githubInstallationIdentitySha256,
+    });
+    expect(postGithubDependencyBuilderComment).not.toHaveBeenCalled();
+    expect(reportAcceptanceDependencyBuilderDelivery).toHaveBeenCalledWith({
+      workspaceId: command.workspaceId,
+      deliveryId: delivery.id,
+      outcome: { kind: "bounded_failed", reason: "credential_unavailable" },
     });
   });
 

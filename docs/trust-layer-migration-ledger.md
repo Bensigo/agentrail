@@ -683,14 +683,24 @@ initial dependency handoff with one selected `@claude` mention; it does not
 reuse the correction-only capability lifecycle. Exact accepted receipts,
 ambiguous terminal holds, and append-only events retain the Record, Contract,
 compiled Pack, external Builder Pack, route revision, installation identity,
-and delivered head occurrence. A later signed same-repository synchronize from
-that delivered occurrence records re-entry only in the transaction that
-admits the successor exact-head review job. The re-entry receipt says
-`authorship: not_independently_proven` and `proof: not_proven`; delivery or head
-movement does not pass a criterion. Focused local Postgres and adapter tests are
-the only proof in this branch. It does not claim an external comment, Claude
-pickup/implementation, hosted webhook, deployed runtime, review result, merge,
-or customer use. The live exercise remains required after merge and deployment.
+and delivered head occurrence. Regeneration and delivery serialize under the
+same Record/PR lock: queued/running regeneration blocks reservation, a reserved
+or ambiguous delivery protects its active Pack, and a replacement that
+activates first makes the superseded Pack unavailable for delivery. Only an
+exact `builder_delivery_in_flight` hold with at least one matching
+`carrier_accepted` or `bounded_failed` delivery and zero matching `reserved` or
+`ambiguous_hold` deliveries may create one idempotent retry child over the same
+provisional generation. Matching includes tenant, Record, head, Contract, Pack,
+and generation custody; other held reasons remain inert. Before
+minting or posting, the adapter revalidates the exact GitHub installation
+identity captured by the reservation. A workspace installation rebind closes
+as a bounded failure with no post. Signed successor-head
+attribution and review-job re-entry automation are explicitly deferred from
+this slice. Delivery and head movement do not pass a criterion. Focused local
+Postgres and adapter tests are the only intended branch proof. It does not
+claim an external comment, Claude pickup/implementation, hosted webhook,
+deployed runtime, review result, merge, or customer use. The live exercise
+remains required after merge and deployment.
 
 ## R11 progress
 

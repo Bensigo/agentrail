@@ -22,6 +22,7 @@ import {
 } from "@agentrail/github-app";
 import { db } from "../db.js";
 import { workspaces, accounts } from "../schema/index.js";
+import { githubInstallationIdentitySha256 } from "./change_records.js";
 
 const INSTALL_STATE_BYTES = 24;
 const INSTALL_STATE_TTL_MS = 30 * 60 * 1000;
@@ -127,6 +128,10 @@ type GithubCorrectionCarrierCredentialInput = {
   repo: string;
 };
 
+type GithubDependencyBuilderCredentialInput = GithubCorrectionCarrierCredentialInput & {
+  expectedInstallationIdentitySha256: string;
+};
+
 function isGithubCorrectionCarrierCredentialInput(
   value: unknown
 ): value is GithubCorrectionCarrierCredentialInput {
@@ -145,35 +150,28 @@ function isGithubCorrectionCarrierCredentialInput(
   return GITHUB_REPOSITORY.test(input.repo);
 }
 
-/**
- * Resolves a repository-scoped correction-carrier credential without trusting
- * a caller-supplied installation or account. This is credential preparation,
- * not issue-comment delivery: it neither persists nor logs the minted token.
- */
-export async function getGithubCorrectionCarrierCredential(
-  input: GithubCorrectionCarrierCredentialInput
-): Promise<GithubCorrectionCarrierCredentialResult> {
-  if (!isGithubCorrectionCarrierCredentialInput(input)) {
-    return {
-      ok: false,
-      kind: "unavailable",
-      reason: "installation_or_permission_denied",
-    };
-  }
+function isGithubDependencyBuilderCredentialInput(
+  value: unknown
+): value is GithubDependencyBuilderCredentialInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  return Object.keys(input).length === 3
+    && isGithubCorrectionCarrierCredentialInput({
+      workspaceId: input.workspaceId,
+      repo: input.repo,
+    })
+    && typeof input.expectedInstallationIdentitySha256 === "string"
+    && /^[a-f0-9]{64}$/.test(input.expectedInstallationIdentitySha256);
+}
+
+async function mintGithubRepositoryCredential(input: {
+  repo: string;
+  installation: NonNullable<Awaited<ReturnType<typeof getGithubInstallation>>>;
+}): Promise<GithubCorrectionCarrierCredentialResult> {
   const match = GITHUB_REPOSITORY.exec(input.repo)!;
   const [, owner, repoName] = match;
-  let installation: Awaited<ReturnType<typeof getGithubInstallation>>;
-  try {
-    installation = await getGithubInstallation(input.workspaceId);
-  } catch {
-    return { ok: false, kind: "indeterminate", reason: "storage_unavailable" };
-  }
-  // Installation identity is server-derived. A token for some other owner
-  // must not be used merely because a repository string was supplied.
-  if (
-    !installation?.accountLogin ||
-    installation.accountLogin.toLowerCase() !== owner!.toLowerCase()
-  ) {
+  if (!input.installation.accountLogin
+    || input.installation.accountLogin.toLowerCase() !== owner!.toLowerCase()) {
     return {
       ok: false,
       kind: "unavailable",
@@ -192,7 +190,7 @@ export async function getGithubCorrectionCarrierCredential(
   try {
     minted = await mintCorrectionCarrierInstallationToken(
       {
-        installationId: installation.installationId,
+        installationId: input.installation.installationId,
         owner: owner!,
         repo: repoName!,
       },
@@ -202,28 +200,58 @@ export async function getGithubCorrectionCarrierCredential(
     return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
   }
   if (minted.ok) {
-      return {
-        ok: true,
-        token: minted.token,
-        expiresAt: minted.expiresAt,
-        permissionBasis: minted.permissionBasis,
-      };
+    return {
+      ok: true,
+      token: minted.token,
+      expiresAt: minted.expiresAt,
+      permissionBasis: minted.permissionBasis,
+    };
   }
   if (minted.kind === "indeterminate") {
-      return {
-        ok: false,
-        kind: "indeterminate",
-        reason:
-          minted.reason === "github_unavailable"
-            ? "github_unavailable"
-            : "invalid_github_response",
-      };
+    return {
+      ok: false,
+      kind: "indeterminate",
+      reason: minted.reason === "github_unavailable"
+        ? "github_unavailable"
+        : "invalid_github_response",
+    };
   }
   return {
     ok: false,
     kind: "unavailable",
     reason: "installation_or_permission_denied",
   };
+}
+
+/**
+ * Resolves a repository-scoped correction-carrier credential without trusting
+ * a caller-supplied installation or account. This is credential preparation,
+ * not issue-comment delivery: it neither persists nor logs the minted token.
+ */
+export async function getGithubCorrectionCarrierCredential(
+  input: GithubCorrectionCarrierCredentialInput
+): Promise<GithubCorrectionCarrierCredentialResult> {
+  if (!isGithubCorrectionCarrierCredentialInput(input)) {
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    };
+  }
+  let installation: Awaited<ReturnType<typeof getGithubInstallation>>;
+  try {
+    installation = await getGithubInstallation(input.workspaceId);
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "storage_unavailable" };
+  }
+  if (!installation) {
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    };
+  }
+  return mintGithubRepositoryCredential({ repo: input.repo, installation });
 }
 
 /**
@@ -234,9 +262,26 @@ export async function getGithubCorrectionCarrierCredential(
  * correction custody.
  */
 export async function getGithubDependencyBuilderCredential(
-  input: GithubCorrectionCarrierCredentialInput,
+  input: GithubDependencyBuilderCredentialInput,
 ): Promise<GithubDependencyBuilderCredentialResult> {
-  return getGithubCorrectionCarrierCredential(input);
+  if (!isGithubDependencyBuilderCredentialInput(input)) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  let installation: Awaited<ReturnType<typeof getGithubInstallation>>;
+  try {
+    installation = await getGithubInstallation(input.workspaceId);
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "storage_unavailable" };
+  }
+  if (!installation || githubInstallationIdentitySha256({
+    workspaceId: input.workspaceId,
+    installationId: installation.installationId,
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+  }) !== input.expectedInstallationIdentitySha256) {
+    return { ok: false, kind: "unavailable", reason: "installation_or_permission_denied" };
+  }
+  return mintGithubRepositoryCredential({ repo: input.repo, installation });
 }
 
 export async function bindWorkspaceGithubInstallation(

@@ -1,4 +1,4 @@
-"""Standalone read-only pnpm observation producer loop."""
+"""Standalone server-selected read-only dependency observation loop."""
 from __future__ import annotations
 
 import os
@@ -7,11 +7,13 @@ import time
 from typing import Callable, Protocol
 
 from agentrail.dependencies.acceptance_pnpm_observation_worker import (
-    PnpmObservationWorker,
     WorkerConfig,
     WorkerError,
     bounded_http_request,
-    bounded_version_command,
+)
+from agentrail.dependencies.server_selected_observation_worker import (
+    ServerSelectedObservationWorker,
+    bounded_dependency_version_command,
 )
 
 
@@ -19,7 +21,7 @@ class _Worker(Protocol):
     def run_once(self) -> str: ...
 
 
-def _real_worker() -> PnpmObservationWorker:
+def _real_worker() -> ServerSelectedObservationWorker:
     required = {
         "JACE_CONSOLE_URL": os.environ.get("JACE_CONSOLE_URL"),
         "AGENTRAIL_SERVER_API_KEY": os.environ.get("AGENTRAIL_SERVER_API_KEY"),
@@ -29,7 +31,7 @@ def _real_worker() -> PnpmObservationWorker:
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise ValueError("missing required environment: " + ", ".join(missing))
-    return PnpmObservationWorker(
+    return ServerSelectedObservationWorker(
         WorkerConfig(
             console_url=required["JACE_CONSOLE_URL"] or "",
             workspace_api_key=required["AGENTRAIL_SERVER_API_KEY"] or "",
@@ -37,7 +39,7 @@ def _real_worker() -> PnpmObservationWorker:
             worker_id=required["AGENTRAIL_DEPENDENCY_WORKER_ID"] or "",
         ),
         request=bounded_http_request,
-        run_command=bounded_version_command,
+        run_command=bounded_dependency_version_command,
     )
 
 

@@ -232,7 +232,7 @@ describe.skipIf(!DB_AVAILABLE)("Go exact-tree source-inventory custody — real 
     })).rejects.toThrow();
   });
 
-  it("keeps a receipt-bearing Go candidate outside draft and downstream authority", async () => {
+  it("keeps a malformed receipt-bearing Go candidate outside draft and downstream authority", async () => {
     const input = inputFor();
     await recordDependencyWatchObservation(input);
 
@@ -241,7 +241,7 @@ describe.skipIf(!DB_AVAILABLE)("Go exact-tree source-inventory custody — real 
       watchId,
       candidateFingerprint: GO_CANDIDATE.fingerprint,
     })).rejects.toMatchObject({
-      code: "unsupported_manager",
+      code: "unsafe_custody",
     } satisfies Partial<DependencyObservationDraftError>);
     await expect(db.select().from(changeRecords).where(eq(changeRecords.workspaceId, workspaceId)))
       .resolves.toHaveLength(0);

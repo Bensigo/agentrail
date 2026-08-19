@@ -508,47 +508,79 @@ type SerializedDates<T> = T extends Date
 
 export type AcceptanceRecordDetailEnvelope = SerializedDates<ReadAcceptanceRecordDetailResult>;
 
+type AcceptanceDependencyDraftCandidate<
+  DependencyKind extends "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies",
+> = {
+  package: string;
+  currentVersion: string;
+  targetVersion: string;
+  dependencyKind: DependencyKind;
+};
+
+type AcceptanceDependencyDraftProposalBase = {
+  custodyIdentity: string;
+  watch: { id: string; observationId: string; observationKey: string };
+  repositorySourceVerification: "watch_observation_only";
+  independentSourceProof: "not_proven";
+  evidenceAdmission: "unresolved";
+  laterEvidence: {
+    confirmation: "not_recorded";
+    contextPack: "not_recorded";
+    builderHandoff: "not_recorded";
+    delivery: "not_recorded";
+    result: "not_recorded";
+  };
+};
+
+type AcceptanceDependencyDraftProposalBody = AcceptanceDependencyDraftProposalBase & (
+  | {
+      candidate: AcceptanceDependencyDraftCandidate<"dependencies" | "devDependencies">;
+      files: {
+        manifest: { path: "package.json"; sha256: string };
+        lockfile: { path: "pnpm-lock.yaml"; sha256: string };
+      };
+      profile: {
+        ecosystem: "node";
+        manager: "pnpm";
+        profile: "pnpm_lockfile_only_v1";
+        capability: "proposal_observation_only";
+      };
+    }
+  | {
+      candidate: AcceptanceDependencyDraftCandidate<
+        "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies"
+      >;
+      files: {
+        manifest: { path: "package.json"; sha256: string };
+        lockfile: { path: "package-lock.json"; sha256: string };
+      };
+      profile: {
+        ecosystem: "node";
+        manager: "npm";
+        profile: "npm_package_lock_only_v1";
+        capability: "proposal_observation_only";
+      };
+    }
+  | {
+      candidate: AcceptanceDependencyDraftCandidate<"dependencies">;
+      files: {
+        manifest: { path: "go.mod"; sha256: string };
+        lockfile: { path: "go.sum"; sha256: string };
+      };
+      profile: {
+        ecosystem: "go";
+        manager: "go-modules";
+        profile: "go_root_public_proxy_lock_v1";
+        capability: "proposal_observation_only";
+      };
+    }
+);
+
 export type AcceptanceDependencyDraftProposal =
   | {
       kind: "draft";
       record: { id: string; repo: string; contractId: string; contractVersion: 1 };
-      proposal: {
-        custodyIdentity: string;
-        watch: { id: string; observationId: string; observationKey: string };
-        candidate: {
-          package: string;
-          currentVersion: string;
-          targetVersion: string;
-          dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
-        };
-        files: {
-          manifest: { path: "package.json"; sha256: string };
-          lockfile: { path: "pnpm-lock.yaml" | "package-lock.json"; sha256: string };
-        };
-        profile:
-          | {
-              ecosystem: "node";
-              manager: "pnpm";
-              profile: "pnpm_lockfile_only_v1";
-              capability: "proposal_observation_only";
-            }
-          | {
-              ecosystem: "node";
-              manager: "npm";
-              profile: "npm_package_lock_only_v1";
-              capability: "proposal_observation_only";
-            };
-        repositorySourceVerification: "watch_observation_only";
-        independentSourceProof: "not_proven";
-        evidenceAdmission: "unresolved";
-        laterEvidence: {
-          confirmation: "not_recorded";
-          contextPack: "not_recorded";
-          builderHandoff: "not_recorded";
-          delivery: "not_recorded";
-          result: "not_recorded";
-        };
-      };
+      proposal: AcceptanceDependencyDraftProposalBody;
     }
   | { kind: "not_found" }
   | { kind: "not_draft_proposal" }
@@ -2664,6 +2696,8 @@ const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9
 const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
 const NPM_ALIAS_SPECIFIER = /^npm:/iu;
+const GO_MODULE = /^(?=.{1,512}$)[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?)+$/u;
+const GO_STABLE_RELEASE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const NODE_DEPENDENCY_KINDS = [
   "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
@@ -2683,6 +2717,7 @@ const YARN_FLAG_BY_DEPENDENCY_KIND: Readonly<Record<string, string | null>> = {
 
 type AcceptanceDependencyReceiptProfile = {
   readonly identity: AcceptanceDependencyProfileIdentity;
+  readonly packageManagerName?: string;
   readonly compiledPackCompilerVersion?: string;
   readonly compiledPackPolicyVersion?: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
@@ -2830,6 +2865,66 @@ function composerDependencyCandidateIsValid(candidate: AcceptanceDependencyCandi
     && compareStableSemver(current, upper) < 0
     && compareStableSemver(target, upper) < 0;
 }
+
+function goStableReleaseParts(value: string): [number, number, number] | null {
+  const match = GO_STABLE_RELEASE.exec(value);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger)
+    ? [parts[0]!, parts[1]!, parts[2]!]
+    : null;
+}
+
+function goModuleMajor(modulePath: string): number | null {
+  const host = modulePath.split("/", 1)[0]!;
+  if (!host.includes(".") || /^\d+(?:\.\d+){3}$/u.test(host)) return null;
+  const last = modulePath.slice(modulePath.lastIndexOf("/") + 1);
+  const pathMajor = /^v(0|[1-9]\d*)$/u.exec(last);
+  if (pathMajor) {
+    const major = Number(pathMajor[1]);
+    return Number.isSafeInteger(major) && major >= 2 ? major : null;
+  }
+  if (/^v[0-9.]+$/u.test(last)) return null;
+  if (modulePath.startsWith("gopkg.in/")) {
+    const gopkgMajor = /\.v(0|[1-9]\d*)$/u.exec(last);
+    if (!gopkgMajor) return null;
+    const major = Number(gopkgMajor[1]);
+    return Number.isSafeInteger(major) && major >= 1 ? major : null;
+  }
+  return 0;
+}
+
+function goDraftCandidateIsValid(candidate: Record<string, unknown>): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || typeof candidate.package !== "string"
+    || typeof candidate.currentVersion !== "string"
+    || typeof candidate.targetVersion !== "string"
+    || !GO_MODULE.test(candidate.package)) return false;
+  const current = goStableReleaseParts(candidate.currentVersion);
+  const target = goStableReleaseParts(candidate.targetVersion);
+  const moduleMajor = goModuleMajor(candidate.package);
+  return current !== null
+    && target !== null
+    && moduleMajor !== null
+    && current[0] === target[0]
+    && (moduleMajor === 0 ? current[0] <= 1 : current[0] === moduleMajor)
+    && compareStableSemver(target, current) > 0;
+}
+
+function goDependencyCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  const current = goStableReleaseParts(candidate.currentVersion);
+  const target = goStableReleaseParts(candidate.targetVersion);
+  const moduleMajor = goModuleMajor(candidate.package);
+  return candidate.dependencyKind === "dependencies"
+    && GO_MODULE.test(candidate.package)
+    && candidate.specifier === candidate.currentVersion
+    && current !== null
+    && target !== null
+    && moduleMajor !== null
+    && current[0] === target[0]
+    && (moduleMajor === 0 ? current[0] <= 1 : current[0] === moduleMajor)
+    && compareStableSemver(target, current) > 0;
+}
 function osvNpmReceiptIsValid(
   security: AcceptanceDependencySecurityEvidence,
   candidate: AcceptanceDependencyCandidate,
@@ -2852,6 +2947,14 @@ function osvComposerReceiptIsValid(
 ): boolean {
   return security.provider === "osv"
     && security.reference === `osv:Packagist:${candidate.package}@${candidate.targetVersion}`;
+}
+
+function osvGoReceiptIsValid(
+  security: AcceptanceDependencySecurityEvidence,
+  candidate: AcceptanceDependencyCandidate,
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion}`;
 }
 const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDependencyReceiptProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
@@ -2937,6 +3040,21 @@ const ACCEPTANCE_DEPENDENCY_RECEIPT_PROFILES = new Map<string, AcceptanceDepende
       "update", `${candidate.package}:${candidate.targetVersion}`, "--with-dependencies",
       "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
+  }],
+  ["go:go-modules:go_root_public_proxy_lock_v1", {
+    identity: {
+      ecosystem: "go",
+      manager: "go-modules",
+      profile: "go_root_public_proxy_lock_v1",
+    },
+    packageManagerName: "go",
+    candidateIsValid: goDependencyCandidateIsValid,
+    runtimeVersionIsValid: (version) => stableSemverParts(version) !== null,
+    packageManagerVersionIsValid: (version) => stableSemverParts(version) !== null,
+    manifestPathIsValid: (path) => path === "go.mod",
+    lockfilePathIsValid: (path) => path === "go.sum",
+    securityIsValid: osvGoReceiptIsValid,
+    expectedArgv: (candidate) => ["go", "get", `${candidate.package}@${candidate.targetVersion}`],
   }],
 ]);
 
@@ -3127,7 +3245,7 @@ function isDependencyObservation(
     && value.runtime.disposition === "safe"
     && profile.runtimeVersionIsValid(value.runtime.version ?? "")
     && value.packageManager.disposition === "safe"
-    && value.packageManager.name === profile.identity.manager
+    && value.packageManager.name === (profile.packageManagerName ?? profile.identity.manager)
     && profile.packageManagerVersionIsValid(value.packageManager.version ?? "")
     && value.packageManager.profile === profile.identity.profile
     && exactJsonEqual(value.packageManager.updateArgv, profile.expectedArgv(value.candidate))
@@ -3315,30 +3433,41 @@ export function isDependencyDraftProposal(value: unknown): value is AcceptanceDe
       .includes(value.proposal.candidate.dependencyKind as string)
     || !isObject(value.proposal.files) || !hasExactKeys(value.proposal.files, ["manifest", "lockfile"])
     || !isObject(value.proposal.files.manifest) || !hasExactKeys(value.proposal.files.manifest, ["path", "sha256"])
-    || value.proposal.files.manifest.path !== "package.json" || typeof value.proposal.files.manifest.sha256 !== "string"
+    || (value.proposal.files.manifest.path !== "package.json"
+      && value.proposal.files.manifest.path !== "go.mod")
+    || typeof value.proposal.files.manifest.sha256 !== "string"
     || !SHA256.test(value.proposal.files.manifest.sha256)
     || !isObject(value.proposal.files.lockfile) || !hasExactKeys(value.proposal.files.lockfile, ["path", "sha256"])
     || (value.proposal.files.lockfile.path !== "pnpm-lock.yaml"
-      && value.proposal.files.lockfile.path !== "package-lock.json")
+      && value.proposal.files.lockfile.path !== "package-lock.json"
+      && value.proposal.files.lockfile.path !== "go.sum")
     || typeof value.proposal.files.lockfile.sha256 !== "string"
     || !SHA256.test(value.proposal.files.lockfile.sha256)
     || !isObject(value.proposal.profile) || !hasExactKeys(value.proposal.profile, ["ecosystem", "manager", "profile", "capability"])
-    || value.proposal.profile.ecosystem !== "node"
     || value.proposal.profile.capability !== "proposal_observation_only"
     || value.proposal.repositorySourceVerification !== "watch_observation_only"
     || value.proposal.independentSourceProof !== "not_proven" || value.proposal.evidenceAdmission !== "unresolved"
     || !isObject(value.proposal.laterEvidence) || !hasExactKeys(value.proposal.laterEvidence, [
       "confirmation", "contextPack", "builderHandoff", "delivery", "result",
     ])) return false;
-  const pnpmProfile = value.proposal.profile.manager === "pnpm"
+  const pnpmProfile = value.proposal.profile.ecosystem === "node"
+    && value.proposal.profile.manager === "pnpm"
     && value.proposal.profile.profile === "pnpm_lockfile_only_v1";
   const npmProfile = value.proposal.profile.manager === "npm"
+    && value.proposal.profile.ecosystem === "node"
     && value.proposal.profile.profile === "npm_package_lock_only_v1";
-  if ((!pnpmProfile && !npmProfile)
+  const goModulesProfile = value.proposal.profile.ecosystem === "go"
+    && value.proposal.profile.manager === "go-modules"
+    && value.proposal.profile.profile === "go_root_public_proxy_lock_v1";
+  if ((!pnpmProfile && !npmProfile && !goModulesProfile)
+    || ((pnpmProfile || npmProfile) && value.proposal.files.manifest.path !== "package.json")
     || (pnpmProfile && value.proposal.files.lockfile.path !== "pnpm-lock.yaml")
     || (pnpmProfile && value.proposal.candidate.dependencyKind !== "dependencies"
       && value.proposal.candidate.dependencyKind !== "devDependencies")
-    || (npmProfile && value.proposal.files.lockfile.path !== "package-lock.json")) return false;
+    || (npmProfile && value.proposal.files.lockfile.path !== "package-lock.json")
+    || (goModulesProfile && value.proposal.files.manifest.path !== "go.mod")
+    || (goModulesProfile && value.proposal.files.lockfile.path !== "go.sum")
+    || (goModulesProfile && !goDraftCandidateIsValid(value.proposal.candidate))) return false;
   return value.proposal.laterEvidence.confirmation === "not_recorded"
     && value.proposal.laterEvidence.contextPack === "not_recorded"
     && value.proposal.laterEvidence.builderHandoff === "not_recorded"

@@ -768,6 +768,60 @@ function composerDependencyEnvelope(
   }
   return envelope;
 }
+
+function goModulesDependencyEnvelope(
+  withPack = false,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "go",
+    manager: "go-modules",
+    profile: "go_root_public_proxy_lock_v1",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    package: "gopkg.in/yaml.v3",
+    dependencyKind: "dependencies",
+    specifier: "v3.0.0",
+    currentVersion: "v3.0.0",
+    targetVersion: "v3.0.1",
+  };
+  item.observation.runtime = {
+    ...item.observation.runtime,
+    identity,
+    version: "1.23.4",
+  };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "go",
+    version: "1.23.4",
+    profile: "go_root_public_proxy_lock_v1",
+    updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "go.mod" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "go.sum" };
+  item.observation.security = {
+    ...item.observation.security,
+    identity,
+    reference: "osv:Go:gopkg.in/yaml.v3@v3.0.1",
+  };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -1222,6 +1276,29 @@ const draftDependencyProposal: AcceptanceDependencyDraftProposal = {
       builderHandoff: "not_recorded",
       delivery: "not_recorded",
       result: "not_recorded",
+    },
+  },
+};
+
+const goDraftDependencyProposal = {
+  ...draftDependencyProposal,
+  proposal: {
+    ...draftDependencyProposal.proposal,
+    candidate: {
+      package: "gopkg.in/yaml.v3",
+      currentVersion: "v3.0.0",
+      targetVersion: "v3.0.1",
+      dependencyKind: "dependencies",
+    },
+    files: {
+      manifest: { path: "go.mod", sha256: "b".repeat(64) },
+      lockfile: { path: "go.sum", sha256: "c".repeat(64) },
+    },
+    profile: {
+      ecosystem: "go",
+      manager: "go-modules",
+      profile: "go_root_public_proxy_lock_v1",
+      capability: "proposal_observation_only",
     },
   },
 };
@@ -1790,6 +1867,132 @@ describe("Change Record detail view", () => {
         profile: { ...npmDraft.proposal.profile, manager: "yarn" },
       },
     })).toBe(false);
+  });
+
+  it("renders only the exact read-only Go Modules draft proposal", () => {
+    expect(isDependencyDraftProposal(goDraftDependencyProposal)).toBe(true);
+    const rendered = DependencyDraftProposalPanel({
+      dependencyDraftProposal: goDraftDependencyProposal as AcceptanceDependencyDraftProposal,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("gopkg.in/yaml.v3");
+    expect(content).toContain("go / go-modules / go_root_public_proxy_lock_v1");
+    expect(content).toContain("go.mod");
+    expect(content).toContain("go.sum");
+    expect(content).toContain("delivery authority: not granted");
+    expect(content).not.toContain("go get");
+    expect(content).not.toContain("go test");
+    expect(content).not.toContain("Merge");
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    expect(isDependencyDraftProposal({
+      ...goDraftDependencyProposal,
+      proposal: {
+        ...goDraftDependencyProposal.proposal,
+        candidate: {
+          ...goDraftDependencyProposal.proposal.candidate,
+          dependencyKind: "devDependencies",
+        },
+      },
+    })).toBe(false);
+    expect(isDependencyDraftProposal({
+      ...goDraftDependencyProposal,
+      proposal: {
+        ...goDraftDependencyProposal.proposal,
+        files: {
+          ...goDraftDependencyProposal.proposal.files,
+          lockfile: { path: "package-lock.json", sha256: "c".repeat(64) },
+        },
+      },
+    })).toBe(false);
+  });
+
+  it.each([
+    ["v0 root module", "example.com/acme/lib", "v0.9.0", "v0.10.0"],
+    ["v1 root module", "example.com/acme/lib", "v1.2.3", "v1.3.0"],
+    ["vN semantic import path", "example.com/acme/lib/v2", "v2.1.0", "v2.2.0"],
+    ["gopkg.in semantic import path", "gopkg.in/yaml.v3", "v3.0.0", "v3.0.1"],
+  ])("accepts an exact Go draft for %s", (_name, packageName, currentVersion, targetVersion) => {
+    expect(isDependencyDraftProposal({
+      ...goDraftDependencyProposal,
+      proposal: {
+        ...goDraftDependencyProposal.proposal,
+        candidate: {
+          ...goDraftDependencyProposal.proposal.candidate,
+          package: packageName,
+          currentVersion,
+          targetVersion,
+        },
+      },
+    })).toBe(true);
+  });
+
+  it.each([
+    ["missing public module path", "yaml", "v1.0.0", "v1.0.1"],
+    ["uppercase module path", "example.com/Acme/lib", "v1.0.0", "v1.0.1"],
+    ["non-canonical current version", "example.com/acme/lib", "1.0.0", "v1.0.1"],
+    ["non-canonical target version", "example.com/acme/lib", "v1.0.0", "v1.0"],
+    ["pseudo target version", "example.com/acme/lib", "v1.0.0", "v1.0.1-0.20260101000000-deadbeefdead"],
+    ["same version", "example.com/acme/lib", "v1.0.0", "v1.0.0"],
+    ["backward version", "example.com/acme/lib", "v1.1.0", "v1.0.0"],
+    ["cross-major version", "example.com/acme/lib", "v1.1.0", "v2.0.0"],
+    ["missing v2 path suffix", "example.com/acme/lib", "v2.0.0", "v2.1.0"],
+    ["mismatched path suffix", "example.com/acme/lib/v2", "v3.0.0", "v3.1.0"],
+    ["unsupported v1 path suffix", "example.com/acme/lib/v1", "v1.0.0", "v1.1.0"],
+    ["ambiguous path suffix", "example.com/acme/lib/v2.0", "v2.0.0", "v2.1.0"],
+    ["missing gopkg.in suffix", "gopkg.in/yaml", "v1.0.0", "v1.1.0"],
+    ["unsupported gopkg.in v0 suffix", "gopkg.in/yaml.v0", "v0.1.0", "v0.2.0"],
+    ["mismatched gopkg.in suffix", "gopkg.in/yaml.v3", "v2.0.0", "v2.1.0"],
+  ])("rejects a Go draft with %s", (_name, packageName, currentVersion, targetVersion) => {
+    expect(isDependencyDraftProposal({
+      ...goDraftDependencyProposal,
+      proposal: {
+        ...goDraftDependencyProposal.proposal,
+        candidate: {
+          ...goDraftDependencyProposal.proposal.candidate,
+          package: packageName,
+          currentVersion,
+          targetVersion,
+        },
+      },
+    })).toBe(false);
+  });
+
+  it("accepts and renders an exact backend Go draft in the complete Record response", () => {
+    const response = {
+      record,
+      events,
+      correctionPackets: currentCorrections,
+      finalDecision: currentFinalDecision,
+      reviewMetrics: currentReviewMetrics,
+      dependencyObservations: currentDependencyObservations,
+      acceptanceDetail: currentAcceptanceDetail,
+      dependencyDraftProposal: goDraftDependencyProposal,
+      criterionOutcomes: criterionOutcomesNotReady,
+      contextPackRegenerationRequests: [],
+      contextPackRegenerationExecutions: [],
+      canRecordFinalDecision: true,
+      canRecordReviewEffort: true,
+      canApproveDependencyObservation: true,
+      canRequestContextPackRegeneration: true,
+      canCreateGatedGithubIssue: true,
+    };
+
+    expect(isChangeRecordResponse(response)).toBe(true);
+    if (!isChangeRecordResponse(response)) throw new Error("expected exact Go draft response");
+    const rendered = DependencyDraftProposalPanel({
+      dependencyDraftProposal: response.dependencyDraftProposal,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("go / go-modules / go_root_public_proxy_lock_v1");
+    expect(content).toContain("go.mod");
+    expect(content).toContain("go.sum");
+    expect(content).toContain("delivery authority: not granted");
+    expect(content).not.toContain("go get");
+    expect(content).not.toContain("go test");
+    expect(content).not.toContain("Merge");
+    expect(buttonLabels(rendered)).toEqual([]);
   });
 
   it("labels historical human decisions as audit-only timeline evidence", () => {
@@ -2709,6 +2912,51 @@ describe("Change Record detail view", () => {
     mismatchedPack.observations[0]!.externalBuilderPack!.packageManager.updateArgv
       .push("--prefer-source");
     expect(isDependencyObservationsEnvelope(mismatchedPack)).toBe(false);
+  });
+
+  it("renders the exact Go Modules receipt and keeps the observed item approval-eligible", () => {
+    const observed = goModulesDependencyEnvelope();
+    expect(isDependencyObservationsEnvelope(observed)).toBe(true);
+    expect(isDependencyObservationsEnvelope(goModulesDependencyEnvelope(true))).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: observed,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("gopkg.in/yaml.v3 v3.0.0 → v3.0.1");
+    expect(content).toContain("safe · go / go-modules · 1.23.4");
+    expect(content).toContain("safe · go 1.23.4 · go_root_public_proxy_lock_v1");
+    expect(content).toContain("go.mod");
+    expect(content).toContain("go.sum");
+    expect(buttonLabels(rendered)).toEqual(["Approve & mint external-builder Pack"]);
+
+    const managerAliasDrift = goModulesDependencyEnvelope();
+    managerAliasDrift.observations[0]!.observation.packageManager.name = "go-modules";
+    expect(isDependencyObservationsEnvelope(managerAliasDrift)).toBe(false);
+
+    const crossMajor = goModulesDependencyEnvelope();
+    crossMajor.observations[0]!.observation.candidate.targetVersion = "v4.0.0";
+    crossMajor.observations[0]!.observation.packageManager.updateArgv[2] =
+      "gopkg.in/yaml.v3@v4.0.0";
+    crossMajor.observations[0]!.observation.security.reference =
+      "osv:Go:gopkg.in/yaml.v3@v4.0.0";
+    expect(isDependencyObservationsEnvelope(crossMajor)).toBe(false);
+
+    const pathMajorMismatch = goModulesDependencyEnvelope();
+    Object.assign(pathMajorMismatch.observations[0]!.observation.candidate, {
+      specifier: "v4.0.0",
+      currentVersion: "v4.0.0",
+      targetVersion: "v4.0.1",
+    });
+    pathMajorMismatch.observations[0]!.observation.packageManager.updateArgv[2] =
+      "gopkg.in/yaml.v3@v4.0.1";
+    pathMajorMismatch.observations[0]!.observation.security.reference =
+      "osv:Go:gopkg.in/yaml.v3@v4.0.1";
+    expect(isDependencyObservationsEnvelope(pathMajorMismatch)).toBe(false);
   });
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {
     const historical = npmDependencyEnvelope();

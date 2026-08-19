@@ -35,10 +35,11 @@ export type DependencyObservationProposalSourceCustody = {
   proposalCustodyIdentity: string;
   candidate: DependencyObservationProposalCandidate;
   baselineSha: string;
-  manifestPath: "package.json";
-  lockfilePath: "pnpm-lock.yaml" | "package-lock.json";
+  manifestPath: "package.json" | "go.mod";
+  lockfilePath: "pnpm-lock.yaml" | "package-lock.json" | "go.sum";
   selectedFileHashes: DependencyObservationSelectedFileHashes;
   profile: DependencyObservationProposalProfile;
+  sourceInventoryReceiptSha256: string | null;
 };
 
 export type DependencyDraftProposalDetail = {
@@ -54,8 +55,8 @@ export type DependencyDraftProposalDetail = {
       dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
     };
     files: {
-      manifest: { path: "package.json"; sha256: string };
-      lockfile: { path: "pnpm-lock.yaml" | "package-lock.json"; sha256: string };
+      manifest: { path: "package.json" | "go.mod"; sha256: string };
+      lockfile: { path: "pnpm-lock.yaml" | "package-lock.json" | "go.sum"; sha256: string };
     };
     profile: DependencyObservationProposalProfile;
     repositorySourceVerification: "watch_observation_only";
@@ -94,11 +95,15 @@ function safeText(value: unknown, max = 512): value is string {
 export function resolveDependencyObservationProposalSourceCustody(
   value: unknown,
 ): DependencyObservationProposalSourceCustody | null {
-  if (!object(value) || !exactKeys(value, [
+  const baseKeys = [
     "kind", "version", "repositoryId", "repositoryName", "watchId", "observationId", "observationKey",
     "candidateFingerprint", "proposalCustodyIdentity", "candidate", "baselineSha", "manifestPath", "lockfilePath",
     "selectedFileHashes", "profile", "repositorySourceVerification", "independentSourceProof",
-  ]) || value.kind !== "dependency_watch_observation_proposal" || value.version !== 1
+  ] as const;
+  if (!object(value)
+    || (!exactKeys(value, baseKeys)
+      && !exactKeys(value, [...baseKeys, "sourceInventoryReceiptSha256"]))
+    || value.kind !== "dependency_watch_observation_proposal" || value.version !== 1
     || typeof value.repositoryId !== "string" || !UUID.test(value.repositoryId)
     || !safeText(value.repositoryName) || typeof value.watchId !== "string" || !UUID.test(value.watchId)
     || typeof value.observationId !== "string" || !UUID.test(value.observationId) || !safeText(value.observationKey)
@@ -108,11 +113,21 @@ export function resolveDependencyObservationProposalSourceCustody(
     || !object(value.selectedFileHashes)
     || value.repositorySourceVerification !== "watch_observation_only" || value.independentSourceProof !== "not_proven") return null;
   const resolved = resolveDependencyObservationProposalCandidate(value.candidate);
+  const sourceInventoryReceiptSha256Raw = Object.hasOwn(value, "sourceInventoryReceiptSha256")
+    ? value.sourceInventoryReceiptSha256
+    : null;
   if (!resolved || resolved.candidate.fingerprint !== value.candidateFingerprint
     || resolved.candidate.baseline_sha !== value.baselineSha
     || value.manifestPath !== resolved.manifestPath || value.lockfilePath !== resolved.lockfilePath
     || !isDeepStrictEqual(value.profile, resolved.profile)
+    || (resolved.profile.manager === "go-modules"
+      ? typeof sourceInventoryReceiptSha256Raw !== "string"
+        || !FILE_SHA256.test(sourceInventoryReceiptSha256Raw)
+      : sourceInventoryReceiptSha256Raw !== null)
     || !exactKeys(value.selectedFileHashes, [resolved.manifestPath, resolved.lockfilePath])) return null;
+  const sourceInventoryReceiptSha256: string | null = resolved.profile.manager === "go-modules"
+    ? sourceInventoryReceiptSha256Raw as string
+    : null;
   const manifestHash = value.selectedFileHashes[resolved.manifestPath];
   const lockfileHash = value.selectedFileHashes[resolved.lockfilePath];
   if (typeof manifestHash !== "string" || !FILE_SHA256.test(manifestHash)
@@ -122,10 +137,10 @@ export function resolveDependencyObservationProposalSourceCustody(
         "package.json": manifestHash,
         "pnpm-lock.yaml": lockfileHash,
       }
-    : {
+    : resolved.lockfilePath === "package-lock.json" ? {
         "package.json": manifestHash,
         "package-lock.json": lockfileHash,
-      };
+      } : { "go.mod": manifestHash, "go.sum": lockfileHash };
   const proposalCustodyIdentity = dependencyObservationProposalCustodyIdentity({
     repositoryId: value.repositoryId,
     repositoryName: value.repositoryName,
@@ -135,6 +150,7 @@ export function resolveDependencyObservationProposalSourceCustody(
     baselineSha: value.baselineSha,
     selectedFileHashes,
     candidate: resolved.candidate,
+    sourceInventoryReceiptSha256,
   });
   if (proposalCustodyIdentity !== value.proposalCustodyIdentity) return null;
   return {
@@ -143,7 +159,7 @@ export function resolveDependencyObservationProposalSourceCustody(
     candidateFingerprint: value.candidateFingerprint, proposalCustodyIdentity: value.proposalCustodyIdentity,
     candidate: resolved.candidate, baselineSha: value.baselineSha,
     manifestPath: resolved.manifestPath, lockfilePath: resolved.lockfilePath,
-    selectedFileHashes, profile: resolved.profile,
+    selectedFileHashes, profile: resolved.profile, sourceInventoryReceiptSha256,
   };
 }
 
@@ -156,6 +172,9 @@ function sameSourceFields(value: Record<string, unknown>, parsed: DependencyObse
     && isDeepStrictEqual(value.candidate, parsed.candidate)
     && isDeepStrictEqual(value.selectedFileHashes, parsed.selectedFileHashes)
     && isDeepStrictEqual(value.profile, parsed.profile)
+    && (parsed.sourceInventoryReceiptSha256 === null
+      ? !Object.hasOwn(value, "sourceInventoryReceiptSha256")
+      : value.sourceInventoryReceiptSha256 === parsed.sourceInventoryReceiptSha256)
     && value.repositorySourceVerification === "watch_observation_only"
     && value.independentSourceProof === "not_proven";
 }
@@ -169,7 +188,15 @@ function unresolvedFor(parsed: DependencyObservationProposalSourceCustody): read
 function lockfileSha(parsed: DependencyObservationProposalSourceCustody): string {
   return parsed.lockfilePath === "pnpm-lock.yaml"
     ? (parsed.selectedFileHashes as { "pnpm-lock.yaml": string })["pnpm-lock.yaml"]
-    : (parsed.selectedFileHashes as { "package-lock.json": string })["package-lock.json"];
+    : parsed.lockfilePath === "package-lock.json"
+      ? (parsed.selectedFileHashes as { "package-lock.json": string })["package-lock.json"]
+      : (parsed.selectedFileHashes as { "go.sum": string })["go.sum"];
+}
+
+function manifestSha(parsed: DependencyObservationProposalSourceCustody): string {
+  return parsed.manifestPath === "package.json"
+    ? (parsed.selectedFileHashes as { "package.json": string })["package.json"]
+    : (parsed.selectedFileHashes as { "go.mod": string })["go.mod"];
 }
 
 export function dependencyObservationProposalContractMatches(
@@ -180,11 +207,16 @@ export function dependencyObservationProposalContractMatches(
     "originalRequest", "normalizedRequirements", "acceptanceCriteria", "nonGoals", "risks", "environment", "stops", "unresolvedQuestions",
   ])) return false;
   const environment = value.environment;
-  if (!object(environment) || !exactKeys(environment, [
+  const environmentKeys = [
     "kind", "admission", "profile", "repositoryId", "repositoryName", "watchId", "observationId", "observationKey",
     "candidateFingerprint", "proposalCustodyIdentity", "candidate", "baselineSha", "manifestPath", "lockfilePath",
     "selectedFileHashes", "repositorySourceVerification", "independentSourceProof",
-  ]) || environment.kind !== "dependency_watch_observation_proposal" || environment.admission !== "draft_only"
+  ] as const;
+  if (!object(environment)
+    || !exactKeys(environment, parsed.sourceInventoryReceiptSha256 === null
+      ? environmentKeys
+      : [...environmentKeys, "sourceInventoryReceiptSha256"])
+    || environment.kind !== "dependency_watch_observation_proposal" || environment.admission !== "draft_only"
     || !sameSourceFields(environment, parsed)) return false;
   const expectedRequest = `Assess observed dependency candidate ${parsed.candidate.package} from ${parsed.candidate.current_version} to ${parsed.candidate.target_version}.`;
   const unresolved = unresolvedFor(parsed);
@@ -205,12 +237,15 @@ export function dependencyObservationProposalContractMatches(
 }
 
 function exactEventPayload(value: unknown, parsed: DependencyObservationProposalSourceCustody, recordId: string, contractId: string): boolean {
-  if (!object(value) || !exactKeys(value, [
+  const eventKeys = [
     "kind", "version", "recordId", "acceptanceContractId", "acceptanceContractVersion", "repositoryId", "repositoryName",
     "watchId", "observationId", "observationKey", "candidateFingerprint", "proposalCustodyIdentity", "candidate", "profile",
     "baselineSha", "manifestPath", "lockfilePath", "selectedFileHashes", "evidenceAdmission", "authority",
     "repositorySourceVerification", "independentSourceProof",
-  ])) return false;
+  ] as const;
+  if (!object(value) || !exactKeys(value, parsed.sourceInventoryReceiptSha256 === null
+    ? eventKeys
+    : [...eventKeys, "sourceInventoryReceiptSha256"])) return false;
   return value.kind === "dependency_observation_proposal_draft" && value.version === 1
     && value.recordId === recordId && value.acceptanceContractId === contractId && value.acceptanceContractVersion === 1
     && sameSourceFields(value, parsed) && value.evidenceAdmission === "unresolved" && value.authority === "draft_only";
@@ -270,7 +305,7 @@ export async function readDependencyDraftProposalDetail(input: {
           | "peerDependencies",
       },
       files: {
-        manifest: { path: "package.json", sha256: parsed.selectedFileHashes["package.json"] },
+        manifest: { path: parsed.manifestPath, sha256: manifestSha(parsed) },
         lockfile: {
           path: parsed.lockfilePath,
           sha256: lockfileSha(parsed),

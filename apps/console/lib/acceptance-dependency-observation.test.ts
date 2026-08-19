@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
   ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+  ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
   ACCEPTANCE_DEPENDENCY_UV_PROFILE,
   ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
@@ -88,6 +90,38 @@ function validNpm(
   (value.manifest as Record<string, unknown>).path = "package.json";
   (value.lockfile as Record<string, unknown>).path = "package-lock.json";
   (value.security as Record<string, unknown>).identity = identity;
+  return value;
+}
+
+function validGoModules(): Record<string, unknown> {
+  const value = cloneValid();
+  const identity = {
+    ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE,
+  };
+  Object.assign(value.candidate as Record<string, unknown>, {
+    identity, package: "gopkg.in/yaml.v3", dependencyKind: "dependencies",
+    specifier: "v3.0.0", currentVersion: "v3.0.0", targetVersion: "v3.0.1",
+  });
+  Object.assign(value.runtime as Record<string, unknown>, {
+    identity, version: "1.23.4",
+  });
+  Object.assign(value.packageManager as Record<string, unknown>, {
+    name: "go", version: "1.23.4", profile: ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE,
+    updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+  });
+  Object.assign(value.manifest as Record<string, unknown>, { path: "go.mod" });
+  Object.assign(value.lockfile as Record<string, unknown>, { path: "go.sum" });
+  Object.assign(value.security as Record<string, unknown>, {
+    identity, provider: "osv", reference: "osv:Go:gopkg.in/yaml.v3@v3.0.1",
+  });
+  const successor = Buffer.from("opaque verified successor signed note", "utf8");
+  value.sumdbCustody = {
+    priorGeneration: null,
+    priorSignedTreeNoteSha256: null,
+    successorSignedTreeNoteBase64: successor.toString("base64"),
+    successorSignedTreeNoteSha256: createHash("sha256").update(successor).digest("hex"),
+    sourceInventoryReceiptSha256: "2".repeat(64),
+  };
   return value;
 }
 
@@ -279,6 +313,40 @@ describe("parseAcceptanceDependencyObservation", () => {
       boundaryAssessment: "candidate_for_server_verification",
     });
     expect(JSON.stringify(result)).not.toMatch(/install|execute|approv|deliver/iu);
+  });
+
+  it("normalizes Go Modules only with a bounded opaque sumdb successor envelope", () => {
+    const raw = validGoModules();
+
+    expect(parseAcceptanceDependencyObservationForStorage(raw)).toEqual({
+      kind: "current",
+      input: expect.not.objectContaining({ sumdbCustody: expect.anything() }),
+      boundaryAssessment: "candidate_for_server_verification",
+      sumdbCustody: raw.sumdbCustody,
+    });
+  });
+
+  it.each([
+    ["missing envelope", (raw: Record<string, unknown>) => { delete raw.sumdbCustody; }],
+    ["forged successor digest", (raw: Record<string, unknown>) => {
+      (raw.sumdbCustody as Record<string, unknown>).successorSignedTreeNoteSha256 = "9".repeat(64);
+    }],
+    ["half prior lineage", (raw: Record<string, unknown>) => {
+      (raw.sumdbCustody as Record<string, unknown>).priorGeneration = 0;
+    }],
+    ["extra authority", (raw: Record<string, unknown>) => {
+      (raw.sumdbCustody as Record<string, unknown>).verified = true;
+    }],
+  ] as const)("refuses Go Modules %s", (_name, mutate) => {
+    const raw = validGoModules();
+    mutate(raw);
+    expect(parseAcceptanceDependencyObservationForStorage(raw)).toBeNull();
+  });
+
+  it("refuses a sumdb envelope on the pnpm profile", () => {
+    const raw = cloneValid();
+    raw.sumdbCustody = validGoModules().sumdbCustody;
+    expect(parseAcceptanceDependencyObservationForStorage(raw)).toBeNull();
   });
 
   it("stores the withdrawn Cargo profile only as an unsupported refusal", () => {

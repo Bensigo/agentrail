@@ -98,7 +98,7 @@ def _usage() -> str:
         "  run-records Assemble per-run production records (issue #1178)\n"
         "  afk         Run the AFK queue/worktree loop\n"
         "  heartbeat   Run the live Heartbeat dispatcher loop (MVP)\n"
-        "  dependency-observation-worker  Gather and post read-only pnpm evidence\n"
+        "  dependency-observation-worker  Gather server-selected read-only dependency evidence\n"
         "  status      Show worktree / session status\n"
         "  doctor      Check installation health\n"
         "  upgrade     Upgrade agentrail in this project\n"

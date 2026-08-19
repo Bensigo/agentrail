@@ -51,6 +51,7 @@ import {
 } from "../schema/change_records.js";
 import { workspaces } from "../schema/workspaces.js";
 import { apiKeys } from "../schema/api_keys.js";
+import { dependencyWatchObservations } from "../schema/dependency_watches.js";
 import { workspaceMemberships } from "../schema/workspace_memberships.js";
 import { chatIdentities } from "../schema/chat_identities.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
@@ -88,6 +89,13 @@ import {
   criterionVisibleTextContainsSecret,
   criterionVisibleValueContainsSecret,
 } from "./criterion-visible-secret-scan.js";
+import {
+  GoSumdbNoteCustodyAuthorizationError,
+  GoSumdbNoteCustodyConflictError,
+  GoSumdbNoteCustodyValidationError,
+  retainGoSumdbSignedTreeNoteInTransaction,
+} from "./go_sumdb_note_custody.js";
+import { validateGoDependencySourceInventoryReceipt } from "./dependency_watches.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -11001,6 +11009,94 @@ export class AcceptanceDependencyObservationClaimError extends Error {
   }
 }
 
+export type AcceptanceDependencyGoSumdbCustodyInput = {
+  priorGeneration: number | null;
+  priorSignedTreeNoteSha256: string | null;
+  successorSignedTreeNoteBase64: string;
+  successorSignedTreeNoteSha256: string;
+  sourceInventoryReceiptSha256: string;
+};
+
+type AcceptanceDependencyGoClaimManagerCustody = {
+  kind: "go_modules_sumdb_observation_custody";
+  version: 1;
+  repositoryId: string;
+  watchId: string;
+  sourceObservationId: string;
+  sourceInventoryReceiptSha256: string;
+  priorSignedTreeNoteSha256: string | null;
+  priorGeneration: number | null;
+};
+
+function parseAcceptanceDependencyGoSumdbCustody(
+  value: unknown,
+): AcceptanceDependencyGoSumdbCustodyInput | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "priorGeneration",
+    "priorSignedTreeNoteSha256",
+    "successorSignedTreeNoteBase64",
+    "successorSignedTreeNoteSha256",
+    "sourceInventoryReceiptSha256",
+  ])) return null;
+  const priorIsBootstrap = value["priorGeneration"] === null
+    && value["priorSignedTreeNoteSha256"] === null;
+  const priorIsRetained = Number.isSafeInteger(value["priorGeneration"])
+    && (value["priorGeneration"] as number) >= 0
+    && isSha256(value["priorSignedTreeNoteSha256"]);
+  if ((!priorIsBootstrap && !priorIsRetained)
+    || typeof value["successorSignedTreeNoteBase64"] !== "string"
+    || !isSha256(value["successorSignedTreeNoteSha256"])
+    || !isSha256(value["sourceInventoryReceiptSha256"])) return null;
+  return {
+    priorGeneration: value["priorGeneration"] as number | null,
+    priorSignedTreeNoteSha256: value["priorSignedTreeNoteSha256"] === null
+      ? null : (value["priorSignedTreeNoteSha256"] as string).toLowerCase(),
+    successorSignedTreeNoteBase64: value["successorSignedTreeNoteBase64"],
+    successorSignedTreeNoteSha256:
+      (value["successorSignedTreeNoteSha256"] as string).toLowerCase(),
+    sourceInventoryReceiptSha256:
+      (value["sourceInventoryReceiptSha256"] as string).toLowerCase(),
+  };
+}
+
+function parseAcceptanceDependencyGoClaimManagerCustody(
+  value: unknown,
+): AcceptanceDependencyGoClaimManagerCustody | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "kind",
+    "version",
+    "repositoryId",
+    "watchId",
+    "sourceObservationId",
+    "sourceInventoryReceiptSha256",
+    "priorSignedTreeNoteSha256",
+    "priorGeneration",
+  ]) || value["kind"] !== "go_modules_sumdb_observation_custody"
+    || value["version"] !== 1
+    || !isUuid(value["repositoryId"])
+    || !isUuid(value["watchId"])
+    || !isUuid(value["sourceObservationId"])
+    || !isSha256(value["sourceInventoryReceiptSha256"])) return null;
+  const priorIsBootstrap = value["priorGeneration"] === null
+    && value["priorSignedTreeNoteSha256"] === null;
+  const priorIsRetained = Number.isSafeInteger(value["priorGeneration"])
+    && (value["priorGeneration"] as number) >= 0
+    && isSha256(value["priorSignedTreeNoteSha256"]);
+  if (!priorIsBootstrap && !priorIsRetained) return null;
+  return {
+    kind: "go_modules_sumdb_observation_custody",
+    version: 1,
+    repositoryId: (value["repositoryId"] as string).toLowerCase(),
+    watchId: (value["watchId"] as string).toLowerCase(),
+    sourceObservationId: (value["sourceObservationId"] as string).toLowerCase(),
+    sourceInventoryReceiptSha256:
+      (value["sourceInventoryReceiptSha256"] as string).toLowerCase(),
+    priorSignedTreeNoteSha256: value["priorSignedTreeNoteSha256"] === null
+      ? null : (value["priorSignedTreeNoteSha256"] as string).toLowerCase(),
+    priorGeneration: value["priorGeneration"] as number | null,
+  };
+}
+
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_KIND = "acceptance_dependency_observation";
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_LEGACY_VERSION = 1;
 const ACCEPTANCE_DEPENDENCY_OBSERVATION_VERSION = 2;
@@ -11011,6 +11107,7 @@ const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE = "composer_lock_public_packagist_v1";
+const ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE = "go_root_public_proxy_lock_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
@@ -11026,11 +11123,16 @@ const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
 const ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "php", manager: "composer", profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "go", manager: "go-modules", profile: ACCEPTANCE_DEPENDENCY_GO_MODULES_PROFILE,
+};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const NORMALIZED_PYPI_PACKAGE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COMPOSER_PACKAGE_NAME = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
 const COMPOSER_STABLE_RELEASE = /^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})$/u;
 const COMPOSER_CONSTRAINT = /^(\^|~)?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/u;
+const GO_MODULE_NAME = /^(?=.{1,512}$)[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._~-]*[a-z0-9])?)+$/u;
+const GO_STABLE_RELEASE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
@@ -11143,6 +11245,25 @@ function composerCandidateIsValid(candidate: AcceptanceDependencyCandidate): boo
     && compareStableReleaseTuples(current, upper) < 0
     && compareStableReleaseTuples(target, upper) < 0;
 }
+
+function goStableReleaseTuple(value: string): [number, number, number] | null {
+  const matched = GO_STABLE_RELEASE.exec(value);
+  if (!matched) return null;
+  const tuple = matched.slice(1).map(Number) as [number, number, number];
+  return tuple.every(Number.isSafeInteger) ? tuple : null;
+}
+
+function goCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  const current = goStableReleaseTuple(candidate.currentVersion);
+  const target = goStableReleaseTuple(candidate.targetVersion);
+  return candidate.dependencyKind === "dependencies"
+    && GO_MODULE_NAME.test(candidate.package)
+    && candidate.specifier === candidate.currentVersion
+    && current !== null
+    && target !== null
+    && current[0] === target[0]
+    && compareStableReleaseTuples(target, current) > 0;
+}
 function yarnCandidateSpecifierIsValid(value: string): boolean {
   const exact = value.startsWith("^") || value.startsWith("~") ? value.slice(1) : value;
   return EXACT_SEMVER.test(exact);
@@ -11170,6 +11291,7 @@ function sameAcceptanceDependencyProfile(
 
 type AcceptanceDependencyObservationProfile = {
   identity: AcceptanceDependencyProfileIdentity;
+  packageManagerName?: string;
   candidateIsValid(candidate: AcceptanceDependencyCandidate): boolean;
   runtimeVersionIsValid(version: string): boolean;
   packageManagerVersionIsValid(version: string): boolean;
@@ -11281,6 +11403,18 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
     ],
   }],
+  ["go:go-modules:go_root_public_proxy_lock_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY,
+    packageManagerName: "go",
+    candidateIsValid: goCandidateIsValid,
+    runtimeVersionIsValid: (version) => stableSemverTuple(version) !== null,
+    packageManagerVersionIsValid: (version) => stableSemverTuple(version) !== null,
+    manifestPathIsValid: (path) => path === "go.mod",
+    lockfilePathIsValid: (path) => path === "go.sum",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === `osv:Go:${candidate.package}@${candidate.targetVersion}`,
+    expectedArgv: (candidate) => ["go", "get", `${candidate.package}@${candidate.targetVersion}`],
+  }],
 ]);
 
 function isStrictCurrentAcceptanceDependencyProfile(
@@ -11289,7 +11423,8 @@ function isStrictCurrentAcceptanceDependencyProfile(
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_COMPOSER_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY);
 }
 
 function isFrozenReplayEligibleAcceptanceDependencyProfile(
@@ -11660,7 +11795,9 @@ function acceptanceDependencyObservationDisposition(input: {
     add("package_manager_evidence_ambiguous");
   }
   if (supportedProfile && evidence.packageManager.disposition === "safe") {
-    if (evidence.packageManager.name !== profile.identity.manager) add("unsafe_package_manager");
+    if (evidence.packageManager.name !== (profile.packageManagerName ?? profile.identity.manager)) {
+      add("unsafe_package_manager");
+    }
     if (evidence.packageManager.profile !== profile.identity.profile) {
       add("unsafe_package_manager_profile");
     }
@@ -11669,7 +11806,7 @@ function acceptanceDependencyObservationDisposition(input: {
     }
   }
   if (supportedProfile && (
-    evidence.packageManager.name !== profile.identity.manager
+    evidence.packageManager.name !== (profile.packageManagerName ?? profile.identity.manager)
     || evidence.packageManager.profile !== profile.identity.profile
     || (evidence.packageManager.disposition === "safe"
       && (!evidence.packageManager.version
@@ -11822,7 +11959,10 @@ function acceptanceDependencyObservationFromEvent(input: {
  */
 export async function recordAcceptanceDependencyObservation(
   input: RecordAcceptanceDependencyObservationInput,
-  options: { claimToken?: string } = {},
+  options: {
+    claimToken?: string;
+    goSumdbCustody?: AcceptanceDependencyGoSumdbCustodyInput;
+  } = {},
 ): Promise<RecordAcceptanceDependencyObservationResult> {
   if (options.claimToken !== undefined
     && (!safeDependencyEvidenceText(options.claimToken, 256)
@@ -11832,6 +11972,12 @@ export async function recordAcceptanceDependencyObservation(
   const suppliedClaimTokenSha256 = options.claimToken === undefined
     ? null
     : createHash("sha256").update(options.claimToken, "utf8").digest("hex");
+  const goSumdbCustody = options.goSumdbCustody === undefined
+    ? null
+    : parseAcceptanceDependencyGoSumdbCustody(options.goSumdbCustody);
+  if (options.goSumdbCustody !== undefined && !goSumdbCustody) {
+    throw new AcceptanceDependencyObservationClaimError();
+  }
   const currentProfileParsed = parseRecordAcceptanceDependencyObservationInput(input);
   const parsed = currentProfileParsed
     ?? parseRecordAcceptanceDependencyObservationInput(input, { freezeUnsupportedProfile: true });
@@ -11845,6 +11991,21 @@ export async function recordAcceptanceDependencyObservation(
     || !sameAcceptanceDependencyProfile(parsed.security.identity, parsed.candidate.identity)
   )) {
     throw new AcceptanceDependencyObservationInvalidEvidenceError();
+  }
+  const isGoModulesObservation = sameAcceptanceDependencyProfile(
+    parsed.candidate.identity,
+    ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY,
+  ) && sameAcceptanceDependencyProfile(
+    parsed.runtime.identity,
+    ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY,
+  ) && sameAcceptanceDependencyProfile(
+    parsed.security.identity,
+    ACCEPTANCE_DEPENDENCY_GO_MODULES_IDENTITY,
+  );
+  if (isGoModulesObservation
+    ? options.claimToken === undefined || goSumdbCustody === null
+    : goSumdbCustody !== null) {
+    throw new AcceptanceDependencyObservationClaimError();
   }
 
   const candidateRecord = (await db.select({
@@ -12073,6 +12234,7 @@ export async function recordAcceptanceDependencyObservation(
         eq(acceptanceDependencyObservationClaims.headCycleId, record.currentPrHeadCycleId),
         eq(acceptanceDependencyObservationClaims.claimTokenSha256, suppliedClaimTokenSha256!),
       )).limit(1))[0];
+    let goManagerCustody: AcceptanceDependencyGoClaimManagerCustody | null = null;
     if (options.claimToken !== undefined) {
       const installation = (await tx.select({
         installationId: workspaces.githubInstallationId,
@@ -12105,6 +12267,121 @@ export async function recordAcceptanceDependencyObservation(
         || profile["capability"] !== "proposal_observation_only"
         || (claim.consumedAt === null && claim.leaseExpiresAt <= new Date())
         || (claim.consumedAt === null) !== (claim.observationEventId === null)) {
+        throw new AcceptanceDependencyObservationClaimError();
+      }
+      if (isGoModulesObservation) {
+        goManagerCustody = parseAcceptanceDependencyGoClaimManagerCustody(claim.managerCustody);
+        if (!goManagerCustody || !goSumdbCustody
+          || goManagerCustody.sourceInventoryReceiptSha256
+            !== goSumdbCustody.sourceInventoryReceiptSha256
+          || goManagerCustody.priorSignedTreeNoteSha256
+            !== goSumdbCustody.priorSignedTreeNoteSha256
+          || goManagerCustody.priorGeneration !== goSumdbCustody.priorGeneration) {
+          throw new AcceptanceDependencyObservationClaimError();
+        }
+      } else if (!isRecord(claim.managerCustody)
+        || Object.keys(claim.managerCustody).length !== 0) {
+        throw new AcceptanceDependencyObservationClaimError();
+      }
+    }
+
+    if (isGoModulesObservation) {
+      if (!claim || !goManagerCustody || !goSumdbCustody
+        || record.sourceReferences.length !== 1) {
+        throw new AcceptanceDependencyObservationClaimError();
+      }
+      const sourceReference = record.sourceReferences[0];
+      const { resolveDependencyObservationProposalSourceCustody } = await import(
+        "./dependency_draft_proposal_detail.js"
+      );
+      const sourceCustody = resolveDependencyObservationProposalSourceCustody(sourceReference);
+      const sourceObservation = (await tx.select().from(dependencyWatchObservations).where(and(
+        eq(dependencyWatchObservations.workspaceId, record.workspaceId),
+        eq(dependencyWatchObservations.watchId, goManagerCustody.watchId),
+        eq(dependencyWatchObservations.repositoryId, goManagerCustody.repositoryId),
+      )).orderBy(
+        desc(dependencyWatchObservations.observedAt),
+        desc(dependencyWatchObservations.createdAt),
+        desc(dependencyWatchObservations.id),
+      ).limit(1))[0];
+      const sourceInventoryReceipt = sourceObservation
+        ? validateGoDependencySourceInventoryReceipt(
+          sourceObservation.sourceInventoryReceipt,
+          goManagerCustody.sourceInventoryReceiptSha256,
+        )
+        : null;
+      const receiptManifest = sourceInventoryReceipt?.requiredFiles[0];
+      const receiptLockfile = sourceInventoryReceipt?.requiredFiles[1];
+      const sourceSelectedFileHashes = sourceCustody?.selectedFileHashes as
+        | Record<string, string>
+        | undefined;
+      if (!sourceCustody
+        || sourceCustody.repositoryId !== goManagerCustody.repositoryId
+        || sourceCustody.repositoryName !== record.repo
+        || sourceCustody.watchId !== goManagerCustody.watchId
+        || sourceCustody.observationId !== goManagerCustody.sourceObservationId
+        || sourceCustody.sourceInventoryReceiptSha256
+          !== goManagerCustody.sourceInventoryReceiptSha256
+        || sourceCustody.baselineSha !== binding.headSha
+        || sourceCustody.manifestPath !== parsed.manifest.path
+        || sourceCustody.lockfilePath !== parsed.lockfile.path
+        || sourceCustody.candidate.package !== parsed.candidate.package
+        || sourceCustody.candidate.dependency_kind !== parsed.candidate.dependencyKind
+        || sourceCustody.candidate.specifier !== parsed.candidate.specifier
+        || sourceCustody.candidate.current_version !== parsed.candidate.currentVersion
+        || sourceCustody.candidate.target_version !== parsed.candidate.targetVersion
+        || sourceCustody.candidate.baseline_sha !== binding.headSha
+        || sourceCustody.profile.ecosystem !== parsed.candidate.identity.ecosystem
+        || sourceCustody.profile.manager !== parsed.candidate.identity.manager
+        || sourceCustody.profile.profile !== parsed.candidate.identity.profile
+        || sourceCustody.profile.capability !== "proposal_observation_only"
+        || !sourceObservation
+        || sourceObservation.id !== goManagerCustody.sourceObservationId
+        || !sourceInventoryReceipt
+        || sourceInventoryReceipt.authority.repository !== record.repo
+        || sourceInventoryReceipt.authority.requestedRef !== binding.headSha
+        || sourceInventoryReceipt.authority.commitSha !== binding.headSha
+        || receiptManifest?.path !== parsed.manifest.path
+        || receiptManifest.blobSha !== parsed.manifest.blobSha
+        || receiptManifest.contentSha256 !== sourceSelectedFileHashes?.[parsed.manifest.path]
+        || receiptLockfile?.path !== parsed.lockfile.path
+        || receiptLockfile.blobSha !== parsed.lockfile.blobSha
+        || receiptLockfile.contentSha256 !== sourceSelectedFileHashes?.[parsed.lockfile.path]
+        || sourceObservation.status !== "candidates"
+        || sourceObservation.baselineSha !== binding.headSha
+        || sourceObservation.observationKey !== sourceCustody.observationKey
+        || sourceObservation.candidateFingerprint !== sourceCustody.candidateFingerprint
+        || sourceObservation.sourceInventoryReceiptSha256
+          !== goManagerCustody.sourceInventoryReceiptSha256
+        || !isDeepStrictEqual(sourceObservation.selectedFileHashes, sourceCustody.selectedFileHashes)
+        || !isDeepStrictEqual(sourceObservation.candidates, [sourceCustody.candidate])) {
+        throw new AcceptanceDependencyObservationClaimError();
+      }
+      let retained;
+      try {
+        retained = await retainGoSumdbSignedTreeNoteInTransaction(tx, {
+          workspaceId: record.workspaceId,
+          watchId: goManagerCustody.watchId,
+          repositoryId: goManagerCustody.repositoryId,
+          sourceObservationId: goManagerCustody.sourceObservationId,
+          expectedPriorSignedTreeNoteSha256: goSumdbCustody.priorSignedTreeNoteSha256,
+          signedTreeNoteBase64: goSumdbCustody.successorSignedTreeNoteBase64,
+          signedTreeNoteSha256: goSumdbCustody.successorSignedTreeNoteSha256,
+        });
+      } catch (error) {
+        if (error instanceof GoSumdbNoteCustodyValidationError
+          || error instanceof GoSumdbNoteCustodyAuthorizationError
+          || error instanceof GoSumdbNoteCustodyConflictError) {
+          throw new AcceptanceDependencyObservationClaimError();
+        }
+        throw error;
+      }
+      const expectedGeneration = goSumdbCustody.priorGeneration === null
+        ? 0 : goSumdbCustody.priorGeneration + 1;
+      if (retained.note.expectedPriorGeneration !== goSumdbCustody.priorGeneration
+        || retained.note.generation !== expectedGeneration
+        || retained.note.sourceInventoryReceiptSha256
+          !== goSumdbCustody.sourceInventoryReceiptSha256) {
         throw new AcceptanceDependencyObservationClaimError();
       }
     }

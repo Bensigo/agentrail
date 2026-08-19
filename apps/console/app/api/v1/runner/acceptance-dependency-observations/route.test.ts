@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 
 vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptanceDependencyObservation: vi.fn(),
@@ -131,6 +132,43 @@ function npmRequestBody() {
   value.manifest.path = "package.json";
   value.lockfile.path = "package-lock.json";
   value.security.identity = identity;
+  return value;
+}
+
+function goModulesRequestBody() {
+  const value: typeof VALID & { sumdbCustody?: Record<string, unknown> } = structuredClone(VALID);
+  const identity = {
+    ecosystem: "go", manager: "go-modules", profile: "go_root_public_proxy_lock_v1",
+  };
+  Object.assign(value.candidate, {
+    identity,
+    package: "gopkg.in/yaml.v3",
+    dependencyKind: "dependencies",
+    specifier: "v3.0.0",
+    currentVersion: "v3.0.0",
+    targetVersion: "v3.0.1",
+  });
+  Object.assign(value.runtime, { identity, version: "1.23.4" });
+  Object.assign(value.packageManager, {
+    name: "go",
+    version: "1.23.4",
+    profile: "go_root_public_proxy_lock_v1",
+    updateArgv: ["go", "get", "gopkg.in/yaml.v3@v3.0.1"],
+  });
+  Object.assign(value.manifest, { path: "go.mod" });
+  Object.assign(value.lockfile, { path: "go.sum" });
+  Object.assign(value.security, {
+    identity,
+    reference: "osv:Go:gopkg.in/yaml.v3@v3.0.1",
+  });
+  const successor = Buffer.from("opaque verified successor signed note", "utf8");
+  value.sumdbCustody = {
+    priorGeneration: null,
+    priorSignedTreeNoteSha256: null,
+    successorSignedTreeNoteBase64: successor.toString("base64"),
+    successorSignedTreeNoteSha256: createHash("sha256").update(successor).digest("hex"),
+    sourceInventoryReceiptSha256: "2".repeat(64),
+  };
   return value;
 }
 
@@ -347,6 +385,19 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(npm, { claimToken: CLAIM_TOKEN });
     expect(JSON.stringify(await response.json())).not.toMatch(/install|save-prod|security|approv/iu);
+  });
+
+  it("passes Go evidence and its opaque sumdb envelope separately to the claim authority", async () => {
+    const raw = goModulesRequestBody();
+    const sumdbCustody = raw.sumdbCustody;
+    delete raw.sumdbCustody;
+    const response = await POST(request({ ...raw, sumdbCustody }));
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(raw, {
+      claimToken: CLAIM_TOKEN,
+      goSumdbCustody: sumdbCustody,
+    });
   });
 
   it("passes one exact Yarn 4 lockfile-only observation without caller configuration authority", async () => {

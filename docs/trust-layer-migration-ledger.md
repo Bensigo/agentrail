@@ -602,8 +602,32 @@ intentional watch or workspace deletion. PostgreSQL deliberately stores no
 caller-parsed tree size or root and does not claim to authenticate the note,
 record inclusion, or consistency. A later Python runtime slice must reload the
 raw prior note through the pinned-key verifier, authenticate the new lookup and
-proofs, then advance this custody. Go remains outside draft, accepted evidence,
-approval, Pack, builder, delivery, and managed execution authority.
+proofs, then advance this custody. At that checkpoint, Go remained outside
+draft, accepted evidence, approval, Pack, builder, delivery, and managed
+execution authority.
+
+The bounded Go Modules producer follow-on makes only the accepted
+`go_root_public_proxy_lock_v1` observation profile operational in source/test.
+A workspace-bound runner key can claim one server-selected current Record and
+active Pack. The worker receives an exact-repository `contents:read` GitHub
+token, revalidates the persisted exact-head source-inventory receipt and root
+`go.mod`/`go.sum` bytes, runs only `go version`, verifies current and target
+releases through the pinned-key checksum-database timeline, performs one
+bounded OSV query, and submits through the canonical claim-bound observation
+route. The `0106` manager-custody migration follows the `0105` claim table at
+journal index 111 and preserves the exact prior signed-note generation and
+source receipt until final admission atomically consumes the lease and stores
+the authenticated successor note. A later exact source observation advances
+from that retained authenticated note while binding the successor to the new
+source observation and inventory receipt. Remote Console transport requires HTTPS;
+plaintext HTTP is limited to loopback development.
+
+This does not run `go get`, download modules through the Go command, build or
+test the repository, approve a proposal, select or invoke a builder, mutate a
+pull request, merge, or deploy. The displayed `go get` argv is bounded plan
+metadata, not executed authority. No live GitHub, checksum-database, or OSV
+request, deployed worker pickup, external-builder re-entry, or customer path
+has been observed.
 
 Poetry was audited rather than admitted. Its non-installing `update <package>
 --lock` command still has no exact-target argument and Poetry 2.4.1 can fall

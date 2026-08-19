@@ -1,5 +1,5 @@
--- Stacked after #1736's reserved 0105 claim table. Before merge, rebase and
--- renumber after #1735's 0101/0102 plus #1737/0103 and #1738/0104.
+-- Stacked after direct MCP 0101/0102, Context Pack regeneration 0103,
+-- exact-Pack Claude delivery 0104, and the pnpm claim table 0105.
 ALTER TABLE "acceptance_dependency_observation_claims"
   ADD COLUMN IF NOT EXISTS "manager_custody" jsonb NOT NULL DEFAULT '{}'::jsonb;
 --> statement-breakpoint
@@ -13,6 +13,7 @@ ALTER TABLE "acceptance_dependency_observation_claims"
     AND "acceptance_contract_version" > 0
     AND "acceptance_contract_sha256" ~ '^[A-Fa-f0-9]{64}$'
     AND "compiled_pack_sha256" ~ '^[A-Fa-f0-9]{64}$'
+    AND "github_installation_identity_sha256" ~ '^[a-f0-9]{64}$'
     AND "candidate_fingerprint" ~ '^sha256:[a-f0-9]{64}$'
     AND "claim_token_sha256" ~ '^[a-f0-9]{64}$'
     AND jsonb_typeof("candidate") = 'object'

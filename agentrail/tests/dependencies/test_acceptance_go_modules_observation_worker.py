@@ -143,9 +143,11 @@ class FakeHttp:
         self.osv = {"vulns": []} if osv is None else osv
         self.observation: Optional[dict] = None
         self.calls: list[tuple[str, str, Optional[bytes]]] = []
+        self.headers: list[dict[str, str]] = []
 
     def __call__(self, method: str, url: str, headers: dict[str, str], body: Optional[bytes], max_bytes: int) -> HttpResponse:
         self.calls.append((method, url, body))
+        self.headers.append(headers)
         if url.endswith("/api/v1/runner/acceptance-dependency-observation-work/claim"):
             return HttpResponse(200, json.dumps(self.descriptor).encode(), url)
         if "/contents/go.mod?ref=" in url:
@@ -161,7 +163,26 @@ class FakeHttp:
 
     @staticmethod
     def _github(url: str, content: bytes) -> HttpResponse:
-        payload = {"type": "file", "encoding": "base64", "size": len(content), "sha": git_blob_object_id(content, hash_hex_length=40), "content": base64.b64encode(content).decode()}
+        path = url.partition("/contents/")[2].partition("?ref=")[0]
+        blob_sha = git_blob_object_id(content, hash_hex_length=40)
+        encoded = base64.b64encode(content).decode()
+        wrapped = "\n".join(encoded[index:index + 60] for index in range(0, len(encoded), 60)) + "\n"
+        git_url = f"https://api.github.com/repos/acme/widgets/git/blobs/{blob_sha}"
+        html_url = f"https://github.com/acme/widgets/blob/{HEAD_SHA}/{path}"
+        payload = {
+            "type": "file",
+            "encoding": "base64",
+            "size": len(content),
+            "sha": blob_sha,
+            "content": wrapped,
+            "name": path,
+            "path": path,
+            "url": url,
+            "html_url": html_url,
+            "git_url": git_url,
+            "download_url": f"https://raw.githubusercontent.com/acme/widgets/{HEAD_SHA}/{path}",
+            "_links": {"self": url, "git": git_url, "html": html_url},
+        }
         return HttpResponse(200, json.dumps(payload).encode(), url)
 
 
@@ -180,6 +201,8 @@ def test_claims_exact_go_work_and_posts_verified_observation_with_successor_note
     )
 
     assert worker.run_once() == "posted"
+    assert json.loads(http.calls[0][2] or b"{}") == {"workerId": "worker:go-1"}
+    assert http.headers[0]["authorization"] == "Bearer console-token"
     assert transport.calls == [(MODULE, CURRENT), (MODULE, TARGET)]
     assert http.observation is not None
     assert http.observation["candidate"]["identity"] == {"ecosystem": "go", "manager": "go-modules", "profile": "go_root_public_proxy_lock_v1"}
@@ -196,6 +219,38 @@ def test_claims_exact_go_work_and_posts_verified_observation_with_successor_note
     assert hashlib.sha256(successor).hexdigest() == custody["successorSignedTreeNoteSha256"]
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["space", "tab", "invalid_alphabet", "invalid_padding", "malformed_json", "sha_drift"],
+)
+def test_refuses_non_github_base64_or_malformed_blob_custody(mutation: str) -> None:
+    class MutatedGithubHttp(FakeHttp):
+        @staticmethod
+        def _github(url: str, content: bytes) -> HttpResponse:
+            response = FakeHttp._github(url, content)
+            if mutation == "malformed_json":
+                return HttpResponse(response.status, b"{", response.final_url)
+            payload = json.loads(response.body)
+            if mutation == "space":
+                payload["content"] = payload["content"].replace("\n", " \n", 1)
+            elif mutation == "tab":
+                payload["content"] = payload["content"].replace("\n", "\t\n", 1)
+            elif mutation == "invalid_alphabet":
+                payload["content"] = "*" + payload["content"][1:]
+            elif mutation == "invalid_padding":
+                payload["content"] = payload["content"].replace("\n", "") + "="
+            elif mutation == "sha_drift":
+                payload["sha"] = "0" * 40
+            else:  # pragma: no cover - the parameter table is closed above.
+                raise AssertionError(f"unknown mutation {mutation}")
+            return HttpResponse(response.status, json.dumps(payload).encode(), response.final_url)
+
+    http = MutatedGithubHttp()
+    with pytest.raises(SourceCustodyError):
+        _worker(http).run_once()
+    assert http.observation is None
+
+
 def _worker(http: FakeHttp, transport: Optional[InjectedVerifiedTransport] = None) -> GoModulesObservationWorker:
     return GoModulesObservationWorker(
         WorkerConfig(
@@ -208,6 +263,29 @@ def _worker(http: FakeHttp, transport: Optional[InjectedVerifiedTransport] = Non
         run_command=_command,
         sumdb_transport=transport or InjectedVerifiedTransport(),
     )
+
+
+def test_rejects_remote_plaintext_console_transport_before_claiming() -> None:
+    config = WorkerConfig(
+        "http://console.example.test",
+        "workspace-api-key",
+        _descriptor()["binding"]["workspaceId"],
+        "worker:go-1",
+    )
+    with pytest.raises(ValueError, match="worker configuration"):
+        GoModulesObservationWorker(
+            config,
+            request=FakeHttp(),
+            run_command=_command,
+            sumdb_transport=InjectedVerifiedTransport(),
+        )
+    with pytest.raises(ValueError, match="worker configuration"):
+        ServerSelectedObservationWorker(
+            config,
+            request=FakeHttp(),
+            run_command=_command,
+            sumdb_transport=InjectedVerifiedTransport(),
+        )
 
 
 def test_refuses_noncanonical_persisted_source_receipt_without_posting() -> None:

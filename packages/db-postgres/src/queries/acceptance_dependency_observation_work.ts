@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   acceptanceCompiledContextPacks,
@@ -337,8 +337,6 @@ export async function claimAcceptanceDependencyObservationWork(
           eq(dependencyWatchGoSumdbSignedTreeNotes.watchId, source.watchId),
           eq(dependencyWatchGoSumdbSignedTreeNotes.repositoryId, source.repositoryId),
         )).orderBy(desc(dependencyWatchGoSumdbSignedTreeNotes.generation)).limit(1))[0] ?? null;
-        if (note && (note.sourceInventoryReceiptSha256 !== sourceInventoryReceiptSha256
-          || note.sourceObservationId !== source.observationId)) continue;
         goManagerCustody = {
           kind: "go_modules_sumdb_observation_custody",
           version: 1,

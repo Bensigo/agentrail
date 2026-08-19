@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 from typing import Optional
 
 from agentrail.dependencies.acceptance_pnpm_observation_worker import (
@@ -30,6 +32,12 @@ PNPM_IDENTITY = {
     "manager": "pnpm",
     "profile": "pnpm_lockfile_only_v1",
 }
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def _valid_text(value: object, maximum: int) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= maximum and value == value.strip() \
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 class ServerSelectedObservationWorker:
@@ -43,7 +51,18 @@ class ServerSelectedObservationWorker:
         run_command,
         sumdb_transport=None,
     ) -> None:
-        self.config = config
+        parsed = urllib.parse.urlsplit(config.console_url)
+        loopback_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (parsed.scheme != "https" and not loopback_http) or not parsed.netloc \
+                or parsed.username or parsed.password or parsed.query or parsed.fragment \
+                or not UUID.fullmatch(config.workspace_id) \
+                or not _valid_text(config.workspace_api_key, 4096) \
+                or not _valid_text(config.worker_id, 128):
+            raise ValueError("worker configuration is invalid")
+        self.config = WorkerConfig(
+            config.console_url.rstrip("/"), config.workspace_api_key,
+            config.workspace_id.lower(), config.worker_id,
+        )
         self.request = request
         self.run_command = run_command
         self.sumdb_transport = sumdb_transport
@@ -51,14 +70,13 @@ class ServerSelectedObservationWorker:
     def run_once(self) -> str:
         claim_url = self.config.console_url.rstrip("/") + "/api/v1/runner/acceptance-dependency-observation-work/claim"
         claim_body = json.dumps({
-            "workspaceId": self.config.workspace_id,
             "workerId": self.config.worker_id,
         }, separators=(",", ":")).encode()
         claim = self.request(
             "POST",
             claim_url,
             {
-                "authorization": f"Bearer {self.config.console_token}",
+                "authorization": f"Bearer {self.config.workspace_api_key}",
                 "content-type": "application/json",
                 "user-agent": "AgentRail-dependency-evidence/1",
             },

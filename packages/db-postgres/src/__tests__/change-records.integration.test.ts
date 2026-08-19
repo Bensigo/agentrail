@@ -8122,6 +8122,11 @@ describe.skipIf(!DB_AVAILABLE)(
 
     it("claims one exact Go Modules task with source receipt and retained sumdb note custody", async () => {
       const headSha = "5".repeat(40);
+      await db.update(workspaces).set({
+        githubInstallationId: 8_002,
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
       let repository = (await db.select().from(repositories).where(and(
         eq(repositories.workspaceId, wsId), eq(repositories.name, "acme/widgets"),
       )).limit(1))[0];
@@ -8368,6 +8373,109 @@ describe.skipIf(!DB_AVAILABLE)(
         claimToken: claimed.claim.token,
         goSumdbCustody: sumdbCustody,
       })).resolves.toMatchObject({ kind: "replayed" });
+
+      const nextHeadSha = "6".repeat(40);
+      const nextObservationId = randomUUID();
+      const nextProposal = goProposalFixtureCustody({
+        headSha: nextHeadSha,
+        repositoryId: repository.id,
+        watchId,
+        observationId: nextObservationId,
+      });
+      await db.insert(dependencyWatchObservations).values({
+        id: nextObservationId,
+        workspaceId: wsId,
+        watchId,
+        repositoryId: repository.id,
+        trigger: "scheduled",
+        baselineSha: nextHeadSha,
+        selectedFileHashes: nextProposal.source.selectedFileHashes,
+        observationKey: nextProposal.observationKey,
+        candidateFingerprint: nextProposal.candidate.fingerprint,
+        sourceInventoryReceipt: nextProposal.receipt,
+        sourceInventoryReceiptSha256: nextProposal.sourceInventoryReceiptSha256,
+        status: "candidates",
+        candidates: [nextProposal.candidate],
+        observedAt: new Date(Date.now() + 20_000),
+      });
+      const nextFixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-go-producer-claim-next-source",
+        prNumber: 380,
+        headSha: nextHeadSha,
+        manifestPath: "go.mod",
+        lockfilePath: "go.sum",
+        manifestContent: nextProposal.manifestContent,
+        lockfileContent: nextProposal.lockfileContent,
+        contractOverrides: nextProposal.contract,
+        originChannel: "dependency_watch",
+        sourceReferences: [nextProposal.source],
+        criterionId: "DEP-PROPOSAL-CUSTODY",
+        criterionText: nextProposal.criterionText,
+      });
+
+      const nextClaim = await claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-go-next-source-integration",
+      });
+      expect(nextClaim).toMatchObject({
+        binding: {
+          recordId: nextFixture.draft.record.id,
+          headSha: nextHeadSha,
+          compiledPack: { id: nextFixture.pack.id },
+        },
+        source: {
+          inventory: {
+            identitySha256: nextProposal.sourceInventoryReceiptSha256,
+          },
+          sumdb: {
+            priorSignedTreeNoteBase64: successorNote.toString("base64"),
+            priorSignedTreeNoteSha256: successorNoteSha256,
+            generation: 1,
+          },
+        },
+      });
+      if (!nextClaim) throw new Error("expected next-source Go producer claim");
+      const nextEvidence = goAcceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: nextFixture.draft.record.id,
+        compiledPackId: nextFixture.pack.id,
+        headSha: nextHeadSha,
+        manifestBlobSha: nextFixture.manifestBlobSha,
+        lockfileBlobSha: nextFixture.lockfileBlobSha!,
+      });
+      const nextSuccessorNote = Buffer.from(
+        "opaque verified second successor signed tree note",
+        "utf8",
+      );
+      const nextSuccessorNoteSha256 = createHash("sha256")
+        .update(nextSuccessorNote).digest("hex");
+      await expect(recordAcceptanceDependencyObservation(nextEvidence, {
+        claimToken: nextClaim.claim.token,
+        goSumdbCustody: {
+          priorGeneration: 1,
+          priorSignedTreeNoteSha256: successorNoteSha256,
+          successorSignedTreeNoteBase64: nextSuccessorNote.toString("base64"),
+          successorSignedTreeNoteSha256: nextSuccessorNoteSha256,
+          sourceInventoryReceiptSha256: nextProposal.sourceInventoryReceiptSha256,
+        },
+      })).resolves.toMatchObject({ kind: "recorded", observation: { status: "observed" } });
+      const allRetainedNotes = (await db.select()
+        .from(dependencyWatchGoSumdbSignedTreeNotes)
+        .where(and(
+          eq(dependencyWatchGoSumdbSignedTreeNotes.workspaceId, wsId),
+          eq(dependencyWatchGoSumdbSignedTreeNotes.watchId, watchId),
+        )))
+        .sort((left, right) => left.generation - right.generation);
+      expect(allRetainedNotes).toHaveLength(3);
+      expect(allRetainedNotes[2]).toMatchObject({
+        generation: 2,
+        sourceObservationId: nextObservationId,
+        sourceInventoryReceiptSha256: nextProposal.sourceInventoryReceiptSha256,
+        expectedPriorGeneration: 1,
+        expectedPriorSignedTreeNoteSha256: successorNoteSha256,
+        signedTreeNoteSha256: nextSuccessorNoteSha256,
+      });
       await deleteGoSumdbSignedTreeNoteCustodyForWatchTeardown({
         workspaceId: wsId, watchId, repositoryId: repository.id,
       });

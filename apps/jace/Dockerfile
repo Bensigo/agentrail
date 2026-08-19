@@ -124,6 +124,10 @@ COPY --from=builder /app/.output ./.output
 # in the builder stage — carry it into runtime or `eve start` ENOENT-crashes.
 COPY --from=builder /app/.eve ./.eve
 COPY --from=builder /app/package.json ./package.json
+# Standalone operational entrypoints are not part of Eve's compiled output.
+# Keep them in the runtime image so Railway can run the least-privilege
+# Context Pack regeneration worker without starting the coordinator.
+COPY --from=builder /app/scripts ./scripts
 # agent/instructions.md (persona) and agent/skills/**/SKILL.md are loaded by
 # Eve's filesystem convention at runtime, not fully inlined at build time in
 # every case — ship the source tree alongside .output rather than assume.

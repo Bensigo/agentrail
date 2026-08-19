@@ -135,12 +135,14 @@ test("execute rejects oversized or widened terminal responses", async () => {
 });
 
 test("standalone worker is default-off and not launched inside Eve instrumentation", async () => {
-  const [entrypoint, instrumentation] = await Promise.all([
+  const [entrypoint, instrumentation, dockerfile] = await Promise.all([
     readFile(new URL("../scripts/context-pack-regeneration-worker.mjs", import.meta.url), "utf8"),
     readFile(new URL("../agent/instrumentation.ts", import.meta.url), "utf8"),
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
   assert.match(entrypoint, /JACE_CONTEXT_PACK_REGENERATION_WORKER/);
   assert.match(entrypoint, /!== "1"/);
   assert.match(entrypoint, /assertContextPackRegenerationWorkerCredentialIsolation\(process\.env\)[\s\S]*buildContextPackRegenerationWorker\(process\.env\)\.start\(\)/u);
   assert.doesNotMatch(instrumentation, /context_pack_regeneration_worker/);
+  assert.match(dockerfile, /COPY --from=builder \/app\/scripts \.\/scripts/u);
 });

@@ -12,6 +12,15 @@ export const CONTEXT7_MCP_URL = "https://mcp.context7.com/mcp";
 /** Context7's two read-only tools: resolve a library id, then fetch its docs. */
 export const CONTEXT7_TOOLS = ["resolve-library-id", "query-docs"];
 
+/** Resolve the workspace-brokered Context7 endpoint when the host injects one. */
+export function resolveContext7Url(env = {}) {
+  const raw =
+    typeof env.JACE_MCP_CONTEXT7_URL === "string"
+      ? env.JACE_MCP_CONTEXT7_URL.trim()
+      : "";
+  return raw || CONTEXT7_MCP_URL;
+}
+
 /**
  * Default Playwright MCP endpoint for local dev
  * (`npx @playwright/mcp --headless --port 8931`). Production overrides it with
@@ -79,6 +88,11 @@ export function resolvePlaywrightUrl(env = {}) {
  * whitespace value is treated as unset.
  */
 export function resolveContext7Headers(env = {}) {
+  const accessToken =
+    typeof env.JACE_MCP_CONTEXT7_ACCESS_TOKEN === "string"
+      ? env.JACE_MCP_CONTEXT7_ACCESS_TOKEN.trim()
+      : "";
+  if (accessToken) return { Authorization: `Bearer ${accessToken}` };
   const key =
     typeof env.CONTEXT7_API_KEY === "string" ? env.CONTEXT7_API_KEY.trim() : "";
   return key ? { CONTEXT7_API_KEY: key } : {};

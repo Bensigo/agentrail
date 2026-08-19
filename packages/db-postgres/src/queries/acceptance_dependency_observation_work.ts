@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   acceptanceCompiledContextPacks,
@@ -110,33 +110,26 @@ async function currentCompiledPack(
     acceptanceContractSha256: string;
   },
 ) {
-  const rows = await tx.select({
-    pack: acceptanceCompiledContextPacks,
-    snapshot: acceptanceContextPackSnapshots,
-  }).from(acceptanceCompiledContextPacks).innerJoin(
-    acceptanceContextPackSnapshots,
-    and(
-      eq(acceptanceContextPackSnapshots.id, acceptanceCompiledContextPacks.sourceSnapshotId),
-      eq(acceptanceContextPackSnapshots.workspaceId, acceptanceCompiledContextPacks.workspaceId),
-    ),
-  ).where(and(
-    eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+  const snapshots = await tx.select().from(acceptanceContextPackSnapshots).where(and(
+    eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
     eq(acceptanceContextPackSnapshots.recordId, input.recordId),
-    eq(acceptanceContextPackSnapshots.repo, input.repo),
-    eq(acceptanceContextPackSnapshots.prNumber, input.prNumber),
-    eq(acceptanceContextPackSnapshots.expectedHeadSha, input.headSha),
     eq(acceptanceContextPackSnapshots.reviewJobId, input.headCycleId),
-    eq(acceptanceContextPackSnapshots.acceptanceContractId, input.acceptanceContractId),
-    eq(acceptanceContextPackSnapshots.acceptanceContractVersion, input.acceptanceContractVersion),
-    eq(acceptanceContextPackSnapshots.acceptanceContractSha256, input.acceptanceContractSha256),
-    eq(acceptanceContextPackSnapshots.status, "admitted"),
     eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+  )).limit(2);
+  if (snapshots.length !== 1) return null;
+  const snapshot = snapshots[0]!;
+  if (snapshot.repo !== input.repo || snapshot.prNumber !== input.prNumber
+    || snapshot.expectedHeadSha !== input.headSha
+    || snapshot.acceptanceContractId !== input.acceptanceContractId
+    || snapshot.acceptanceContractVersion !== input.acceptanceContractVersion
+    || snapshot.acceptanceContractSha256 !== input.acceptanceContractSha256
+    || snapshot.status !== "admitted") return null;
+  const packs = await tx.select().from(acceptanceCompiledContextPacks).where(and(
+    eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+    eq(acceptanceCompiledContextPacks.sourceSnapshotId, snapshot.id),
     eq(acceptanceCompiledContextPacks.generationStatus, "active"),
-  )).orderBy(
-    desc(acceptanceCompiledContextPacks.createdAt),
-    desc(acceptanceCompiledContextPacks.id),
-  ).limit(2);
-  return rows.length === 1 ? rows[0]! : null;
+  )).limit(2);
+  return packs.length === 1 ? { pack: packs[0]!, snapshot } : null;
 }
 
 export async function releaseAcceptanceDependencyObservationClaim(input: {

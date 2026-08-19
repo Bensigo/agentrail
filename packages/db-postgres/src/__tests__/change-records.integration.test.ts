@@ -200,6 +200,13 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages,
                to_regclass('public.acceptance_brief_bindings') AS acceptance_brief_bindings
                ,to_regclass('public.acceptance_dependency_builder_deliveries') AS acceptance_dependency_builder_deliveries
+               ,to_regclass('public.acceptance_dependency_observation_claims') AS acceptance_dependency_observation_claims
+               ,EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'acceptance_dependency_observation_claims'
+                   AND column_name = 'github_installation_identity_sha256'
+               ) AS acceptance_dependency_observation_claim_identity
       `)
     ) as Array<{
       change_records: string | null;
@@ -223,6 +230,8 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_intake_messages: string | null;
       acceptance_brief_bindings: string | null;
       acceptance_dependency_builder_deliveries: string | null;
+      acceptance_dependency_observation_claims: string | null;
+      acceptance_dependency_observation_claim_identity: boolean;
     }>;
     return (
       rows[0]?.change_records === "change_records" &&
@@ -246,6 +255,8 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages" &&
       rows[0]?.acceptance_brief_bindings === "acceptance_brief_bindings"
       && rows[0]?.acceptance_dependency_builder_deliveries === "acceptance_dependency_builder_deliveries"
+      && rows[0]?.acceptance_dependency_observation_claims === "acceptance_dependency_observation_claims"
+      && rows[0]?.acceptance_dependency_observation_claim_identity === true
     );
   } catch {
     return false;
@@ -7657,6 +7668,46 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceContextPackSnapshots).set({ generationStatus: "active" })
         .where(eq(acceptanceContextPackSnapshots.id, fixture.sourceSnapshot.id));
 
+      const ambiguousSnapshotId = randomUUID();
+      const ambiguousSnapshot = {
+        ...fixture.sourceSnapshot,
+        id: ambiguousSnapshotId,
+        status: "not_proven" as const,
+        reason: "Additional active snapshot is not proven.",
+        baseSha: null,
+        mergeBaseSha: null,
+        headTreeSha: null,
+        baseIndex: null,
+        overlay: null,
+        compilerVersion: "ambiguous-active-snapshot-compiler",
+        packetSetSha256: "9".repeat(64),
+        createdAt: new Date(Date.now() + 500),
+        updatedAt: new Date(Date.now() + 500),
+      };
+      await db.insert(acceptanceContextPackSnapshots).values(ambiguousSnapshot);
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-ambiguous-active-snapshot",
+      })).resolves.toBeNull();
+      await db.delete(acceptanceContextPackSnapshots)
+        .where(eq(acceptanceContextPackSnapshots.id, ambiguousSnapshotId));
+
+      const mismatchedSnapshotId = randomUUID();
+      const mismatchedSnapshot = {
+        ...ambiguousSnapshot,
+        id: mismatchedSnapshotId,
+        repo: "other/widgets",
+        compilerVersion: "mismatched-active-snapshot-compiler",
+        packetSetSha256: "8".repeat(64),
+      };
+      await db.insert(acceptanceContextPackSnapshots).values(mismatchedSnapshot);
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-mismatched-active-snapshot",
+      })).resolves.toBeNull();
+      await db.delete(acceptanceContextPackSnapshots)
+        .where(eq(acceptanceContextPackSnapshots.id, mismatchedSnapshotId));
+
       const ambiguousPackId = randomUUID();
       await db.insert(acceptanceCompiledContextPacks).values({
         ...fixture.pack,
@@ -7736,6 +7787,18 @@ describe.skipIf(!DB_AVAILABLE)(
         lockfileBlobSha: fixture.lockfileBlobSha,
       });
       evidence.packageManager.version = "11.19.0";
+
+      await db.insert(acceptanceContextPackSnapshots).values(ambiguousSnapshot);
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+        .resolves.toEqual({ kind: "not_ready", reason: "invalid_compiled_pack_custody" });
+      await db.delete(acceptanceContextPackSnapshots)
+        .where(eq(acceptanceContextPackSnapshots.id, ambiguousSnapshotId));
+
+      await db.insert(acceptanceContextPackSnapshots).values(mismatchedSnapshot);
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+        .resolves.toEqual({ kind: "not_ready", reason: "invalid_compiled_pack_custody" });
+      await db.delete(acceptanceContextPackSnapshots)
+        .where(eq(acceptanceContextPackSnapshots.id, mismatchedSnapshotId));
 
       await db.update(workspaces).set(installationB).where(eq(workspaces.id, wsId));
       await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))

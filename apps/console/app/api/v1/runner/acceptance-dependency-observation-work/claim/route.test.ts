@@ -1,21 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   claimAcceptanceDependencyObservationWork: vi.fn(),
   getGithubDependencyObservationCredential: vi.fn(),
   releaseAcceptanceDependencyObservationClaim: vi.fn(),
 }));
+vi.mock("../../../../../../lib/bearer-auth", () => ({ requireBearer: vi.fn() }));
 
 import {
   claimAcceptanceDependencyObservationWork,
   getGithubDependencyObservationCredential,
   releaseAcceptanceDependencyObservationClaim,
 } from "@agentrail/db-postgres";
+import { requireBearer } from "../../../../../../lib/bearer-auth";
 import { POST } from "./route";
 
-const SECRET = "jace-shared-secret-abc123";
-const ORIGINAL_SECRET = process.env.JACE_CONSOLE_TOKEN;
+const SECRET = "ar_workspace_runner_key";
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const INSTALLATION_IDENTITY = "2".repeat(64);
 const descriptor = {
@@ -75,7 +76,12 @@ function request(body: unknown, auth = true): NextRequest {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  process.env.JACE_CONSOLE_TOKEN = SECRET;
+  vi.mocked(requireBearer).mockResolvedValue({
+    apiKeyId: "88888888-8888-4888-8888-888888888888",
+    workspaceId: WORKSPACE_ID,
+    teamId: null,
+    kind: "fleet",
+  } as never);
   vi.mocked(getGithubDependencyObservationCredential).mockResolvedValue({
     ok: true,
     token: "github-installation-token",
@@ -86,14 +92,12 @@ beforeEach(() => {
   vi.mocked(claimAcceptanceDependencyObservationWork).mockResolvedValue(null as never);
 });
 
-afterEach(() => {
-  if (ORIGINAL_SECRET === undefined) delete process.env.JACE_CONSOLE_TOKEN;
-  else process.env.JACE_CONSOLE_TOKEN = ORIGINAL_SECRET;
-});
-
 describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
   it("fails closed before tenant or claim reads without runner auth", async () => {
-    const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }, false));
+    vi.mocked(requireBearer).mockResolvedValue(
+      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never,
+    );
+    const response = await POST(request({ workerId: "worker:pnpm" }, false));
     expect(response.status).toBe(401);
     expect(getGithubDependencyObservationCredential).not.toHaveBeenCalled();
     expect(claimAcceptanceDependencyObservationWork).not.toHaveBeenCalled();
@@ -103,7 +107,6 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
     const response = await POST(request({
       workspaceId: WORKSPACE_ID,
       workerId: "worker:pnpm",
-      recordId: descriptor.binding.recordId,
     }));
     expect(response.status).toBe(400);
     expect(claimAcceptanceDependencyObservationWork).not.toHaveBeenCalled();
@@ -116,7 +119,7 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
       kind: "unavailable",
       reason: "installation_or_permission_denied",
     } as never);
-    const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }));
+    const response = await POST(request({ workerId: "worker:pnpm" }));
     expect(response.status).toBe(503);
     expect(releaseAcceptanceDependencyObservationClaim).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
@@ -127,7 +130,7 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
 
   it("returns an exact server-derived descriptor and ephemeral source credential", async () => {
     vi.mocked(claimAcceptanceDependencyObservationWork).mockResolvedValue(descriptor as never);
-    const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }));
+    const response = await POST(request({ workerId: "worker:pnpm" }));
     expect(response.status).toBe(200);
     expect(claimAcceptanceDependencyObservationWork).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
@@ -151,7 +154,7 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
   });
 
   it("returns 204 when no current pnpm work is eligible", async () => {
-    const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }));
+    const response = await POST(request({ workerId: "worker:pnpm" }));
     expect(response.status).toBe(204);
     expect(await response.text()).toBe("");
   });

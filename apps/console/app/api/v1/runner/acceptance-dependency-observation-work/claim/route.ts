@@ -4,19 +4,17 @@ import {
   getGithubDependencyObservationCredential,
   releaseAcceptanceDependencyObservationClaim,
 } from "@agentrail/db-postgres";
-import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
+import { requireBearer } from "../../../../../../lib/bearer-auth";
 
 const BODY_BYTES = 4 * 1024;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const WORKER = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u;
 
-function parseBody(value: unknown): { workspaceId: string; workerId: string } | null {
+function parseBody(value: unknown): { workerId: string } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).length !== 2
-    || typeof input.workspaceId !== "string" || !UUID.test(input.workspaceId)
+  if (Object.keys(input).length !== 1
     || typeof input.workerId !== "string" || !WORKER.test(input.workerId)) return null;
-  return { workspaceId: input.workspaceId.toLowerCase(), workerId: input.workerId };
+  return { workerId: input.workerId };
 }
 
 async function boundedJson(request: NextRequest): Promise<unknown | null> {
@@ -36,8 +34,8 @@ async function boundedJson(request: NextRequest): Promise<unknown | null> {
  * contents-read token. A failed mint releases the opaque lease immediately.
  */
 export async function POST(request: NextRequest) {
-  const unauthorized = requireJaceConsoleSecret(request);
-  if (unauthorized) return unauthorized;
+  const auth = await requireBearer(request);
+  if (auth instanceof NextResponse) return auth;
 
   const body = parseBody(await boundedJson(request));
   if (!body) {
@@ -45,17 +43,20 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const descriptor = await claimAcceptanceDependencyObservationWork(body);
+    const descriptor = await claimAcceptanceDependencyObservationWork({
+      workspaceId: auth.workspaceId,
+      workerId: body.workerId,
+    });
     if (!descriptor) return new NextResponse(null, { status: 204 });
     const { githubInstallationIdentitySha256, ...publicDescriptor } = descriptor;
     const credential = await getGithubDependencyObservationCredential({
-      workspaceId: body.workspaceId,
+      workspaceId: auth.workspaceId,
       repo: descriptor.binding.repo,
       expectedInstallationIdentitySha256: githubInstallationIdentitySha256,
     });
     if (!credential.ok) {
       await releaseAcceptanceDependencyObservationClaim({
-        workspaceId: body.workspaceId,
+        workspaceId: auth.workspaceId,
         claimId: descriptor.claim.id,
         claimToken: descriptor.claim.token,
       }).catch(() => false);

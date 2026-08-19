@@ -134,7 +134,7 @@ def test_rejects_remote_plaintext_console_urls(console_url: str) -> None:
         PnpmObservationWorker(
             WorkerConfig(
                 console_url=console_url,
-                console_token="console-token",
+                workspace_api_key="workspace-api-key",
                 workspace_id="11111111-1111-4111-8111-111111111111",
                 worker_id="worker:pnpm-1",
             ),
@@ -152,7 +152,7 @@ def test_allows_plaintext_console_only_on_loopback(console_url: str) -> None:
     PnpmObservationWorker(
         WorkerConfig(
             console_url=console_url,
-            console_token="console-token",
+            workspace_api_key="workspace-api-key",
             workspace_id="11111111-1111-4111-8111-111111111111",
             worker_id="worker:pnpm-1",
         ),
@@ -166,7 +166,7 @@ def test_claims_exact_work_gathers_bounded_evidence_and_posts_v2_observation() -
     worker = PnpmObservationWorker(
         WorkerConfig(
             console_url="https://console.example.test",
-            console_token="console-token",
+            workspace_api_key="workspace-api-key",
             workspace_id="11111111-1111-4111-8111-111111111111",
             worker_id="worker:pnpm-1",
         ),
@@ -175,6 +175,10 @@ def test_claims_exact_work_gathers_bounded_evidence_and_posts_v2_observation() -
     )
 
     assert worker.run_once() == "posted"
+    claim_call = http.calls[0]
+    assert claim_call[0] == "POST"
+    assert json.loads((claim_call[3] or b"").decode()) == {"workerId": "worker:pnpm-1"}
+    assert claim_call[2]["authorization"] == "Bearer workspace-api-key"
     assert http.observation == {
         "workspaceId": "11111111-1111-4111-8111-111111111111",
         "recordId": "33333333-3333-4333-8333-333333333333",

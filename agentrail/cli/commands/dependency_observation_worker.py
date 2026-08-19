@@ -22,7 +22,7 @@ class _Worker(Protocol):
 def _real_worker() -> PnpmObservationWorker:
     required = {
         "JACE_CONSOLE_URL": os.environ.get("JACE_CONSOLE_URL"),
-        "JACE_CONSOLE_TOKEN": os.environ.get("JACE_CONSOLE_TOKEN"),
+        "AGENTRAIL_SERVER_API_KEY": os.environ.get("AGENTRAIL_SERVER_API_KEY"),
         "AGENTRAIL_WORKSPACE_ID": os.environ.get("AGENTRAIL_WORKSPACE_ID"),
         "AGENTRAIL_DEPENDENCY_WORKER_ID": os.environ.get("AGENTRAIL_DEPENDENCY_WORKER_ID"),
     }
@@ -32,7 +32,7 @@ def _real_worker() -> PnpmObservationWorker:
     return PnpmObservationWorker(
         WorkerConfig(
             console_url=required["JACE_CONSOLE_URL"] or "",
-            console_token=required["JACE_CONSOLE_TOKEN"] or "",
+            workspace_api_key=required["AGENTRAIL_SERVER_API_KEY"] or "",
             workspace_id=required["AGENTRAIL_WORKSPACE_ID"] or "",
             worker_id=required["AGENTRAIL_DEPENDENCY_WORKER_ID"] or "",
         ),

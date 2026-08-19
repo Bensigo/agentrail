@@ -64,7 +64,7 @@ class CommandResult:
 @dataclass(frozen=True)
 class WorkerConfig:
     console_url: str
-    console_token: str
+    workspace_api_key: str
     workspace_id: str
     worker_id: str
 
@@ -212,10 +212,10 @@ class PnpmObservationWorker:
         loopback_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
         if (parsed.scheme != "https" and not loopback_http) or not parsed.netloc or parsed.username or parsed.password \
                 or parsed.query or parsed.fragment or not UUID.fullmatch(config.workspace_id) \
-                or not _text(config.console_token, 4096) or not _text(config.worker_id, 128):
+                or not _text(config.workspace_api_key, 4096) or not _text(config.worker_id, 128):
             raise ValueError("worker configuration is invalid")
         self.config = WorkerConfig(
-            config.console_url.rstrip("/"), config.console_token,
+            config.console_url.rstrip("/"), config.workspace_api_key,
             config.workspace_id.lower(), config.worker_id,
         )
         self.request = request
@@ -224,7 +224,6 @@ class PnpmObservationWorker:
     def run_once(self) -> str:
         claim_url = self.config.console_url + "/api/v1/runner/acceptance-dependency-observation-work/claim"
         claim_body = json.dumps({
-            "workspaceId": self.config.workspace_id,
             "workerId": self.config.worker_id,
         }, separators=(",", ":")).encode()
         claim = self.request("POST", claim_url, self._console_headers(), claim_body, MAX_CLAIM_BYTES)
@@ -336,7 +335,7 @@ class PnpmObservationWorker:
 
     def _console_headers(self) -> dict[str, str]:
         return {
-            "authorization": f"Bearer {self.config.console_token}",
+            "authorization": f"Bearer {self.config.workspace_api_key}",
             "content-type": "application/json",
             "user-agent": "AgentRail-pnpm-evidence/1",
         }

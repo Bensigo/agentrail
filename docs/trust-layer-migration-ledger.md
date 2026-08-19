@@ -513,8 +513,10 @@ required R10 work; detected-only or source-only observer support is not
 operational support.
 
 The current pnpm producer slice makes one accepted profile operational in
-source/test without widening its authority. An authenticated runner can claim
-only server-selected `dependency_watch` work for one current authoritative
+source/test without widening its authority. A workspace-bound runner API key
+can claim only server-selected `dependency_watch` work for its own tenant and
+the request supplies only a worker identity, never a workspace locator. The
+claim is for one current authoritative
 Record occurrence. The short lease and final write are bound to the exact
 workspace, Record/head cycle and authority generation, confirmed Contract,
 active compiled Pack generation, candidate fingerprint/body, and pnpm profile.

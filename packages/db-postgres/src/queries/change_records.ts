@@ -11937,6 +11937,28 @@ export async function recordAcceptanceDependencyObservation(
       return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
     }
 
+    const activeSnapshots = await tx.select({ id: acceptanceContextPackSnapshots.id })
+      .from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.workspaceId, parsed.workspaceId),
+      eq(acceptanceContextPackSnapshots.recordId, record.id),
+      eq(acceptanceContextPackSnapshots.reviewJobId, record.currentPrHeadCycleId),
+      eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+    )).limit(2);
+    if (activeSnapshots.length !== 1) {
+      return { kind: "not_ready" as const, reason: "invalid_compiled_pack_custody" as const };
+    }
+    const activePacks = await tx.select({ id: acceptanceCompiledContextPacks.id })
+      .from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, parsed.workspaceId),
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, sourceSnapshot.id),
+      eq(acceptanceCompiledContextPacks.generationStatus, "active"),
+    )).limit(2);
+    if (sourceSnapshot.status !== "admitted"
+      || activeSnapshots[0]!.id !== sourceSnapshot.id
+      || activePacks.length !== 1 || activePacks[0]!.id !== parsed.compiledPackId) {
+      return { kind: "not_ready" as const, reason: "compiled_pack_unavailable" as const };
+    }
+
     let custody: AcceptanceContextPackCustodyResolution;
     try {
       custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   recordAcceptanceDependencyObservation: vi.fn(),
@@ -7,6 +7,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   AcceptanceDependencyObservationConflictError: class AcceptanceDependencyObservationConflictError extends Error {},
   AcceptanceDependencyObservationInvalidEvidenceError: class AcceptanceDependencyObservationInvalidEvidenceError extends Error {},
 }));
+vi.mock("../../../../../lib/bearer-auth", () => ({ requireBearer: vi.fn() }));
 
 import {
   AcceptanceDependencyObservationClaimError,
@@ -14,11 +15,11 @@ import {
   AcceptanceDependencyObservationInvalidEvidenceError,
   recordAcceptanceDependencyObservation,
 } from "@agentrail/db-postgres";
+import { requireBearer } from "../../../../../lib/bearer-auth";
 import { POST } from "./route";
 
 const SECRET = "jace-shared-secret-abc123";
 const CLAIM_TOKEN = "claim-token-abcdefghijklmnopqrstuvwxyz123456";
-const ORIGINAL_SECRET = process.env.JACE_CONSOLE_TOKEN;
 const OBSERVED_AT = new Date("2026-08-11T08:00:00.000Z");
 const VALID = {
   workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -290,19 +291,32 @@ function historicalNpmReplayBody() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  process.env.JACE_CONSOLE_TOKEN = SECRET;
+  vi.mocked(requireBearer).mockResolvedValue({
+    apiKeyId: "88888888-8888-4888-8888-888888888888",
+    workspaceId: VALID.workspaceId,
+    teamId: null,
+    kind: "fleet",
+  } as never);
   vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(dbResult("recorded") as never);
-});
-
-afterEach(() => {
-  if (ORIGINAL_SECRET === undefined) delete process.env.JACE_CONSOLE_TOKEN;
-  else process.env.JACE_CONSOLE_TOKEN = ORIGINAL_SECRET;
 });
 
 describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
   it("authenticates before reading or recording the body", async () => {
+    vi.mocked(requireBearer).mockResolvedValue(
+      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never,
+    );
     const response = await POST(request({ arbitrary: true }, { auth: false }));
     expect(response.status).toBe(401);
+    expect(recordAcceptanceDependencyObservation).not.toHaveBeenCalled();
+  });
+
+  it("rejects evidence for a caller-selected workspace before database admission", async () => {
+    const foreign = structuredClone(VALID);
+    foreign.workspaceId = "99999999-9999-4999-8999-999999999999";
+
+    const response = await POST(request(foreign));
+
+    expect(response.status).toBe(403);
     expect(recordAcceptanceDependencyObservation).not.toHaveBeenCalled();
   });
 

@@ -125,6 +125,42 @@ def _command(argv: tuple[str, ...]) -> CommandResult:
     raise AssertionError(f"producer attempted an unauthorized command: {argv!r}")
 
 
+@pytest.mark.parametrize("console_url", [
+    "http://console.example.test",
+    "http://192.0.2.10:3000",
+])
+def test_rejects_remote_plaintext_console_urls(console_url: str) -> None:
+    with pytest.raises(ValueError, match="worker configuration is invalid"):
+        PnpmObservationWorker(
+            WorkerConfig(
+                console_url=console_url,
+                console_token="console-token",
+                workspace_id="11111111-1111-4111-8111-111111111111",
+                worker_id="worker:pnpm-1",
+            ),
+            request=FakeHttp(),
+            run_command=_command,
+        )
+
+
+@pytest.mark.parametrize("console_url", [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+])
+def test_allows_plaintext_console_only_on_loopback(console_url: str) -> None:
+    PnpmObservationWorker(
+        WorkerConfig(
+            console_url=console_url,
+            console_token="console-token",
+            workspace_id="11111111-1111-4111-8111-111111111111",
+            worker_id="worker:pnpm-1",
+        ),
+        request=FakeHttp(),
+        run_command=_command,
+    )
+
+
 def test_claims_exact_work_gathers_bounded_evidence_and_posts_v2_observation() -> None:
     http = FakeHttp()
     worker = PnpmObservationWorker(

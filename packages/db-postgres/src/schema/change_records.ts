@@ -641,6 +641,7 @@ export const acceptanceDependencyObservationClaims = pgTable(
     acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
     compiledPackId: uuid("compiled_pack_id").notNull().references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
     compiledPackSha256: text("compiled_pack_sha256").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
     candidateFingerprint: text("candidate_fingerprint").notNull(),
     candidate: jsonb("candidate").$type<Record<string, unknown>>().notNull(),
     profile: jsonb("profile").$type<Record<string, unknown>>().notNull(),
@@ -666,6 +667,7 @@ export const acceptanceDependencyObservationClaims = pgTable(
         AND ${t.acceptanceContractVersion} > 0
         AND ${t.acceptanceContractSha256} ~ '^[A-Fa-f0-9]{64}$'
         AND ${t.compiledPackSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubInstallationIdentitySha256} ~ '^[a-f0-9]{64}$'
         AND ${t.candidateFingerprint} ~ '^sha256:[a-f0-9]{64}$'
         AND ${t.claimTokenSha256} ~ '^[a-f0-9]{64}$'
         AND jsonb_typeof(${t.candidate}) = 'object'

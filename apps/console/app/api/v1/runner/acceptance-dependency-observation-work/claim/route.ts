@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   claimAcceptanceDependencyObservationWork,
-  getInstallationToken,
+  getGithubDependencyObservationCredential,
+  releaseAcceptanceDependencyObservationClaim,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 
@@ -31,8 +32,8 @@ async function boundedJson(request: NextRequest): Promise<unknown | null> {
 }
 
 /**
- * Claim one server-selected pnpm evidence task. The installation token is
- * minted before the lease so a credential outage cannot strand eligible work.
+ * Claim one server-selected pnpm evidence task, then mint an exact-repository
+ * contents-read token. A failed mint releases the opaque lease immediately.
  */
 export async function POST(request: NextRequest) {
   const unauthorized = requireJaceConsoleSecret(request);
@@ -43,23 +44,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid dependency observation claim" }, { status: 400 });
   }
 
-  let githubToken: string | null;
-  try {
-    githubToken = await getInstallationToken(body.workspaceId);
-  } catch {
-    githubToken = null;
-  }
-  if (!githubToken) {
-    return NextResponse.json({ error: "Dependency source credential unavailable" }, { status: 503 });
-  }
-
   try {
     const descriptor = await claimAcceptanceDependencyObservationWork(body);
     if (!descriptor) return new NextResponse(null, { status: 204 });
+    const { githubInstallationIdentitySha256, ...publicDescriptor } = descriptor;
+    const credential = await getGithubDependencyObservationCredential({
+      workspaceId: body.workspaceId,
+      repo: descriptor.binding.repo,
+      expectedInstallationIdentitySha256: githubInstallationIdentitySha256,
+    });
+    if (!credential.ok) {
+      await releaseAcceptanceDependencyObservationClaim({
+        workspaceId: body.workspaceId,
+        claimId: descriptor.claim.id,
+        claimToken: descriptor.claim.token,
+      }).catch(() => false);
+      return NextResponse.json({ error: "Dependency source credential unavailable" }, { status: 503 });
+    }
     return NextResponse.json({
-      ...descriptor,
+      ...publicDescriptor,
       claim: { ...descriptor.claim, expiresAt: descriptor.claim.expiresAt.toISOString() },
-      github: { token: githubToken },
+      github: { token: credential.token },
     });
   } catch {
     console.error("Acceptance dependency observation claim unavailable");

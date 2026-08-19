@@ -3,18 +3,21 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   claimAcceptanceDependencyObservationWork: vi.fn(),
-  getInstallationToken: vi.fn(),
+  getGithubDependencyObservationCredential: vi.fn(),
+  releaseAcceptanceDependencyObservationClaim: vi.fn(),
 }));
 
 import {
   claimAcceptanceDependencyObservationWork,
-  getInstallationToken,
+  getGithubDependencyObservationCredential,
+  releaseAcceptanceDependencyObservationClaim,
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
 
 const SECRET = "jace-shared-secret-abc123";
 const ORIGINAL_SECRET = process.env.JACE_CONSOLE_TOKEN;
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const INSTALLATION_IDENTITY = "2".repeat(64);
 const descriptor = {
   claim: {
     id: "22222222-2222-4222-8222-222222222222",
@@ -56,6 +59,7 @@ const descriptor = {
     updateArgv: ["pnpm", "update", "lodash@4.17.21", "--lockfile-only", "--ignore-scripts"],
     authority: "observe_or_refuse_only",
   },
+  githubInstallationIdentitySha256: INSTALLATION_IDENTITY,
 };
 
 function request(body: unknown, auth = true): NextRequest {
@@ -72,7 +76,13 @@ function request(body: unknown, auth = true): NextRequest {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
-  vi.mocked(getInstallationToken).mockResolvedValue("github-installation-token");
+  vi.mocked(getGithubDependencyObservationCredential).mockResolvedValue({
+    ok: true,
+    token: "github-installation-token",
+    expiresAt: "2030-01-01T00:00:00.000Z",
+    permissionBasis: { repository: "scoped_installation_token", contents: "read" },
+  } as never);
+  vi.mocked(releaseAcceptanceDependencyObservationClaim).mockResolvedValue(true as never);
   vi.mocked(claimAcceptanceDependencyObservationWork).mockResolvedValue(null as never);
 });
 
@@ -85,7 +95,7 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
   it("fails closed before tenant or claim reads without runner auth", async () => {
     const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }, false));
     expect(response.status).toBe(401);
-    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(getGithubDependencyObservationCredential).not.toHaveBeenCalled();
     expect(claimAcceptanceDependencyObservationWork).not.toHaveBeenCalled();
   });
 
@@ -99,11 +109,20 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
     expect(claimAcceptanceDependencyObservationWork).not.toHaveBeenCalled();
   });
 
-  it("returns no work when the scoped GitHub credential is unavailable", async () => {
-    vi.mocked(getInstallationToken).mockResolvedValue(null);
+  it("releases the exact lease when the repository-scoped credential is unavailable", async () => {
+    vi.mocked(claimAcceptanceDependencyObservationWork).mockResolvedValue(descriptor as never);
+    vi.mocked(getGithubDependencyObservationCredential).mockResolvedValue({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    } as never);
     const response = await POST(request({ workspaceId: WORKSPACE_ID, workerId: "worker:pnpm" }));
     expect(response.status).toBe(503);
-    expect(claimAcceptanceDependencyObservationWork).not.toHaveBeenCalled();
+    expect(releaseAcceptanceDependencyObservationClaim).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      claimId: descriptor.claim.id,
+      claimToken: descriptor.claim.token,
+    });
   });
 
   it("returns an exact server-derived descriptor and ephemeral source credential", async () => {
@@ -114,11 +133,21 @@ describe("POST /runner/acceptance-dependency-observation-work/claim", () => {
       workspaceId: WORKSPACE_ID,
       workerId: "worker:pnpm",
     });
-    expect(await response.json()).toEqual({
-      ...descriptor,
+    expect(getGithubDependencyObservationCredential).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      repo: descriptor.binding.repo,
+      expectedInstallationIdentitySha256: INSTALLATION_IDENTITY,
+    });
+    const responseBody = await response.json();
+    expect(responseBody).toEqual({
       claim: { ...descriptor.claim, expiresAt: descriptor.claim.expiresAt.toISOString() },
+      binding: descriptor.binding,
+      candidate: descriptor.candidate,
+      source: descriptor.source,
+      operation: descriptor.operation,
       github: { token: "github-installation-token" },
     });
+    expect(responseBody).not.toHaveProperty("githubInstallationIdentitySha256");
   });
 
   it("returns 204 when no current pnpm work is eligible", async () => {

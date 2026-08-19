@@ -12052,8 +12052,21 @@ export async function recordAcceptanceDependencyObservation(
         eq(acceptanceDependencyObservationClaims.claimTokenSha256, suppliedClaimTokenSha256!),
       )).limit(1))[0];
     if (options.claimToken !== undefined) {
+      const installation = (await tx.select({
+        installationId: workspaces.githubInstallationId,
+        accountLogin: workspaces.githubInstallationAccountLogin,
+        accountType: workspaces.githubInstallationAccountType,
+      }).from(workspaces).where(eq(workspaces.id, record.workspaceId)).limit(1))[0];
+      const currentInstallationIdentitySha256 = installation && githubInstallationIdentitySha256({
+        workspaceId: record.workspaceId,
+        installationId: installation.installationId,
+        accountLogin: installation.accountLogin,
+        accountType: installation.accountType,
+      });
       const profile = claim?.profile;
       if (!claim || claim.claimTokenSha256 !== suppliedClaimTokenSha256
+        || !currentInstallationIdentitySha256
+        || claim.githubInstallationIdentitySha256 !== currentInstallationIdentitySha256
         || claim.candidateFingerprint !== candidateFingerprint
         || claim.headSha !== binding.headSha
         || claim.authorityGeneration !== binding.authorityGeneration

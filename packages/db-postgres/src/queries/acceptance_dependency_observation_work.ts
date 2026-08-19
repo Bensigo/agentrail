@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   acceptanceCompiledContextPacks,
@@ -9,7 +9,12 @@ import {
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
-import { acceptanceContextPackCanonicalSha256, acceptanceContractSha256 } from "./change_records.js";
+import { workspaces } from "../schema/workspaces.js";
+import {
+  acceptanceContextPackCanonicalSha256,
+  acceptanceContractSha256,
+  githubInstallationIdentitySha256,
+} from "./change_records.js";
 import {
   dependencyObservationProposalContractMatches,
   resolveDependencyObservationProposalSourceCustody,
@@ -74,6 +79,7 @@ export type AcceptanceDependencyObservationWorkDescriptor = {
     updateArgv: ["pnpm", "update", string, "--lockfile-only", "--ignore-scripts"];
     authority: "observe_or_refuse_only";
   };
+  githubInstallationIdentitySha256: string;
 };
 
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -104,7 +110,7 @@ async function currentCompiledPack(
     acceptanceContractSha256: string;
   },
 ) {
-  return (await tx.select({
+  const rows = await tx.select({
     pack: acceptanceCompiledContextPacks,
     snapshot: acceptanceContextPackSnapshots,
   }).from(acceptanceCompiledContextPacks).innerJoin(
@@ -124,10 +130,33 @@ async function currentCompiledPack(
     eq(acceptanceContextPackSnapshots.acceptanceContractVersion, input.acceptanceContractVersion),
     eq(acceptanceContextPackSnapshots.acceptanceContractSha256, input.acceptanceContractSha256),
     eq(acceptanceContextPackSnapshots.status, "admitted"),
+    eq(acceptanceContextPackSnapshots.generationStatus, "active"),
+    eq(acceptanceCompiledContextPacks.generationStatus, "active"),
   )).orderBy(
     desc(acceptanceCompiledContextPacks.createdAt),
     desc(acceptanceCompiledContextPacks.id),
-  ).limit(1))[0] ?? null;
+  ).limit(2);
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+export async function releaseAcceptanceDependencyObservationClaim(input: {
+  workspaceId: string;
+  claimId: string;
+  claimToken: string;
+}): Promise<boolean> {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).length !== 3
+    || !UUID.test(input.workspaceId) || !UUID.test(input.claimId)
+    || typeof input.claimToken !== "string"
+    || !/^[A-Za-z0-9_-]{32,256}$/u.test(input.claimToken)) return false;
+  const tokenSha256 = createHash("sha256").update(input.claimToken, "utf8").digest("hex");
+  const released = await db.delete(acceptanceDependencyObservationClaims).where(and(
+    eq(acceptanceDependencyObservationClaims.id, input.claimId.toLowerCase()),
+    eq(acceptanceDependencyObservationClaims.workspaceId, input.workspaceId.toLowerCase()),
+    eq(acceptanceDependencyObservationClaims.claimTokenSha256, tokenSha256),
+    isNull(acceptanceDependencyObservationClaims.consumedAt),
+  )).returning({ id: acceptanceDependencyObservationClaims.id });
+  return released.length === 1;
 }
 
 /**
@@ -147,6 +176,19 @@ export async function claimAcceptanceDependencyObservationWork(
   }
 
   return db.transaction(async (tx) => {
+    const installation = (await tx.select({
+      installationId: workspaces.githubInstallationId,
+      accountLogin: workspaces.githubInstallationAccountLogin,
+      accountType: workspaces.githubInstallationAccountType,
+    }).from(workspaces).where(eq(workspaces.id, parsed.workspaceId)).limit(1))[0];
+    const installationIdentitySha256 = installation && githubInstallationIdentitySha256({
+      workspaceId: parsed.workspaceId,
+      installationId: installation.installationId,
+      accountLogin: installation.accountLogin,
+      accountType: installation.accountType,
+    });
+    if (!installationIdentitySha256) return null;
+
     const candidates = Array.from(await tx.execute(sql`
       SELECT record.id
       FROM ${changeRecords} AS record
@@ -271,6 +313,7 @@ export async function claimAcceptanceDependencyObservationWork(
         acceptanceContractSha256: contractSha256,
         compiledPackId: current.pack.id,
         compiledPackSha256: current.pack.packSha256,
+        githubInstallationIdentitySha256: installationIdentitySha256,
         candidateFingerprint: observationCandidateFingerprint,
         candidate: observationCandidate,
         profile: source.profile,
@@ -293,6 +336,7 @@ export async function claimAcceptanceDependencyObservationWork(
           acceptanceContractSha256: contractSha256,
           compiledPackId: current.pack.id,
           compiledPackSha256: current.pack.packSha256,
+          githubInstallationIdentitySha256: installationIdentitySha256,
           candidate: observationCandidate,
           profile: source.profile,
           claimedBy: parsed.workerId,
@@ -338,6 +382,7 @@ export async function claimAcceptanceDependencyObservationWork(
           ],
           authority: "observe_or_refuse_only",
         },
+        githubInstallationIdentitySha256: installationIdentitySha256,
       };
     }
     return null;

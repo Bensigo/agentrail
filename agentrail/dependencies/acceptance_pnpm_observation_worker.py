@@ -209,7 +209,8 @@ def _probe(run_command: CommandRunner, argv: tuple[str, ...], kind: str) -> tupl
 class PnpmObservationWorker:
     def __init__(self, config: WorkerConfig, *, request: HttpRequest, run_command: CommandRunner):
         parsed = urllib.parse.urlsplit(config.console_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password \
+        loopback_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (parsed.scheme != "https" and not loopback_http) or not parsed.netloc or parsed.username or parsed.password \
                 or parsed.query or parsed.fragment or not UUID.fullmatch(config.workspace_id) \
                 or not _text(config.console_token, 4096) or not _text(config.worker_id, 128):
             raise ValueError("worker configuration is invalid")

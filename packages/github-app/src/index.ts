@@ -437,6 +437,146 @@ export async function mintCorrectionCarrierInstallationToken(
   }
 }
 
+export type RepositoryContentsReadInstallationTokenResult =
+  | {
+      ok: true;
+      token: string;
+      expiresAt: string;
+      permissionBasis: {
+        repository: "scoped_installation_token";
+        contents: "read";
+      };
+    }
+  | {
+      ok: false;
+      kind: "unavailable";
+      reason:
+        | "invalid_input"
+        | "not_installed"
+        | "credential_rejected"
+        | "repository_not_granted"
+        | "required_permissions_not_granted";
+    }
+  | {
+      ok: false;
+      kind: "indeterminate";
+      reason: "github_unavailable" | "invalid_response";
+    };
+
+/**
+ * Mints one exact-repository token for immutable source reads. The requested
+ * permission is contents:read only; a response carrying any write authority
+ * is rejected instead of being handed to the evidence worker.
+ */
+export async function mintRepositoryContentsReadInstallationToken(
+  input: CorrectionCarrierMintInput,
+  cfg: { appId: string; privateKey: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<RepositoryContentsReadInstallationTokenResult> {
+  if (!validCorrectionCarrierMintInput(input)) {
+    return { ok: false, kind: "unavailable", reason: "invalid_input" };
+  }
+  let jwt: string;
+  try {
+    jwt = signAppJwt(cfg.appId, cfg.privateKey);
+  } catch {
+    return { ok: false, kind: "unavailable", reason: "credential_rejected" };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
+  try {
+    let response: Response;
+    try {
+      response = await fetchImpl(
+        `https://api.github.com/app/installations/${input.installationId}/access_tokens`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "agentrail-console",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            repositories: [input.repo],
+            permissions: { contents: "read" },
+          }),
+          redirect: "error",
+          signal: controller.signal,
+        },
+      );
+    } catch {
+      return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+    }
+    if (response.status !== 201) {
+      void response.body?.cancel().catch(() => undefined);
+      if (response.status === 404) {
+        return { ok: false, kind: "unavailable", reason: "not_installed" };
+      }
+      if ([401, 403, 422].includes(response.status)) {
+        return { ok: false, kind: "unavailable", reason: "credential_rejected" };
+      }
+      return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+    }
+    const parsed = await readBoundedGithubJson(response, controller);
+    if (!parsed.ok || !parsed.body || typeof parsed.body !== "object") {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    const body = parsed.body as {
+      token?: unknown;
+      expires_at?: unknown;
+      repositories?: unknown;
+      permissions?: unknown;
+    };
+    if (typeof body.token !== "string" || body.token.length === 0
+      || body.token.length > MAX_CORRECTION_CARRIER_TOKEN_BYTES
+      || !/^[A-Za-z0-9_.-]+$/.test(body.token)
+      || typeof body.expires_at !== "string" || body.expires_at.length === 0
+      || body.expires_at.length > MAX_CORRECTION_CARRIER_EXPIRY_BYTES
+      || !Number.isFinite(Date.parse(body.expires_at))
+      || Date.parse(body.expires_at) <= Date.now()
+      || Date.parse(body.expires_at) > Date.now() + 24 * 60 * 60 * 1000
+      || !Array.isArray(body.repositories) || body.repositories.length !== 1) {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    const fullName = (body.repositories[0] as { full_name?: unknown } | null)?.full_name;
+    if (typeof fullName !== "string") {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    if (fullName.toLowerCase() !== `${input.owner}/${input.repo}`.toLowerCase()) {
+      return { ok: false, kind: "unavailable", reason: "repository_not_granted" };
+    }
+    if (!body.permissions || typeof body.permissions !== "object"
+      || Array.isArray(body.permissions)) {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    const permissions = body.permissions as Record<string, unknown>;
+    if (Object.values(permissions).some((value) => typeof value !== "string")) {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    const allowedPermissionKeys = new Set(["contents", "metadata"]);
+    if (permissions["contents"] !== "read"
+      || Object.entries(permissions).some(([key, value]) =>
+        !allowedPermissionKeys.has(key) || value !== "read")) {
+      return {
+        ok: false,
+        kind: "unavailable",
+        reason: "required_permissions_not_granted",
+      };
+    }
+    return {
+      ok: true,
+      token: body.token,
+      expiresAt: body.expires_at,
+      permissionBasis: { repository: "scoped_installation_token", contents: "read" },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getInstallationAccount(
   installationId: string,
   cfg: { appId: string; privateKey: string },

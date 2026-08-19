@@ -1,6 +1,6 @@
--- Merge-order reservation: #1735 owns 0101/0102, builder re-entry owns 0103,
--- and Context Pack regeneration owns 0104. Rebase/renumber only if that order
--- changes before merge.
+-- Merge-order reservation: direct MCP owns 0101/0102, Context Pack
+-- regeneration owns 0103, and exact-Pack Claude delivery custody owns 0104.
+-- Rebase/renumber only if that order changes before merge.
 CREATE TABLE IF NOT EXISTS "acceptance_dependency_observation_claims" (
   "id" uuid PRIMARY KEY NOT NULL,
   "workspace_id" uuid NOT NULL REFERENCES "workspaces"("id") ON DELETE cascade,
@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS "acceptance_dependency_observation_claims" (
   "acceptance_contract_sha256" text NOT NULL,
   "compiled_pack_id" uuid NOT NULL REFERENCES "acceptance_compiled_context_packs"("id") ON DELETE restrict,
   "compiled_pack_sha256" text NOT NULL,
+  "github_installation_identity_sha256" text NOT NULL,
   "candidate_fingerprint" text NOT NULL,
   "candidate" jsonb NOT NULL,
   "profile" jsonb NOT NULL,
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS "acceptance_dependency_observation_claims" (
     AND "acceptance_contract_version" > 0
     AND "acceptance_contract_sha256" ~ '^[A-Fa-f0-9]{64}$'
     AND "compiled_pack_sha256" ~ '^[A-Fa-f0-9]{64}$'
+    AND "github_installation_identity_sha256" ~ '^[a-f0-9]{64}$'
     AND "candidate_fingerprint" ~ '^sha256:[a-f0-9]{64}$'
     AND "claim_token_sha256" ~ '^[a-f0-9]{64}$'
     AND jsonb_typeof("candidate") = 'object'

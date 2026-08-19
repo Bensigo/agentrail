@@ -132,7 +132,10 @@ import {
   readAcceptanceRecordSummaries,
   readAcceptanceRecordDetail,
 } from "../queries/change_records.js";
-import { claimAcceptanceDependencyObservationWork } from "../queries/acceptance_dependency_observation_work.js";
+import {
+  claimAcceptanceDependencyObservationWork,
+  releaseAcceptanceDependencyObservationClaim,
+} from "../queries/acceptance_dependency_observation_work.js";
 import {
   dependencyObservationProposalCustodyIdentity,
   pnpmObservationCandidateFingerprint,
@@ -7610,6 +7613,17 @@ describe.skipIf(!DB_AVAILABLE)(
 
     it("claims current pnpm evidence work and consumes only an exact live custody token", async () => {
       const headSha = "7".repeat(40);
+      const installationA = {
+        githubInstallationId: "pnpm-observation-installation-a",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization" as const,
+      };
+      const installationB = {
+        githubInstallationId: "pnpm-observation-installation-b",
+        githubInstallationAccountLogin: "acme-rebound",
+        githubInstallationAccountType: "Organization" as const,
+      };
+      await db.update(workspaces).set(installationA).where(eq(workspaces.id, wsId));
       const proposal = pnpmProposalFixtureCustody(headSha);
       const fixture = await createAcceptanceDependencyObservationFixture({
         workspaceId: wsId,
@@ -7626,7 +7640,39 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       if (fixture.lockfileBlobSha === null) throw new Error("expected pnpm lockfile custody");
 
-      const claimed = await claimAcceptanceDependencyObservationWork({
+      await db.update(acceptanceCompiledContextPacks).set({ generationStatus: "superseded" })
+        .where(eq(acceptanceCompiledContextPacks.id, fixture.pack.id));
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-superseded-pack",
+      })).resolves.toBeNull();
+      await db.update(acceptanceCompiledContextPacks).set({ generationStatus: "active" })
+        .where(eq(acceptanceCompiledContextPacks.id, fixture.pack.id));
+      await db.update(acceptanceContextPackSnapshots).set({ generationStatus: "superseded" })
+        .where(eq(acceptanceContextPackSnapshots.id, fixture.sourceSnapshot.id));
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-superseded-snapshot",
+      })).resolves.toBeNull();
+      await db.update(acceptanceContextPackSnapshots).set({ generationStatus: "active" })
+        .where(eq(acceptanceContextPackSnapshots.id, fixture.sourceSnapshot.id));
+
+      const ambiguousPackId = randomUUID();
+      await db.insert(acceptanceCompiledContextPacks).values({
+        ...fixture.pack,
+        id: ambiguousPackId,
+        compilerVersion: "ambiguous-active-compiler",
+        policyVersion: "ambiguous-active-policy",
+        createdAt: new Date(Date.now() + 1_000),
+      });
+      await expect(claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-ambiguous-active-pack",
+      })).resolves.toBeNull();
+      await db.delete(acceptanceCompiledContextPacks)
+        .where(eq(acceptanceCompiledContextPacks.id, ambiguousPackId));
+
+      let claimed = await claimAcceptanceDependencyObservationWork({
         workspaceId: wsId,
         workerId: "worker:r10-pnpm-integration",
       });
@@ -7654,12 +7700,32 @@ describe.skipIf(!DB_AVAILABLE)(
           lockfile: { path: "pnpm-lock.yaml", blobSha: fixture.lockfileBlobSha },
         },
         operation: { authority: "observe_or_refuse_only" },
+        githubInstallationIdentitySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
       if (!claimed) throw new Error("expected pnpm producer claim");
       await expect(claimAcceptanceDependencyObservationWork({
         workspaceId: wsId,
         workerId: "worker:r10-pnpm-other",
       })).resolves.toBeNull();
+      await expect(releaseAcceptanceDependencyObservationClaim({
+        workspaceId: wsId,
+        claimId: claimed.claim.id,
+        claimToken: "wrong-claim-token-abcdefghijklmnopqrstuvwxyz123456",
+      })).resolves.toBe(false);
+      await expect(releaseAcceptanceDependencyObservationClaim({
+        workspaceId: wsId,
+        claimId: claimed.claim.id,
+        claimToken: claimed.claim.token,
+      })).resolves.toBe(true);
+      const releasedReclaim = await claimAcceptanceDependencyObservationWork({
+        workspaceId: wsId,
+        workerId: "worker:r10-pnpm-after-release",
+      });
+      if (!releasedReclaim) throw new Error("expected released claim to be immediately available");
+      expect(releasedReclaim.binding.recordId).toBe(fixture.draft.record.id);
+      expect(releasedReclaim.claim.id).not.toBe(claimed.claim.id);
+      expect(releasedReclaim.claim.token).not.toBe(claimed.claim.token);
+      claimed = releasedReclaim;
 
       const evidence = acceptanceDependencyObservationInput({
         workspaceId: wsId,
@@ -7670,6 +7736,17 @@ describe.skipIf(!DB_AVAILABLE)(
         lockfileBlobSha: fixture.lockfileBlobSha,
       });
       evidence.packageManager.version = "11.19.0";
+
+      await db.update(workspaces).set(installationB).where(eq(workspaces.id, wsId));
+      await expect(recordAcceptanceDependencyObservation(evidence, { claimToken: claimed.claim.token }))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationClaimError);
+      const reboundEvents = await db.select({ id: changeRecordEvents.id })
+        .from(changeRecordEvents).where(and(
+          eq(changeRecordEvents.recordId, fixture.draft.record.id),
+          eq(changeRecordEvents.stage, "dependency_observation"),
+        ));
+      expect(reboundEvents).toEqual([]);
+      await db.update(workspaces).set(installationA).where(eq(workspaces.id, wsId));
 
       const expectClaimDrift = async (field: "headSha" | "acceptanceContractSha256" | "compiledPackSha256", value: string) => {
         const original = field === "headSha"

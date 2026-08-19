@@ -5,6 +5,10 @@ const LEASE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 export const CLAIM_PATH = "/api/v1/runner/context-pack-regenerations/claim";
 export const EXECUTE_PATH = "/api/v1/runner/context-pack-regenerations/execute";
 
+export class ContextPackRegenerationWorkerFatalError extends Error {
+  fatal = true;
+}
+
 function exactKeys(value, keys) {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -69,7 +73,7 @@ export function assertContextPackRegenerationWorkerCredentialIsolation(env) {
   }
 }
 
-function config(env) {
+export function assertContextPackRegenerationWorkerConfig(env) {
   assertContextPackRegenerationWorkerCredentialIsolation(env);
   const rawBaseUrl = String(env.JACE_CONSOLE_BASE_URL ?? "").trim();
   const token = String(env.JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN ?? "").trim();
@@ -84,7 +88,7 @@ function config(env) {
 }
 
 async function request(path, body, env, transport = fetch) {
-  const { baseUrl, token } = config(env);
+  const { baseUrl, token } = assertContextPackRegenerationWorkerConfig(env);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -101,6 +105,9 @@ async function request(path, body, env, transport = fetch) {
 export async function claimContextPackRegeneration({ workerId, env = process.env, transport = fetch }) {
   const response = await request(CLAIM_PATH, { workerId }, env, transport);
   if (response.status === 204) return null;
+  if (response.status === 401 || response.status === 403) {
+    throw new ContextPackRegenerationWorkerFatalError("Context Pack regeneration worker authentication failed");
+  }
   if (!response.ok) throw new Error(`Context Pack regeneration claim failed (${response.status})`);
   const claim = exactClaim(await readBoundedJson(response), workerId);
   if (!claim) throw new Error("Context Pack regeneration claim response was invalid");
@@ -113,6 +120,9 @@ export async function executeContextPackRegeneration({ claim, env = process.env,
     workerId: claim.workerId,
     leaseToken: claim.leaseToken,
   }, env, transport);
+  if (response.status === 401 || response.status === 403) {
+    throw new ContextPackRegenerationWorkerFatalError("Context Pack regeneration worker authentication failed");
+  }
   if (!response.ok) throw new Error(`Context Pack regeneration execution failed (${response.status})`);
   const result = exactExecutionResult(await readBoundedJson(response));
   if (!result) throw new Error("Context Pack regeneration execution response was invalid");

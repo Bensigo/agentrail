@@ -11,7 +11,10 @@ export function createContextPackRegenerationWorker({ claim, execute, intervalMs
   }
   async function loop() {
     while (!stopped) {
-      try { await runOnce(); } catch { /* lease expiry and bounded attempts fail closed in Console */ }
+      try { await runOnce(); } catch (error) {
+        if (error?.fatal === true) throw error;
+        /* lease expiry and bounded attempts fail closed in Console */
+      }
       if (!stopped) await new Promise((resolve) => setTimer(resolve, intervalMs));
     }
   }

@@ -3,10 +3,28 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createContextPackRegenerationWorker } from "../agent/lib/context_pack_regeneration_worker.core.mjs";
 import {
+  assertContextPackRegenerationWorkerConfig,
   assertContextPackRegenerationWorkerCredentialIsolation,
   claimContextPackRegeneration,
   executeContextPackRegeneration,
 } from "../agent/lib/context_pack_regeneration_console.mjs";
+
+test("startup validates the complete worker configuration before polling", () => {
+  assert.deepEqual(assertContextPackRegenerationWorkerConfig({
+    JACE_CONSOLE_BASE_URL: "https://console.example",
+    JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "worker-secret",
+  }), {
+    baseUrl: "https://console.example",
+    token: "worker-secret",
+  });
+  assert.throws(
+    () => assertContextPackRegenerationWorkerConfig({
+      JACE_CONSOLE_BASE_URL: "ftp://console.example",
+      JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "worker-secret",
+    }),
+    /not configured/u,
+  );
+});
 
 test("idle polling does not execute", async () => {
   let executions = 0;
@@ -79,6 +97,32 @@ test("worker credential isolation rejects an environment containing the broad co
   }), /broad Jace coordinator credential/);
 });
 
+test("persistent worker authentication failure stops polling and surfaces", async () => {
+  const env = {
+    JACE_CONSOLE_BASE_URL: "https://console.example",
+    JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "wrong-secret",
+  };
+  let failure;
+  try {
+    await claimContextPackRegeneration({
+      workerId: "w",
+      env,
+      transport: async () => Response.json({ error: "Unauthorized" }, { status: 401 }),
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof Error);
+  let timerCalls = 0;
+  const worker = createContextPackRegenerationWorker({
+    claim: async () => { throw failure; },
+    execute: async () => { throw new Error("must not execute"); },
+    setTimer: () => { timerCalls += 1; },
+  });
+  await assert.rejects(worker.start(), /authentication failed/u);
+  assert.equal(timerCalls, 0);
+});
+
 test("claim rejects declared and streamed oversized responses", async () => {
   const env = { JACE_CONSOLE_BASE_URL: "https://console.example", JACE_CONTEXT_PACK_REGENERATION_WORKER_TOKEN: "secret" };
   await assert.rejects(claimContextPackRegeneration({
@@ -142,7 +186,7 @@ test("standalone worker is default-off and not launched inside Eve instrumentati
   ]);
   assert.match(entrypoint, /JACE_CONTEXT_PACK_REGENERATION_WORKER/);
   assert.match(entrypoint, /!== "1"/);
-  assert.match(entrypoint, /assertContextPackRegenerationWorkerCredentialIsolation\(process\.env\)[\s\S]*buildContextPackRegenerationWorker\(process\.env\)\.start\(\)/u);
+  assert.match(entrypoint, /assertContextPackRegenerationWorkerConfig\(process\.env\)[\s\S]*buildContextPackRegenerationWorker\(process\.env\)\.start\(\)/u);
   assert.doesNotMatch(instrumentation, /context_pack_regeneration_worker/);
   assert.match(dockerfile, /COPY --from=builder \/app\/scripts \.\/scripts/u);
 });

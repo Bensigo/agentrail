@@ -1,5 +1,7 @@
 const SHORT_REQUEST_TIMEOUT_MS = 8_000;
-export const EXECUTION_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+// The Console owns a fixed six-minute execution budget. Keep the transport
+// alive through that terminal response while remaining independently bounded.
+export const EXECUTION_REQUEST_TIMEOUT_MS = 6 * 60 * 1000 + 30_000;
 const MAX_RESPONSE_BYTES = 2 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const LEASE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;

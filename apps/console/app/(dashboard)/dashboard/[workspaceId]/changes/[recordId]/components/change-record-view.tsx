@@ -661,6 +661,7 @@ export type ContextPackRegenerationRequest = {
   headCycleId: string;
   acceptanceContract: { id: string; version: number; sha256: string };
   reason: "stale" | "inadequate";
+  requestIntentId: string;
   requestedBy: string;
   requestedRole: "owner" | "admin";
   requestedAt: string;
@@ -675,6 +676,7 @@ export type ContextPackRegenerationExecution = {
   workspaceId: string;
   recordId: string;
   priorCompiledPackId: string;
+  intentGeneration: number;
   headSha: string;
   headCycleId: string;
   status: "queued" | "running" | "replaced" | "unchanged" | "not_current" | "not_proven" | "held";
@@ -3370,20 +3372,21 @@ function contextPackRequestsMatchDetail(
   return requests.every((request) => {
     if (!isObject(request) || !hasExactKeys(request, [
       "eventId", "eventKey", "sourceSnapshotId", "compiledPackId", "headSha", "headCycleId",
-      "acceptanceContract", "reason", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
+      "acceptanceContract", "reason", "requestIntentId", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
     ]) || !isUuid(request.eventId) || seen.has(request.eventId)
       || !isUuid(request.sourceSnapshotId) || !isUuid(request.compiledPackId)
       || packSnapshots.get(request.compiledPackId) !== request.sourceSnapshotId
       || request.headSha !== current.headSha || request.headCycleId !== current.headCycleId
       || !exactJsonEqual(request.acceptanceContract, contractIdentity)
       || (request.reason !== "stale" && request.reason !== "inadequate")
+      || !isUuid(request.requestIntentId)
       || typeof request.requestedBy !== "string"
       || !request.requestedBy.startsWith("user:")
       || !UUID.test(request.requestedBy.slice("user:".length))
       || (request.requestedRole !== "owner" && request.requestedRole !== "admin")
       || !isIsoTimestamp(request.requestedAt)
       || request.authority !== "request_only" || request.status !== "request_recorded") return false;
-    const expectedKey = `context-pack-regeneration:${request.compiledPackId}:${request.reason}:${request.requestedBy.slice("user:".length)}`;
+    const expectedKey = `context-pack-regeneration:${request.compiledPackId}:${request.requestIntentId}`;
     if (request.eventKey !== expectedKey) return false;
     seen.add(request.eventId);
     return true;
@@ -3396,12 +3399,14 @@ function contextPackExecutionsAreBounded(value: unknown, record: unknown): value
   const statuses = new Set(["queued", "running", "replaced", "unchanged", "not_current", "not_proven", "held"]);
   return value.every((execution) => isObject(execution) && hasExactKeys(execution, [
     "id", "requestEventId", "parentExecutionId", "workspaceId", "recordId", "priorCompiledPackId", "headSha", "headCycleId",
-    "status", "attemptCount", "maxAttempts", "replacementCompiledPackId", "outcomeReason", "completedAt",
+    "intentGeneration", "status", "attemptCount", "maxAttempts", "replacementCompiledPackId", "outcomeReason", "completedAt",
     "createdAt", "updatedAt", "humanRetryable",
   ]) && isUuid(execution.id) && isUuid(execution.requestEventId)
     && (execution.parentExecutionId === null || isUuid(execution.parentExecutionId))
     && execution.workspaceId === record.workspaceId && execution.recordId === record.id
     && isUuid(execution.priorCompiledPackId) && SHA1.test(String(execution.headSha))
+    && typeof execution.intentGeneration === "number"
+    && Number.isInteger(execution.intentGeneration) && execution.intentGeneration > 0
     && isUuid(execution.headCycleId) && statuses.has(String(execution.status))
     && (execution.attemptCount === 0 || execution.attemptCount === 1)
     && execution.maxAttempts === 1
@@ -4677,7 +4682,7 @@ export function AcceptanceRecordDetailPanel({
                           <div className="mt-5 border-t border-[var(--gray-05)] pt-4">
                             <h5 className="text-xs font-semibold text-[var(--gray-12)]">Request a new Context Pack</h5>
                             <p className="mt-1 text-xs text-[var(--gray-09)]">
-                              Queues one bounded exact-head regeneration. It does not contact a builder or change the PR.
+                              Starts or reuses one bounded exact-head regeneration. It does not contact a builder or change the PR.
                             </p>
                             {requests.map((request) => (
                               <p key={request.eventId} className="mt-2 text-xs text-[var(--gray-11)]">

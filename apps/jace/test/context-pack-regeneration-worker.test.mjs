@@ -3,12 +3,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createContextPackRegenerationWorker } from "../agent/lib/context_pack_regeneration_worker.core.mjs";
 import {
+  EXECUTION_REQUEST_TIMEOUT_MS,
   assertContextPackRegenerationWorkerConfig,
   assertContextPackRegenerationWorkerCredentialIsolation,
   claimContextPackRegeneration,
   executeContextPackRegeneration,
   renewContextPackRegenerationLease,
 } from "../agent/lib/context_pack_regeneration_console.mjs";
+
+test("execution transport outlives the bounded server execution budget", () => {
+  assert.ok(EXECUTION_REQUEST_TIMEOUT_MS > 6 * 60 * 1000);
+});
 
 test("startup validates the complete worker configuration before polling", () => {
   assert.deepEqual(assertContextPackRegenerationWorkerConfig({
@@ -45,6 +50,7 @@ test("one claim triggers one opaque execution", async () => {
 test("slow valid execution renews its opaque lease before returning", async () => {
   const claim = { executionId: "e", workerId: "w", leaseToken: "t" };
   const events = [];
+  let renewalTick;
   let finishExecution;
   const executionDone = new Promise((resolve) => { finishExecution = resolve; });
   const worker = createContextPackRegenerationWorker({
@@ -57,17 +63,27 @@ test("slow valid execution renews its opaque lease before returning", async () =
     },
     renew: async (value) => {
       events.push(`renewed:${value.executionId}`);
-      finishExecution();
     },
     renewIntervalMs: 30_000,
     setIntervalFn: (callback) => {
-      queueMicrotask(callback);
+      renewalTick = callback;
       return 1;
     },
-    clearIntervalFn: () => {},
+    clearIntervalFn: () => { events.push("renewals-cleared"); },
   });
-  assert.equal(await worker.runOnce(), "done");
-  assert.deepEqual(events, ["execute-started", "renewed:e", "execute-finished"]);
+  const running = worker.runOnce();
+  await Promise.resolve();
+  await renewalTick();
+  await renewalTick();
+  finishExecution();
+  assert.equal(await running, "done");
+  assert.deepEqual(events, [
+    "execute-started",
+    "renewed:e",
+    "renewed:e",
+    "execute-finished",
+    "renewals-cleared",
+  ]);
 });
 
 test("transport sends only worker identity for claim and opaque lease for execution", async () => {

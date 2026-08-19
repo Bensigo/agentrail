@@ -1761,6 +1761,30 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     });
   });
 
+  it("reports an existing terminal execution as replayed for a new attached intent", async () => {
+    vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValueOnce({
+      kind: "replayed",
+      request: {},
+      execution: {
+        id: REGENERATION_EXECUTION_ID,
+        status: "held",
+        outcomeReason: "lease_attempts_exhausted",
+      },
+    } as never);
+    const response = await PATCH(patchReq({
+      action: "request_context_pack_regeneration",
+      compiledPackId: COMPILED_PACK_ID,
+      reason: "stale",
+      requestIntentId: REGENERATION_REQUEST_INTENT_ID,
+    }), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kind: "replayed",
+      execution: { id: REGENERATION_EXECUTION_ID, status: "held" },
+    });
+  });
+
   it("rejects regeneration bodies that try to supply head or execution authority", async () => {
     for (const body of [
       { action: "request_context_pack_regeneration", compiledPackId: COMPILED_PACK_ID, reason: "missing" },

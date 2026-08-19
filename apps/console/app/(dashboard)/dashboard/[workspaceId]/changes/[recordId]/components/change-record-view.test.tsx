@@ -15,6 +15,7 @@ import {
   RecordDetailDisclosure,
   changeRecordApiPath,
   contextPackRegenerationRetryPatchBody,
+  contextPackRegenerationPatchBody,
   dependencyObservationApprovalPatchBody,
   finalDecisionPatchBody,
   formatChangeRecordDate,
@@ -2967,13 +2968,14 @@ describe("Change Record detail view", () => {
     const onRequest = vi.fn();
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
-      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:stale:00000000-0000-4000-8000-000000000002`,
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       acceptanceContract: detailContract.identity,
       reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
       requestedBy: "user:00000000-0000-4000-8000-000000000002",
       requestedRole: "owner",
       requestedAt: "2026-08-11T09:05:00.000Z",
@@ -2993,6 +2995,7 @@ describe("Change Record detail view", () => {
         workspaceId: record.workspaceId,
         recordId: record.id,
         priorCompiledPackId: DETAIL_PACK_ID,
+        intentGeneration: 1,
         headSha: DETAIL_CURRENT_HEAD,
         headCycleId: currentFinalDecision.binding.headCycleId,
         status: "queued",
@@ -3014,6 +3017,7 @@ describe("Change Record detail view", () => {
     expect(buttons[1]?.props?.disabled).toBe(false);
     expect(textContent(rendered)).toContain("Stale request recorded");
     expect(textContent(rendered)).toContain("· queued");
+    expect(textContent(rendered)).toContain("Starts or reuses one bounded exact-head regeneration");
     expect(textContent(rendered)).toContain("does not contact a builder or change the PR");
     (buttons[1]?.props?.onClick as (() => void))();
     expect(onRequest).toHaveBeenCalledWith(DETAIL_PACK_ID, "inadequate");
@@ -3022,13 +3026,14 @@ describe("Change Record detail view", () => {
   it("links a replaced execution to the exact immutable Pack and shows terminal refusal reasons", () => {
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
-      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:stale:00000000-0000-4000-8000-000000000002`,
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       acceptanceContract: detailContract.identity,
       reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
       requestedBy: "user:00000000-0000-4000-8000-000000000002",
       requestedRole: "owner",
       requestedAt: "2026-08-11T09:05:00.000Z",
@@ -3049,6 +3054,7 @@ describe("Change Record detail view", () => {
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       attemptCount: 1 as const,
@@ -3089,6 +3095,7 @@ describe("Change Record detail view", () => {
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       status: "held",
@@ -3477,6 +3484,7 @@ describe("Change Record detail view", () => {
       workspaceId: record.workspaceId,
       recordId: record.id,
       priorCompiledPackId: DETAIL_PACK_ID,
+      intentGeneration: 1,
       headSha: DETAIL_CURRENT_HEAD,
       headCycleId: currentFinalDecision.binding.headCycleId,
       status: "held",
@@ -3489,7 +3497,37 @@ describe("Change Record detail view", () => {
       updatedAt: "2026-08-11T09:06:00.000Z",
       humanRetryable: false,
     };
-    expect(isChangeRecordResponse({ ...validResponse, contextPackRegenerationExecutions: [boundedExecution] })).toBe(true);
+    const boundedRequest = {
+      eventId: "00000000-0000-4000-8000-000000000045",
+      eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      sourceSnapshotId: DETAIL_SNAPSHOT_ID,
+      compiledPackId: DETAIL_PACK_ID,
+      headSha: DETAIL_CURRENT_HEAD,
+      headCycleId: currentFinalDecision.binding.headCycleId,
+      acceptanceContract: detailContract.identity,
+      reason: "stale",
+      requestIntentId: "00000000-0000-4000-8000-000000000051",
+      requestedBy: "user:00000000-0000-4000-8000-000000000002",
+      requestedRole: "owner",
+      requestedAt: "2026-08-11T09:05:00.000Z",
+      authority: "request_only",
+      status: "request_recorded",
+    };
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      contextPackRegenerationRequests: [boundedRequest],
+      contextPackRegenerationExecutions: [boundedExecution],
+    })).toBe(true);
+    expect(contextPackRegenerationPatchBody(
+      DETAIL_PACK_ID,
+      "stale",
+      boundedRequest.requestIntentId,
+    )).toEqual({
+      action: "request_context_pack_regeneration",
+      compiledPackId: DETAIL_PACK_ID,
+      reason: "stale",
+      requestIntentId: boundedRequest.requestIntentId,
+    });
     expect(isChangeRecordResponse({
       ...validResponse,
       contextPackRegenerationExecutions: [{ ...boundedExecution, leaseToken: "must-not-leak" }],

@@ -606,6 +606,7 @@ beforeEach(() => {
     request: {
       eventId: REGENERATION_REQUEST_EVENT_ID,
       eventKey: `context-pack-regeneration:${COMPILED_PACK_ID}:${REGENERATION_REQUEST_INTENT_ID}`,
+      executionId: REGENERATION_EXECUTION_ID,
       workspaceId: WS,
       recordId: RECORD,
       sourceSnapshotId: "00000000-0000-4000-8000-000000000047",
@@ -1099,11 +1100,12 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         actor: `user:${USER}`,
         payloadRef: {
           kind: "acceptance_context_pack_regeneration_request",
-          version: 2,
+          version: 3,
           workspaceId: WS,
           recordId: RECORD,
           sourceSnapshotId,
           compiledPackId: COMPILED_PACK_ID,
+          executionId: REGENERATION_EXECUTION_ID,
           repo: "ada/widgets",
           prNumber: 98,
           headSha: HEAD,
@@ -1127,11 +1129,12 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         actor: "user:00000000-0000-4000-8000-000000000778",
         payloadRef: {
           kind: "acceptance_context_pack_regeneration_request",
-          version: 2,
+          version: 3,
           workspaceId: WS,
           recordId: RECORD,
           sourceSnapshotId,
           compiledPackId: COMPILED_PACK_ID,
+          executionId: REGENERATION_EXECUTION_ID,
           repo: "ada/widgets",
           prNumber: 98,
           headSha: HEAD,
@@ -1174,6 +1177,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       eventKey,
       sourceSnapshotId,
       compiledPackId: COMPILED_PACK_ID,
+      executionId: REGENERATION_EXECUTION_ID,
       headSha: HEAD,
       headCycleId: CYCLE,
       acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
@@ -1761,10 +1765,10 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     });
   });
 
-  it("reports an existing terminal execution as replayed for a new attached intent", async () => {
+  it("records a distinct intent visibly bound to an existing terminal execution", async () => {
     vi.mocked(recordAcceptanceContextPackRegenerationRequest).mockResolvedValueOnce({
-      kind: "replayed",
-      request: {},
+      kind: "recorded",
+      request: { executionId: REGENERATION_EXECUTION_ID },
       execution: {
         id: REGENERATION_EXECUTION_ID,
         status: "held",
@@ -1778,9 +1782,10 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       requestIntentId: REGENERATION_REQUEST_INTENT_ID,
     }), { params: params() });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({
-      kind: "replayed",
+      kind: "recorded",
+      request: { executionId: REGENERATION_EXECUTION_ID },
       execution: { id: REGENERATION_EXECUTION_ID, status: "held" },
     });
   });

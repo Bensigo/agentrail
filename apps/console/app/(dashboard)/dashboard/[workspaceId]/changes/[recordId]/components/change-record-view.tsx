@@ -655,6 +655,7 @@ export type ChangeRecordResponse = {
 export type ContextPackRegenerationRequest = {
   eventId: string;
   eventKey: string;
+  executionId: string;
   sourceSnapshotId: string;
   compiledPackId: string;
   headSha: string;
@@ -3372,8 +3373,8 @@ function contextPackRequestsMatchDetail(
   return requests.every((request) => {
     if (!isObject(request) || !hasExactKeys(request, [
       "eventId", "eventKey", "sourceSnapshotId", "compiledPackId", "headSha", "headCycleId",
-      "acceptanceContract", "reason", "requestIntentId", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
-    ]) || !isUuid(request.eventId) || seen.has(request.eventId)
+      "acceptanceContract", "reason", "requestIntentId", "executionId", "requestedBy", "requestedRole", "requestedAt", "authority", "status",
+    ]) || !isUuid(request.eventId) || !isUuid(request.executionId) || seen.has(request.eventId)
       || !isUuid(request.sourceSnapshotId) || !isUuid(request.compiledPackId)
       || packSnapshots.get(request.compiledPackId) !== request.sourceSnapshotId
       || request.headSha !== current.headSha || request.headCycleId !== current.headCycleId
@@ -4686,7 +4687,7 @@ export function AcceptanceRecordDetailPanel({
                             </p>
                             {requests.map((request) => (
                               <p key={request.eventId} className="mt-2 text-xs text-[var(--gray-11)]">
-                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)}
+                                {request.reason === "stale" ? "Stale" : "Inadequate"} request recorded {formatChangeRecordDate(request.requestedAt)} · execution <span className="font-mono">{request.executionId}</span>
                               </p>
                             ))}
                             {regenerationExecutions.filter((execution) => execution.priorCompiledPackId === pack.id).map((execution) => {

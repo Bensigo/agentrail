@@ -2969,6 +2969,7 @@ describe("Change Record detail view", () => {
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      executionId: "00000000-0000-4000-8000-000000000046",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
@@ -3016,6 +3017,7 @@ describe("Change Record detail view", () => {
     expect(buttons[0]?.props?.disabled).toBe(true);
     expect(buttons[1]?.props?.disabled).toBe(false);
     expect(textContent(rendered)).toContain("Stale request recorded");
+    expect(textContent(rendered)).toContain(`execution ${request.executionId}`);
     expect(textContent(rendered)).toContain("· queued");
     expect(textContent(rendered)).toContain("Starts or reuses one bounded exact-head regeneration");
     expect(textContent(rendered)).toContain("does not contact a builder or change the PR");
@@ -3027,6 +3029,7 @@ describe("Change Record detail view", () => {
     const request: ContextPackRegenerationRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      executionId: "00000000-0000-4000-8000-000000000046",
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,
@@ -3500,6 +3503,7 @@ describe("Change Record detail view", () => {
     const boundedRequest = {
       eventId: "00000000-0000-4000-8000-000000000045",
       eventKey: `context-pack-regeneration:${DETAIL_PACK_ID}:00000000-0000-4000-8000-000000000051`,
+      executionId: boundedExecution.id,
       sourceSnapshotId: DETAIL_SNAPSHOT_ID,
       compiledPackId: DETAIL_PACK_ID,
       headSha: DETAIL_CURRENT_HEAD,

@@ -3066,7 +3066,7 @@ describe.skipIf(!DB_AVAILABLE)(
         eq(acceptanceContextPackRegenerationExecutions.id, first.executionId),
       ))[0]!;
       expect(stored).toMatchObject({ status: "held", outcomeReason: "lease_attempts_exhausted", attemptCount: 1 });
-      const replayed = await recordAcceptanceContextPackRegenerationRequest({
+      const attachedReceipt = await recordAcceptanceContextPackRegenerationRequest({
         workspaceId: wsId,
         recordId: fixture.draft.record.id,
         compiledPackId: fixture.pack.id,
@@ -3074,16 +3074,16 @@ describe.skipIf(!DB_AVAILABLE)(
         requestedBy: owner,
         requestIntentId: randomUUID(),
       });
-      expect(replayed).toMatchObject({
-        kind: "replayed",
-        request: { eventId: request.request.eventId },
+      expect(attachedReceipt).toMatchObject({
+        kind: "recorded",
+        request: { executionId: first.executionId },
         execution: { id: first.executionId, status: "held" },
       });
       expect(await db.select().from(changeRecordEvents).where(and(
         eq(changeRecordEvents.recordId, fixture.draft.record.id),
         eq(changeRecordEvents.stage, "human_context_request"),
         sql`${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_context_pack_regeneration_request'`,
-      ))).toHaveLength(1);
+      ))).toHaveLength(2);
     });
 
     it("replays an exact unchanged intent and permits a new intent after Wiki inputs change", async () => {

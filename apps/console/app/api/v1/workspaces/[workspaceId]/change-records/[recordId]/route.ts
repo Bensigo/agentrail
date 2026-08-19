@@ -330,15 +330,16 @@ function contextPackRegenerationRequests(
     const expectedKeys = [
       "kind", "version", "workspaceId", "recordId", "sourceSnapshotId", "compiledPackId",
       "repo", "prNumber", "headSha", "headCycleId", "authorityGeneration",
-      "acceptanceContract", "reason", "requestIntentId", "requestedBy", "requestedRole", "authority", "status",
+      "acceptanceContract", "reason", "requestIntentId", "executionId", "requestedBy", "requestedRole", "authority", "status",
     ];
     if (Object.keys(payload).length !== expectedKeys.length
       || Object.keys(payload).some((key) => !expectedKeys.includes(key))
-      || payload.version !== 2 || typeof payload.compiledPackId !== "string"
+      || payload.version !== 3 || typeof payload.compiledPackId !== "string"
       || !UUID.test(payload.compiledPackId) || typeof payload.sourceSnapshotId !== "string"
       || !UUID.test(payload.sourceSnapshotId)
       || (payload.reason !== "stale" && payload.reason !== "inadequate")
       || typeof payload.requestIntentId !== "string" || !UUID.test(payload.requestIntentId)
+      || typeof payload.executionId !== "string" || !UUID.test(payload.executionId)
       || typeof payload.requestedBy !== "string"
       || !payload.requestedBy.startsWith("user:")
       || !UUID.test(payload.requestedBy.slice("user:".length))
@@ -369,6 +370,7 @@ function contextPackRegenerationRequests(
       acceptanceContract: payload.acceptanceContract,
       reason: payload.reason,
       requestIntentId: payload.requestIntentId,
+      executionId: payload.executionId,
       requestedBy: payload.requestedBy,
       requestedRole: payload.requestedRole,
       requestedAt: event.at.toISOString(),

@@ -34,7 +34,13 @@ In **Agents**, add your repository and create a workflow key. Copy the displayed
 
 The tool verifies the checkout repository/branch, reserves once, bounds execution to two minutes and 256 KiB output, and reports exit code, commit and output digest. Logs stay local. A crashed/ambiguous reservation is held; an owner may release an expired hold in the Console. Do not re-run a potentially completed check automatically.
 
-5. Report `needs_review` with the PR link. Inspect the history in **Work** and close/reopen the task yourself. Agent reports are not independently verified acceptance evidence. MCP costs are currently not recorded.
+5. Report `needs_review` with the PR link. Inspect the history in **Work** and close/reopen the task yourself. Agent reports are not independently verified acceptance evidence. Optional context and cumulative usage reports appear in Office. Missing cost or context stays unknown.
+
+## Office
+
+The Console opens on a clean 2D office. Each desk represents a reported work session; select it to inspect the task, branch, last agent report, shared context and usage. Reports refresh every ten seconds. Closed/waiting work stays quiet, and old reports do not imply a live connection.
+
+Agents may include optional `context` and `usage` objects with `workflow_update`. These are complete snapshots. Usage values are cumulative **per task**, never per-update increments; omission of the whole object preserves the previous snapshot. Use `null` for unknown counts/cost, and never infer a bill. Context contains a short summary and up to twelve source paths, with measured token/window counts when available. MCP cannot automatically read another agent's private context or billing. The Office cost subtotal covers up to 100 open-first tasks and labels missing reports.
 
 ## MCP configuration
 

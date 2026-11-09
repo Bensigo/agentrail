@@ -24,7 +24,7 @@ Use any MCP-compatible client's configuration format with these values:
 
 Index the target first: `agentrail context index --target /path/to/project`.
 
-Tasks are credential/workspace-scoped. Agent labels are unverified client-provided labels. Event keys deduplicate retries; revisions reject stale writes. A configured check reserves execution under its credential, blocks concurrent progress/closure, and has bounded process-group execution. An expired ambiguous reservation needs an explicit owner/admin release. Reports and check receipts do not become independent verification, and only a human can close/reopen through the Console. Raw check logs are not uploaded. Costs are not recorded by these tools.
+Tasks are credential/workspace-scoped. Agent labels are unverified client-provided labels. Event keys deduplicate retries; revisions reject stale writes. A configured check reserves execution under its credential, blocks concurrent progress/closure, and has bounded process-group execution. An expired ambiguous reservation needs an explicit owner/admin release. Reports and check receipts do not become independent verification, and only a human can close/reopen through the Console. Raw check logs are not uploaded. Optional cumulative usage and bounded context snapshots can be reported with workflow_update. They are agent-reported, not independent billing or private-context access.
 
 Jace conversation, Acceptance Record and correction tools moved to [Bensigo/jace](https://github.com/Bensigo/jace).
 
@@ -36,3 +36,17 @@ node packages/mcp/scripts/proof-with-console.mjs
 ```
 
 The script starts the production Console and exercises actual MCP clients, PostgreSQL persistence, scoped credentials, retries, configured checks and human decisions. It does not exercise real third-party coding-agent applications or production services.
+
+
+## Office reports
+
+`workflow_update` optionally accepts complete snapshots (all nested fields required):
+
+```json
+{
+  "context": {"summary":"Inspecting authentication and its tests","sources":["src/auth.ts","src/auth.test.ts"],"tokens":null,"windowTokens":null},
+  "usage": {"inputTokens":null,"outputTokens":null,"costUsd":null}
+}
+```
+
+Include only measured token/cost values. Usage is a cumulative task snapshot, not an increment. A new object replaces that snapshot; omitting the entire object preserves it. `0` is known zero, `null` is unknown. Context is shared summary/source metadata, not access to the host agent's private context buffer. Do not upload secrets or system prompts. These reports retain the same revision, retry and active-check protections as ordinary progress.

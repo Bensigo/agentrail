@@ -12,6 +12,7 @@ import {
   FileText,
   Layers3,
   History,
+  Building2,
 } from "lucide-react";
 
 export interface NavItem {
@@ -35,6 +36,7 @@ export interface NavZone {
 export const YOUR_ENGINEER_ZONE: NavZone = {
   id: "workflow", label: "Workflow", collapsible: false,
   items: [
+    { label: "Office", href: "office", icon: Building2 },
     { label: "Work", href: "work", icon: LayoutDashboard },
     { label: "Runs", href: "runs", icon: History },
     { label: "Review Gates", href: "review-gates", icon: Inbox },

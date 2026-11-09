@@ -38,3 +38,23 @@ describe("bounded workflow input", () => {
     expect(await workflowBody(request)).toBeNull();
   });
 });
+
+
+describe("Office telemetry bounds", () => {
+ const base={eventKey:"usage",expectedRevision:1,phase:"implementing",summary:"Working"};
+ it("preserves unknown versus measured zero and requires complete snapshots",()=>{
+  expect(workflowUpdateValid({...base,usage:{costUsd:0,inputTokens:0,outputTokens:null}},false)).toBe(true);
+  expect(workflowUpdateValid({...base,usage:{costUsd:null,inputTokens:null,outputTokens:null}},false)).toBe(true);
+  expect(workflowUpdateValid({...base,usage:{costUsd:1}},false)).toBe(false);
+  for(const value of [-1,Infinity,NaN,"1"])expect(workflowUpdateValid({...base,usage:{costUsd:value,inputTokens:1,outputTokens:1}},false)).toBe(false);
+  expect(workflowUpdateValid({...base,usage:{costUsd:1,inputTokens:1.5,outputTokens:1}},false)).toBe(false);
+ });
+ it("bounds shared context and rejects invalid denominators or authority fields",()=>{
+  const context={summary:"Current files",sources:["src/main.ts"],tokens:100,windowTokens:8192};
+  expect(workflowUpdateValid({...base,context},false)).toBe(true);
+  expect(workflowUpdateValid({...base,context:{...context,windowTokens:0}},false)).toBe(false);
+  expect(workflowUpdateValid({...base,context:{...context,sources:Array(13).fill("x")}},false)).toBe(false);
+  expect(workflowUpdateValid({...base,context:{...context,summary:"x".repeat(1601)}},false)).toBe(false);
+  expect(workflowUpdateValid({...base,usage:{costUsd:1,inputTokens:1,outputTokens:1,verified:true}},false)).toBe(false);
+ });
+});

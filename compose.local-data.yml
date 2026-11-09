@@ -42,7 +42,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768M
+          memory: ${CLICKHOUSE_MEMORY_LIMIT:-1536M}
   minio-permissions:
     image: alpine:3.20
     user: 0:0

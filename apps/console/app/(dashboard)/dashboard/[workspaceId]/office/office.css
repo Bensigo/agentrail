@@ -207,7 +207,7 @@
   outline: 2px solid #77722f;
   outline-offset: 2px;
 }
-.office-desk.is-closed {
+.office-desk.is-closed .office-desk-art {
   opacity: 0.58;
 }
 .office-desk-state {

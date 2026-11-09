@@ -22,6 +22,7 @@ if (!existsSync(".local/env")) {
     CONSOLE_PORT: isJace ? "3001" : "3000",
     PG_PORT: isJace ? "25432" : "15432",
     CLICKHOUSE_PORT: isJace ? "28123" : "18123",
+    CLICKHOUSE_MEMORY_LIMIT: "1536M",
     MINIO_PORT: isJace ? "29000" : "19000",
     MINIO_CONSOLE_PORT: isJace ? "29001" : "19001",
     COORDINATOR_PORT: "2001",

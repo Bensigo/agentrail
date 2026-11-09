@@ -32,3 +32,5 @@ Use `pnpm local:status`. Application logs are in `.local/*.log`; data-service lo
 Vercel is the intended later hosting target. Railway files are inherited historical deployment material; they are not used by this local profile.
 
 The launcher uses `compose.local-data.yml` for data services and host processes for applications.
+
+ClickHouse has a 1536M local memory limit by default. Its earlier 768M limit could reject migrations after the server cache grew. Override `CLICKHOUSE_MEMORY_LIMIT` in `.local/env` if your workload needs more headroom; rerunning `pnpm local:up` preserves the data volume.

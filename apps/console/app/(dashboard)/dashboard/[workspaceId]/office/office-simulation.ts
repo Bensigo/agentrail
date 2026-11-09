@@ -1,9 +1,4 @@
-import {
-  recentlyReporting,
-  phaseName,
-  usd,
-  type OfficeTask,
-} from "./office-model";
+import { recentlyReporting, usd, type OfficeTask } from "./office-model";
 export interface Point {
   x: number;
   y: number;

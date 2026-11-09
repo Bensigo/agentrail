@@ -16,7 +16,6 @@ import {
   usageSubtotal,
   usd,
   type OfficeSnapshot,
-  type OfficeTask,
 } from "./office-model";
 import { OfficeScene } from "./office-scene";
 import "./office.css";
@@ -42,6 +41,10 @@ export function Office({
   const inspector = useRef<HTMLElement | null>(null);
   const request = useRef(0),
     controller = useRef<AbortController | null>(null);
+  const cancelRefresh = useCallback(() => {
+    request.current++;
+    controller.current?.abort();
+  }, []);
   const refresh = useCallback(async () => {
     const version = ++request.current;
     controller.current?.abort();
@@ -97,8 +100,7 @@ export function Office({
       };
       source.addEventListener("snapshot", (event) => {
         const data: OfficeSnapshot = JSON.parse((event as MessageEvent).data);
-        ++request.current;
-        controller.current?.abort();
+        cancelRefresh();
         setRefreshing(false);
         setSnapshot((previous) =>
           Date.parse(data.observedAt) < Date.parse(previous.observedAt)
@@ -135,10 +137,9 @@ export function Office({
       clearInterval(poll);
       clearInterval(clock);
       document.removeEventListener("visibilitychange", connect);
-      request.current++;
-      controller.current?.abort();
+      cancelRefresh();
     };
-  }, [refresh, workspaceId]);
+  }, [refresh, workspaceId, cancelRefresh]);
   const visible = snapshot.tasks.filter(
     (t) => showClosed || t.phase !== "closed",
   );

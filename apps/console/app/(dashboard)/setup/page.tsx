@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { OnboardingWizard } from "./components/onboarding-wizard";
+import Link from "next/link";
 
 function toSlug(value: string): string {
   return value
@@ -100,7 +100,7 @@ function SetupPageContent() {
             Set up your workspace
           </h1>
           <div className="mt-8">
-            <OnboardingWizard workspaceId={workspaceId} />
+            <div className="flex flex-col gap-4"><Link className="underline" href={`/dashboard/${workspaceId}/wiki`}>Connect a repository</Link><Link className="underline" href={`/dashboard/${workspaceId}/agents`}>Connect your coding agent through MCP</Link><Link className="underline" href={`/dashboard/${workspaceId}/work`}>Open Work</Link></div>
           </div>
         </div>
       </div>

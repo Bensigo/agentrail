@@ -1,45 +1,8 @@
 ---
 title: Introduction
-description: What AgentRail is and who it's for.
+description: Your coding agent, an inspectable workflow, and a shared Console.
 ---
 
-AgentRail is the control plane that runs your coding agents. You bring an agent
-— Claude Code, Codex, or Cursor — and AgentRail gives it durable repo context,
-bounded execution, independent review, and verification gates, so its work is
-cheaper, inspectable, and safe to leave unattended.
+AgentRail supplies project context, durable tasks and workflow visibility to any MCP-compatible coding agent. Your agent implements the work. AgentRail records progress and configured check receipts; a human reviews and closes each task.
 
-AgentRail is **not** a coding agent. It does not write code itself. It runs the
-agent you already use, on rails: scoped context instead of whole files, a hard
-budget per issue, a second model reviewing the work, and gates that stop merges
-the agent can't justify.
-
-## Who it's for
-
-- **Engineers** who want to hand an issue to an agent and get a reviewed PR back
-  without babysitting a run or watching the token meter.
-- **Startups** clearing a backlog overnight under a predictable spend ceiling.
-
-## How it works
-
-The default path is message-first:
-
-1. Sign up on the [console](https://heyjace.com) and connect your GitHub repos.
-2. Message Jace — on Telegram, or hand it a GitHub issue — describing the
-   work you want done.
-3. Jace replies with a brief (task type, model, dollar estimate) before
-   touching any code. Approving it sets the run's budget.
-4. Hosted execution runs the work in the cloud and opens a pull request. You
-   review and merge it — or grant merge permission and Jace merges once its
-   gate is green.
-
-Prefer to run the worker yourself? Self-hosting is fully supported: install
-the CLI, `agentrail login`, then `agentrail runner` on your own machine with
-your own LLM keys — labeling a GitHub issue `ready-for-agent` queues it for
-your runner the same way it queues for hosted execution. **Login is required**
-to use the CLI; the only exempt commands are `login`, `logout`, `whoami`, and
-`--help`.
-
-See [Quickstart](/docs/getting-started/quickstart) for a step-by-step
-walkthrough, [Self-hosting](/docs/getting-started/self-hosting) for running
-the worker yourself, and [Dashboard & hosted runner](/docs/dashboard) for a
-deeper look at the console.
+The Python CLI and optional native runner remain available. AgentRail runs independently of Jace, which owns Acceptance Contracts and exact-change acceptance evidence in its own repository.

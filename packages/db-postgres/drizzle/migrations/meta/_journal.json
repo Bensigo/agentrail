@@ -568,8 +568,7 @@
       "when": 1788500000000,
       "tag": "0080_runs_pr_identity",
       "breakpoints": true
-    }
-    ,
+    },
     {
       "idx": 86,
       "version": "7",
@@ -729,6 +728,13 @@
       "version": "7",
       "when": 1793400000000,
       "tag": "0103_acceptance_context_pack_regeneration_executions",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1794200000000,
+      "tag": "0104_agentrail_workflow",
       "breakpoints": true
     }
   ]

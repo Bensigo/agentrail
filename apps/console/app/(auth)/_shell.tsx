@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -30,27 +29,20 @@ export function AuthCard({ children }: { children: ReactNode }) {
 }
 
 /** Canonical avatar disc (TASTE.md mascot canon) fronting each card. */
-export function JaceAvatar() {
+export function AgentRailMark() {
   return (
-    <Image
-      src="/jace-avatar.png"
-      alt=""
-      width={64}
-      height={64}
-      priority
-      className="rounded-full"
-    />
+    <span aria-hidden="true" className="flex h-16 w-16 items-center justify-center rounded-xl bg-[var(--brand-accent)] text-2xl font-bold text-[var(--accent-fill-text)]">A</span>
   );
 }
 
 /** The quiet way back to the front page. */
-export function BackToJace() {
+export function BackToAgentRail() {
   return (
     <Link
       href="/"
       className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
     >
-      ← Back to Jace
+      ← Back to AgentRail
     </Link>
   );
 }

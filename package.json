@@ -25,7 +25,7 @@
   "scripts": {
     "prepublishOnly": "cp README.md README.project.bak && cp npm-README.md README.md",
     "postpublish": "mv README.project.bak README.md",
-    "test": "bash agentrail/scripts/test-install && bash agentrail/scripts/test-public-positioning && bash agentrail/scripts/test-cli-first-docs && bash agentrail/scripts/test-codex-desktop-docs && bash agentrail/scripts/test-worktree-cleanup && bash agentrail/scripts/test-python && bash agentrail/scripts/test-context-index && bash agentrail/scripts/test-context-privacy && bash agentrail/scripts/test-context-embeddings && bash agentrail/scripts/test-context-query && bash agentrail/scripts/test-context-packs && bash agentrail/scripts/test-context-evaluation",
+    "test": "python3 -m pytest -q -m \"not integration\" && pnpm --filter @agentrail/mcp test && pnpm --filter @agentrail/console exec vitest run --maxWorkers=2",
     "typecheck": "pnpm --filter @agentrail/console typecheck",
     "typecheck:python": "bash agentrail/scripts/typecheck-python",
     "build": "pnpm --filter @agentrail/console build",
@@ -38,6 +38,12 @@
     "db:migrate:ch": "pnpm --filter @agentrail/db-clickhouse db:migrate",
     "db:seed": "pnpm --filter @agentrail/db-postgres db:seed && pnpm --filter @agentrail/db-clickhouse db:seed",
     "db:seed:pg": "pnpm --filter @agentrail/db-postgres db:seed",
-    "db:seed:ch": "pnpm --filter @agentrail/db-clickhouse db:seed"
+    "db:seed:ch": "pnpm --filter @agentrail/db-clickhouse db:seed",
+    "local:up": "node scripts/local.mjs up",
+    "local:down": "node scripts/local.mjs down",
+    "local:open": "node scripts/local.mjs open",
+    "local:status": "node scripts/local.mjs status",
+    "pretest": "pnpm --filter @agentrail/github-app build && pnpm --filter @agentrail/db-postgres build && pnpm --filter @agentrail/mcp build && pnpm --filter @agentrail/console exec fumadocs-mdx",
+    "test:install": "bash agentrail/scripts/test-install.sh && bash agentrail/scripts/test-install"
   }
 }

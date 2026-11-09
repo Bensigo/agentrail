@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Jace — evidence and control for AI coding agents",
+  title: "AgentRail — workflow for coding agents",
   description:
-    "Jace connects human-confirmed Acceptance Contracts, bounded Context Packs, exact-head evidence, corrections, and human decisions around external coding agents.",
+    "AgentRail connects any MCP-compatible coding agent to project context, development workflows and an inspectable Console.",
 };
 
 export default function RootLayout({

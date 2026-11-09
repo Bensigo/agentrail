@@ -102,7 +102,7 @@ def _call_mcp_tool(
     timeout: float = 30.0,
 ) -> Dict[str, Any]:
     """Spawn the MCP server, perform one tools/call, and return the JSON-RPC result."""
-    agentrail_bin = os.environ.get("AGENTRAIL_BIN", "agentrail")
+    agentrail_bin = os.environ.get("AGENTRAIL_BIN", str(Path(__file__).resolve().parents[3] / "agentrail" / "scripts" / "agentrail"))
     env = {**os.environ, "AGENTRAIL_BIN": agentrail_bin, "AGENTRAIL_TARGET": target}
 
     proc = subprocess.Popen(

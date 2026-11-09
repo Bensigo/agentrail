@@ -33,59 +33,29 @@ export interface NavZone {
 // seam. Factory-era Work, Chat, and Goals routes remain code-live for direct
 // links and historical operation, but they are not presented as the product.
 export const YOUR_ENGINEER_ZONE: NavZone = {
-  id: "your-engineer",
-  label: "Trust layer",
-  collapsible: false,
+  id: "workflow", label: "Workflow", collapsible: false,
   items: [
-    { label: "Home", href: "", icon: LayoutDashboard },
-    { label: "Briefs", href: "briefs", icon: FileText },
-    { label: "Acceptance Records", href: "changes", icon: History },
-    { label: "Approvals", href: "approvals", icon: Inbox },
+    { label: "Work", href: "work", icon: LayoutDashboard },
+    { label: "Runs", href: "runs", icon: History },
+    { label: "Review Gates", href: "review-gates", icon: Inbox },
   ],
 };
-
-// Useful customer-facing context stores remain visible. Factory operations
-// (runs, review gates, costs, budgets, model selection, investigations, and
-// failures) remain URL-reachable but are intentionally absent from this list.
 export const ENGINE_ROOM_ZONE: NavZone = {
-  id: "engine-room",
-  label: "Evidence & context",
-  collapsible: true,
+  id: "context", label: "Context & diagnostics", collapsible: true,
   items: [
-    { label: "Memory", href: "memory", icon: Brain },
     { label: "Wiki", href: "wiki", icon: BookOpen },
-    { label: "Context Packs", href: "context-packs", icon: Layers3 },
+    { label: "Memory", href: "memory", icon: Brain },
+    { label: "Costs", href: "costs", icon: CreditCard },
+    { label: "Failures", href: "failures", icon: Layers3 },
   ],
 };
-
 export const SETTINGS_ZONE: NavZone = {
-  id: "settings",
-  label: "Settings",
-  collapsible: false,
+  id: "settings", label: "Settings", collapsible: false,
   items: [
-    // Keep the established route while naming the customer-facing surface by
-    // what it connects: the channels where a human talks with Jace.
-    { label: "Channels", href: "gateways", icon: MessageSquare },
-    { label: "Connectors", href: "connectors", icon: Plug },
-    // No separate "Repos & Health" item: Repos & Health folded into the Wiki
-    // view (owner ruling) — the wiki is now the per-repo evidence page (repo
-    // list with health chips + the compiled wiki, one surface instead of
-    // two). /repos is a redirect stub to /wiki, same shape as /queue -> /work
-    // and teams/page.tsx -> /members: old deep links keep working, nav entry
-    // gone.
-    // No separate Teams item: teams/page.tsx is a redirect stub to /members —
-    // the combined Team page covers the spec's Settings-zone "Teams" entry.
+    { label: "Agents", href: "agents", icon: Plug },
     { label: "Team", href: "members", icon: Users },
-    // No "API Keys" item: the in-console key list/create/revoke UI was
-    // removed (owner ruling, 2026-07-19) — self-hosters mint keys via
-    // `agentrail login` (device flow, browser half at /activate) per the
-    // docs' self-hosting page. The api_keys table and every /api/v1 route
-    // that reads it are untouched; this is a nav-only removal.
-    // Permissions preserves the route for the explicit Trust Layer authority
-    // boundary and owner-only revocation of any historical factory merge grant.
-    { label: "Permissions", href: "permissions", icon: GitMerge },
-    // Subscription plan and customer-portal management stay in Settings.
-    { label: "Plan & billing", href: "billing", icon: CreditCard },
+    { label: "Budget", href: "budget", icon: CreditCard },
+    { label: "Native runner", href: "native-work", icon: History },
   ],
 };
 

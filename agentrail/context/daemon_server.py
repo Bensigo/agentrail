@@ -157,7 +157,6 @@ class DaemonServer:
             }
 
         if method == "shutdown":
-            self._stop_event.set()
             return {"result": {"ok": True}}
 
         # Retrieval methods — serve from in-memory index (no rebuild)
@@ -231,6 +230,9 @@ class DaemonServer:
                 return
             resp = self._handle_request(req)
             conn.sendall(json.dumps(resp).encode())
+            # Deliver the receipt before letting the main process exit.
+            if req.get("method") == "shutdown":
+                self._stop_event.set()
         except OSError:
             pass
         finally:

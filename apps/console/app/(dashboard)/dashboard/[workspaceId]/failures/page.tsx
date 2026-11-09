@@ -30,7 +30,7 @@ export default async function FailuresPage({
         Failures
       </h1>
       <p className="mb-4 mt-1 text-xs text-[var(--gray-09)]">
-        Every way Jace&apos;s work has broken, grouped so the pattern is
+        Every way AgentRail&apos;s work has broken, grouped so the pattern is
         obvious.
       </p>
       <FailureClusters workspaceId={workspaceId} />

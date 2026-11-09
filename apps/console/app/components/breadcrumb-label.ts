@@ -14,6 +14,8 @@
 // fires; "work" is the real nav destination now (spec §3).
 export const SEGMENT_LABELS: Record<string, string> = {
   runs: "Runs",
+  agents: "Agents",
+  "native-work": "Native runner",
   work: "Work",
   approvals: "Approvals",
   queue: "Issue Queue",

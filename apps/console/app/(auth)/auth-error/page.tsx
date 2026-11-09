@@ -5,8 +5,8 @@ import {
   AUTH_MAIN,
   AUTH_INK_BUTTON,
   AuthCard,
-  JaceAvatar,
-  BackToJace,
+  AgentRailMark,
+  BackToAgentRail,
 } from "../_shell";
 
 /** /auth-error — where NextAuth sends a denied or failed sign-in (pages.error,
@@ -27,14 +27,14 @@ export default async function AuthErrorPage({
   return (
     <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
       <AuthCard>
-        <JaceAvatar />
+        <AgentRailMark />
         <h1 className="text-2xl font-bold sm:text-3xl">{title}</h1>
         <p className="max-w-[36ch] text-[var(--gray-11)]">{body}</p>
         <Link href="/login" className={AUTH_INK_BUTTON}>
           Try again
         </Link>
       </AuthCard>
-      <BackToJace />
+      <BackToAgentRail />
     </main>
   );
 }

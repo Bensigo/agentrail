@@ -10,7 +10,7 @@ import { Check, Copy } from "lucide-react";
  * "what you see is what the LLM sees" (Repo Wiki spec §4.5). No console-side
  * editing, no rewriting: this component only chooses how to DISPLAY the
  * exact text the row holds, the same distinction `chat-markdown.tsx` draws
- * for Jace's replies.
+ * for AgentRail's replies.
  *
  * Security: `react-markdown` is secure by default (per its own README) —
  * without `rehype-raw` it never renders raw HTML found in the source text,

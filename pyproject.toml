@@ -16,6 +16,9 @@ dependencies = [
     "cryptography>=41,<51",
 ]
 
+[project.scripts]
+agentrail = "agentrail.cli.main:main"
+
 [tool.setuptools.packages.find]
 include = ["agentrail*"]
 exclude = ["agentrail.tests", "agentrail.tests.*"]

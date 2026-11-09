@@ -1,3 +1,4 @@
+name: agentrail
 # AgentRail walking-skeleton — single Docker host (Vultr Ubuntu VM), single
 # tenant / dogfood. Five services: postgres, console, jace, caddy, runner.
 #
@@ -81,7 +82,6 @@ services:
       # Internal service DNS names — these two are compose-topology-specific,
       # so they're pinned here rather than left to deploy/.env.
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
-      EVE_HOST: http://jace:2000
       # Required behind Caddy's reverse proxy — Auth.js v5 must trust the
       # X-Forwarded-Host/-Proto headers Caddy sets, or GitHub OAuth callbacks
       # resolve to the wrong origin. Confirmed via next-auth's own deployment
@@ -110,48 +110,11 @@ services:
       retries: 5
       start_period: 20s
 
-  jace:
-    build:
-      context: ..
-      dockerfile: apps/jace/Dockerfile
-    restart: unless-stopped
-    env_file: ./.env
-    environment:
-      # Eve's Postgres world adapter (apps/jace/docs/HOSTING.md: "State is
-      # backed by @workflow/world-postgres ... no separate Jace-side
-      # datastore") — a DIFFERENT env-var contract from the console's
-      # DATABASE_URL, verified against the installed
-      # @workflow/world-postgres package's own README. Reuses the same
-      # Postgres instance/database as the console for this single-tenant
-      # deploy; give it a dedicated database (e.g. `jace` instead of
-      # `agentrail`) if you want stronger isolation between Eve's workflow
-      # tables and Drizzle's schema.
-      WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
-      WORKFLOW_POSTGRES_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
-      # NOT the same thing as the console's EVE_HOST (which points the console
-      # AT jace, http://jace:2000 above): this is Jace's OWN default for its
-      # dev-only round-trip test harness (apps/jace/README.md), self-referential
-      # and irrelevant at runtime — left unset here, its default already
-      # matches this topology.
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test:
-        - "CMD"
-        - "node"
-        - "-e"
-        - "require('net').connect(2000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
   caddy:
     image: caddy:2
     restart: unless-stopped
+    environment:
+      AGENTRAIL_DOMAIN: ${AGENTRAIL_DOMAIN:-localhost}
     ports:
       - "80:80"
       - "443:443"
@@ -161,7 +124,6 @@ services:
       - caddy_config:/config
     depends_on:
       - console
-      - jace
 
   runner:
     build:

@@ -1,37 +1,9 @@
-# Operating contract for agents
+# AgentRail operating contract
 
-## Product authority
+AgentRail is the standalone development workflow and Console for any MCP-compatible coding agent. Read CONTEXT.md and docs/repository-separation.md before non-trivial work. The owner's 2026-11-09 separation decision supersedes historical Jace product framing in this repository.
 
-The canonical product model is the trust-layer MVP defined by [ADR 0012](docs/adr/0012-jace-owns-the-acceptance-spine.md)
-and [the migration ledger](docs/trust-layer-migration-ledger.md). They take
-precedence over older factory-oriented copy, plans, generated artifacts, and
-historical terminology.
+Jace's trust layer is maintained independently at https://github.com/Bensigo/jace. Do not reintroduce its conversation, Acceptance Records, Contracts, criterion-evidence or correction tools as requirements for AgentRail. Historical database migrations and compatibility helpers are intentionally retained; do not delete data to simplify the split.
 
-Jace owns the acceptance contract, bounded Context Pack, exact-head evidence,
-blocking correction, and final human-decision seam. External builders such as
-Codex and Claude Code implement confirmed work and may produce or attach the
-PR. Jace has no implementation or merge authority. Exact-head proof and
-evidence-bound blocking correction are the product; a test, queued job,
-attempted delivery, or page-load check is not proof by itself.
+Keep CLI/MCP behavior agent-neutral. MCP and Console must use the same durable workflow records. Agent reports, local check receipts, independent verification and human decisions are distinct. A model's success claim is not verification. Never give an agent authority to impersonate a human decision.
 
-## Legacy infrastructure boundary
-
-The `agentrail/` factory and its queue/runner/Objective Gate vocabulary remain
-valid technical infrastructure and historical migration evidence where code
-still uses them. They are not the public trust-layer MVP. Do not describe Jace
-as the executor or implementation owner. A selected builder producing or
-attaching a PR does not transfer implementation or merge authority to Jace. Do
-not delete legacy code or historical records merely to make the current
-framing cleaner.
-
-## Working rules
-
-- Read `CONTEXT.md`, ADR 0012, and the relevant migration-ledger section before
-  non-trivial work.
-- State source/test, local-runtime, deployed/live, and customer evidence
-  separately, using the migration ledger as the current authority.
-- Preserve unrelated user changes and keep edits within the requested scope.
-- For UI-visible work, use browser evidence when requested; for other work,
-  run the smallest meaningful objective check.
-- Do not claim a live builder pickup, runtime proof, notification, merge, or
-  deployment without direct evidence.
+Preserve unrelated edits. Verify source, local runtime, CI, deployed/live and customer behavior separately. Do not claim merges, deployments, external-agent-client acceptance or production migration without observing them. Changes to workflow persistence, tenancy or execution need meaningful regression coverage.

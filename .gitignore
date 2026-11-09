@@ -22,3 +22,8 @@ apps/console/.source/
 # nested per-run directories); the eval-report-*.md summaries themselves stay
 # tracked.
 agentrail/evals/reports/**/*.log
+
+# Local self-hosting credentials and operator login state
+.local/
+
+.venv/

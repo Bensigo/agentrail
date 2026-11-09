@@ -1,35 +1,8 @@
 ---
-title: AgentRail Docs
-description: Run your coding agents on rails.
+title: AgentRail
+description: Development workflow and Console for any MCP-compatible coding agent.
 ---
 
-AgentRail is the control plane that runs your coding agents — Claude Code,
-Codex, or Cursor. It is **not** a coding agent itself and never writes code. It
-gives the agent you already use durable repo context, bounded execution,
-independent review, and verification gates, so its work is cheaper, inspectable,
-and safe to leave unattended.
+Connect your coding agent through MCP, supply bounded project context, record work and check results, and inspect the same tasks in the Console. Jace is an independent optional trust product.
 
-The default path is message-first: sign up, connect GitHub, and message Jace
-on Telegram — hosted execution runs the work in the cloud, nothing to
-install. Prefer to run the worker yourself? Self-hosting is fully supported:
-install the CLI, then run `agentrail login` and `agentrail runner` on your
-own machine with your own LLM keys. Login is required to use the CLI (only
-`login`, `logout`, `whoami`, and `--help` are exempt).
-
-## Start here
-
-- **[Getting Started](/docs/getting-started/introduction)** — what AgentRail is,
-  how to install it, and a quickstart from sign-up to a reviewed PR.
-- **[Core Concepts](/docs/concepts/context-engine)** — how the context engine,
-  bounded execution, review gates, AFK mode, memory, and skills actually work.
-- **[CLI Reference](/docs/cli/overview)** — every `agentrail` command, grouped
-  by what you're doing.
-
-## Going further
-
-- **[Configuration](/docs/configuration)** — the `.agentrail` config, choosing
-  an agent, and bringing your own LLM keys.
-- **[Dashboard & hosted runner](/docs/dashboard)** — sign in, connect GitHub,
-  queue issues, and run the local worker.
-- **[Self-hosting](/docs/getting-started/self-hosting)** — run the worker
-  yourself, or deploy the whole stack on infrastructure you control.
+Start with [Quick start](/docs/getting-started/quickstart). The [native runner](/docs/getting-started/self-hosting) remains available for queued execution.

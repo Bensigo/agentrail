@@ -31,7 +31,7 @@ export const workspaces = pgTable("workspaces", {
   // only a direct row edit (or a future admin surface) flips it to false.
   // Defaults true so every existing AND future workspace is hosted-eligible
   // from day one.
-  hostedExecution: boolean("hosted_execution").notNull().default(true),
+  hostedExecution: boolean("hosted_execution").notNull().default(false),
   // Monthly spend ceiling (#1269 PR ②a). NULL = uncapped, the default until
   // billing (#1290) sets real values — the per-issue leash + $3 default
   // check-in already guard runaway single-run spend; this is a coarser,
@@ -59,7 +59,7 @@ export const workspaces = pgTable("workspaces", {
   // Never applies to kind='onboard' rows (`enqueueOnboard` never checks this
   // column). No UI toggle yet — same "ship the column + enforcement" posture
   // as `hostedExecution`/`monthlyBudgetUsd` above.
-  requireAlignment: boolean("require_alignment").notNull().default(true),
+  requireAlignment: boolean("require_alignment").notNull().default(false),
   // Grantable merge permission (#1278): the trust ceiling between "green gate
   // -> PR opened, Jace waits for you" (default) and "green gate -> merges
   // itself". Default false so every existing AND future workspace starts

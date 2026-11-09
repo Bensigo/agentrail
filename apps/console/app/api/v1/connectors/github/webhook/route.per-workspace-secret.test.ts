@@ -42,6 +42,7 @@ import {
   findWorkspaceByRepo,
   getConnector,
   enqueueGithubIssue,
+  getRepositoryByName,
 } from "@agentrail/db-postgres";
 
 const mockFindWorkspaceByRepo = vi.mocked(findWorkspaceByRepo);
@@ -125,6 +126,7 @@ beforeEach(() => {
   // route.push-recompile.test.ts).
   delete process.env["AGENTRAIL_WIKI_RECOMPILE_ON_PUSH"];
   mockFindWorkspaceByRepo.mockResolvedValue(WS);
+  vi.mocked(getRepositoryByName).mockResolvedValue({ id: "repo-1", workspaceId: WS, name: REPO, defaultBranch: "main" } as Awaited<ReturnType<typeof getRepositoryByName>>);
   mockGetConnector.mockResolvedValue(
     githubConnector({ webhookSecret: WS_SECRET })
   );

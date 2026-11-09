@@ -380,6 +380,83 @@ try {
     headers: { authorization: `Bearer ${foreignKey}` },
   });
   assert(!(await foreignOffice.json()).tasks.some((t) => t.id === taskId));
+  // Real streaming route: workspace isolation, subsequent MCP reports, and revocation.
+  assert.equal(
+    (await fetch(`${base}/api/v1/workflow/office/events`)).status,
+    401,
+  );
+  async function live(secret) {
+    const abort = new AbortController(),
+      deadline = setTimeout(() => abort.abort(), 12000);
+    const response = await fetch(`${base}/api/v1/workflow/office/events`, {
+      headers: { authorization: `Bearer ${secret}` },
+      signal: abort.signal,
+    });
+    assert.equal(response.status, 200);
+    assert(response.headers.get("content-type").includes("text/event-stream"));
+    const reader = response.body.getReader(),
+      decoder = new TextDecoder();
+    let buffer = "";
+    return {
+      async next() {
+        while (true) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary >= 0) {
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            return {
+              event: frame.split("\n")[0].slice(7),
+              data: JSON.parse(
+                frame
+                  .split("\n")
+                  .find((line) => line.startsWith("data: "))
+                  .slice(6),
+              ),
+            };
+          }
+          const chunk = await reader.read();
+          if (chunk.done) return null;
+          buffer += decoder.decode(chunk.value, { stream: true });
+        }
+      },
+      close() {
+        clearTimeout(deadline);
+        abort.abort();
+      },
+    };
+  }
+  const updates = await live(key),
+    foreignUpdates = await live(foreignKey);
+  try {
+    assert((await updates.next()).data.tasks.some((t) => t.id === taskId));
+    assert(
+      !(await foreignUpdates.next()).data.tasks.some((t) => t.id === taskId),
+    );
+    const streamed = payload(
+      await tool(a, "workflow_update", {
+        taskId,
+        eventKey: "live-office-change",
+        expectedRevision: reported.task.revision,
+        phase: "testing",
+        summary: "Exercise the live report stream.",
+      }),
+    );
+    let event;
+    do {
+      event = await updates.next();
+    } while (event?.event === "heartbeat");
+    assert.equal(
+      event.data.tasks.find((t) => t.id === taskId).revision,
+      streamed.task.revision,
+    );
+    await sql`UPDATE api_keys SET revoked_at=now() WHERE key_hash=${keyHash(foreignKey)}`;
+    while (await foreignUpdates.next()) {
+      /* Drain an already delivered heartbeat before EOF. */
+    }
+  } finally {
+    updates.close();
+    foreignUpdates.close();
+  }
   const unauthorized = await fetch(
     `${base}/api/v1/runner/claim?workspace_id=${workspaceId}`,
     { headers: { authorization: `Bearer ${key}` } },
@@ -407,6 +484,7 @@ try {
       taskId,
       checks: [
         "real MCP protocol",
+        "live Office updates, tenant isolation and stream revocation",
         "two independent client identities",
         "context/workflow tools only",
         "start retry deduplication",

@@ -1,12 +1,10 @@
 import { Suspense } from "react";
 import { signOut } from "@agentrail/auth";
 import { notFound, redirect } from "next/navigation";
-import { isGoalLoopEnabled } from "@agentrail/db-postgres";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
 import { TopBarBreadcrumb } from "../../../components/breadcrumb";
 import { getSession, getMembership } from "../../../../lib/cached";
-import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
 import { SidebarWithWorkspaces } from "./sidebar-with-workspaces";
 
 export default async function WorkspaceLayout({
@@ -29,7 +27,7 @@ export default async function WorkspaceLayout({
   // on membership having resolved, so there's no reason to serialize them.
   const [membership, goalsEnabled] = await Promise.all([
     getMembership(session.user.id, workspaceId),
-    isGoalLoopEnabled(workspaceId),
+    Promise.resolve(false),
   ]);
   if (!membership) {
     notFound();
@@ -40,7 +38,7 @@ export default async function WorkspaceLayout({
     await signOut({ redirectTo: "/login" });
   }
 
-  const chatEnabled = isConsoleChatEnabled(workspaceId);
+  const chatEnabled = false;
 
   return (
     <div className="flex min-h-screen">

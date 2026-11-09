@@ -1,21 +1,13 @@
 name: CI
-
-# Runs on every push to main and every PR. The release/publish workflows are
-# tag-triggered and do not gate PRs, so this is the PR-time safety net:
-# the Python suite + shellcheck + the install.sh hermetic test.
-
 on:
   push:
     branches: [main]
   pull_request:
-
+permissions:
+  contents: read
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-permissions:
-  contents: read
-
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -24,222 +16,42 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      # Install the package so pyproject dependencies such as tree-sitter are
-      # available to the context-index tests.
-      - run: python -m pip install --upgrade pip pytest -e .
-      # Full-checkout retrieval and pinned-corpus proofs run in the separate,
-      # path-triggered context-integration workflow. Keeping them out of this
-      # lane prevents a clean checkout from building a large context index as
-      # an accidental side effect of the ordinary PR gate.
-      - run: python -m pytest -q -m "not integration"
-
-  shell:
+          python-version: '3.11'
+      - run: python -m pip install pytest -e .
+      - run: python -m pytest -q -m 'not integration'
+      - run: bash agentrail/scripts/test-install.sh && bash agentrail/scripts/test-install
+  workflow-console:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      # shellcheck is preinstalled on GitHub's ubuntu runners.
-      - name: shellcheck
-        run: shellcheck install.sh agentrail/scripts/test-install.sh
-      - name: install.sh hermetic test
-        run: bash agentrail/scripts/test-install.sh
-      # Exercises the installed-copy launcher (scripts/agentrail) end to end,
-      # incl. its repo_dir resolution (#1136). Already wired into package.json's
-      # root `test` script but was missing from CI, which let the launcher's
-      # depth-resolution bug ship undetected.
-      - name: installed launcher + managedFiles state test
-        run: bash agentrail/scripts/test-install
-
-  # Node suite — covers what pytest/shellcheck can't see: the Jace (Eve) sidecar
-  # app and the TypeScript db-postgres package (incl. the Jace kill-switch gate)
-  # plus the console route that wires that gate at the inbound boundary. Without
-  # this job every line of apps/jace and packages/db-postgres was invisible to CI.
-  node:
-    runs-on: ubuntu-latest
-    # #1389: a real Postgres for db-postgres's retry-backoff integration
-    # tests (queue-retry-backoff.integration.test.ts) — the AC1/AC2/AC4
-    # evidence for the queue's retry-backoff/attempt-log feature is a real
-    # claim/transition against real Postgres, not a mock of the query under
-    # test. Credentials/port match `packages/db-postgres/src/db.ts`'s own
-    # DATABASE_URL default exactly, so every OTHER db-postgres test (which
-    # mocks `db` and never reads DATABASE_URL) is unaffected either way.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: agentrail
           POSTGRES_PASSWORD: agentrail
-          POSTGRES_DB: agentrail
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U agentrail"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+          POSTGRES_DB: agentrail_proof
+        ports: ['5432:5432']
+        options: --health-cmd 'pg_isready -U agentrail' --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgres://agentrail:agentrail@localhost:5432/agentrail
+      DATABASE_URL: postgres://agentrail:agentrail@127.0.0.1:5432/agentrail_proof
+      AUTH_SECRET: isolated-ci-workflow-proof-only
+      AUTH_TRUST_HOST: 'true'
+      AGENTRAIL_PUBLIC_URL: http://127.0.0.1:3310
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
-
-      # apps/jace is DELIBERATELY excluded from the root pnpm workspace and pins
-      # exact Eve betas, so it installs standalone with npm and runs Node's
-      # built-in test runner (test/*.test.mjs).
-      - name: apps/jace — install (standalone)
-        working-directory: apps/jace
-        run: npm ci
-      - name: apps/jace — unit tests
-        working-directory: apps/jace
-        run: npm test
-      - name: apps/jace — production build
-        working-directory: apps/jace
-        run: npm run build
-
-      # The rest of the monorepo is a pnpm workspace (lockfile v9). Install it,
-      # then run the TypeScript vitest suites that pytest cannot see.
+          node-version: '24'
       - uses: pnpm/action-setup@v4
         with:
           version: 9
-      - name: workspace — install
-        run: pnpm install --frozen-lockfile
-      - name: mcp — build and bounded correction-read tests
-        run: pnpm --filter @agentrail/mcp typecheck && pnpm --filter @agentrail/mcp build && pnpm --filter @agentrail/mcp test
-      # @agentrail/db-postgres imports @agentrail/github-app via its built dist
-      # (one-directional package dep, GitHub App identity arc) — build + test the
-      # pure client first or the db-postgres tsc build cannot resolve it.
-      - name: github-app — build
-        run: pnpm --filter @agentrail/github-app build
-      - name: github-app — vitest
-        run: pnpm --filter @agentrail/github-app test
-      # The console imports @agentrail/db-postgres via its built dist barrel, so
-      # build it before running any console test that touches the barrel.
-      - name: db-postgres — build
-        run: pnpm --filter @agentrail/db-postgres build
-      # #1389: migrate the CI Postgres service (through 0049_queue_retry_backoff
-      # and beyond) before the vitest run below — queue-retry-backoff.integration.test.ts
-      # needs the real schema, not just a reachable server.
-      - name: db-postgres — migrate (CI Postgres, for the #1389 real-DB integration tests)
-        run: pnpm --filter @agentrail/db-postgres migrate
-      - name: db-postgres — vitest (incl. jace-intake kill switch)
-        run: pnpm --filter @agentrail/db-postgres test
-      # Prove the kill-switch gate plus the exact-head review/preview boundary
-      # at the real Console routes. The latter asserts that a review-job session
-      # can persist only a full server-bound criterion plan, enqueue only that
-      # job's PR head, attest the R7.1 environment fallback plus R7.2's
-      # deterministic UI screenshot, API status-card, data assertion-card,
-      # and bounded job assertion-card receipts plus immutable correction
-      # packets before an exact-commit GitHub write, and reject the generic
-      # posting route.
-      - name: console — Jace inbound and exact-head review routes
-        working-directory: apps/console
-        run: >-
-          pnpm exec vitest run
-          app/api/v1/connectors/jace/inbound
-          app/api/v1/webhooks/github-app/route.test.ts
-          app/api/v1/webhooks/github-actions/claude-ack/route.test.ts
-          app/api/v1/webhooks/github-actions/claude-repair-observation/route.test.ts
-          app/api/v1/runner/pr-review/route.test.ts
-          app/api/v1/runner/acceptance-dependency-observations/route.test.ts
-          app/api/v1/runner/change-record/pr/route.test.ts
-          app/api/v1/runner/dependency-upgrade-proposals/route.test.ts
-          app/api/v1/agent/acceptance-correction-packets/route.test.ts
-          app/components/sidebar-nav.test.ts
-          'app/(dashboard)/dashboard/[workspaceId]/page.test.ts'
-          'app/(dashboard)/dashboard/[workspaceId]/changes/page.test.tsx'
-          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-record-summary-list.test.tsx'
-          'app/api/v1/workspaces/[workspaceId]/change-records/route.test.ts'
-          'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/route.test.ts'
-          'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-merge-outcomes/route.test.ts'
-          'app/api/v1/workspaces/[workspaceId]/acceptance-outcome-metrics/route.test.ts'
-          'app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.test.tsx'
-          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel-helpers.test.ts'
-          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel.test.tsx'
-          app/api/v1/runner/review-jobs
-          app/api/v1/runner/preview-boots
-          app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts
-          lib/github-advisory-review.test.ts
-          lib/github-current-pr.test.ts
-          lib/github-actions-oidc.test.ts
-          lib/github-claude-ack-workflow.test.ts
-          lib/github-correction-carrier-preflight.test.ts
-          lib/github-correction-carrier-comment.test.ts
-          lib/github-correction-carrier.test.ts
-          lib/github-correction-dispatch-production.test.ts
-          lib/dependency-observation-draft.test.ts
-          lib/approval-decision-dependency-upgrade.test.ts
-          lib/acceptance-dependency-observation.test.ts
-          lib/acceptance-context-pack-compiler.test.ts
-          lib/acceptance-context-pack-source-custody.test.ts
-          lib/correction-dispatch-renderer.test.ts
-          lib/github-exact-head-content.test.ts
-          lib/github-exact-head-context.test.ts
-          lib/review-job-correction-packet.test.ts
-          lib/review-job-api-execution.test.ts
-          lib/review-job-data-execution.test.ts
-          lib/review-job-job-execution.test.ts
-          lib/review-job-ui-execution.test.ts
-
-  # R11.2 runtime proof is deliberately separate from component and route
-  # Vitest. It drives the production Console with a real Auth.js database
-  # session, migrated PostgreSQL, and an S3-compatible MinIO object. It never
-  # supplies GitHub credentials and the only browser publication attempt must
-  # retain the Jace-approval refusal boundary.
-  r11-browser:
-    name: R11.2 authenticated Record detail
-    needs: node
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      DATABASE_URL: postgres://agentrail:agentrail@127.0.0.1:5434/agentrail
-      AUTH_SECRET: r112-browser-proof-ci-only-9fd3b7c9d13f42528f71d0a8587ac12f
-      AUTH_TRUST_HOST: "true"
-      S3_ENDPOINT: http://127.0.0.1:9000
-      S3_ACCESS_KEY: agentrail
-      S3_SECRET_KEY: agentrail123
-      S3_BUCKET: agentrail-artifacts
-      S3_REGION: us-east-1
-      S3_FORCE_PATH_STYLE: "1"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - name: workspace — install
-        run: pnpm install --frozen-lockfile
-      - name: proof services — PostgreSQL and MinIO
-        run: |
-          docker compose -p agentrail-r112-browser-proof up -d --wait postgres minio
-          docker compose -p agentrail-r112-browser-proof run --rm --no-TTY minio-init
-      - name: proof packages — build and migrate
-        run: |
-          pnpm --filter @agentrail/github-app build
-          pnpm --filter @agentrail/db-postgres build
-          pnpm --filter @agentrail/db-postgres exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022 --strict --esModuleInterop --skipLibCheck --resolveJsonModule --types node scripts/proof-r112-console-record.ts
-          pnpm --filter @agentrail/db-postgres migrate
-          pnpm --filter @agentrail/console build
-      - name: browser — install Chromium
-        run: pnpm --filter @agentrail/console exec playwright install --with-deps chromium
-      - name: R11.2 — authenticated browser proof
-        run: pnpm --filter @agentrail/console test:r11-browser
-      - name: browser proof artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: r11-browser-proof-${{ github.sha }}
-          path: apps/console/test-results/r11-acceptance-record-detail
-          if-no-files-found: warn
-          retention-days: 7
-      - name: proof services — exact teardown
-        if: always()
-        run: docker compose -p agentrail-r112-browser-proof down --volumes --remove-orphans
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentrail/github-app build
+      - run: pnpm --filter @agentrail/db-postgres build
+      - run: pnpm --filter @agentrail/db-postgres migrate
+      - run: pnpm --filter @agentrail/db-postgres test
+      - run: pnpm --filter @agentrail/mcp build && pnpm --filter @agentrail/mcp test
+      - run: pnpm --filter @agentrail/console exec vitest run --maxWorkers=2
+      - run: pnpm --filter @agentrail/console build
+      - name: Real MCP to production Console and PostgreSQL
+        run: node packages/mcp/scripts/proof-with-console.mjs

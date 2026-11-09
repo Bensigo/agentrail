@@ -51,21 +51,24 @@ Use these repo-local skills when the task matches them:
 
 AgentRail also installs curated first-party skills for common implementation contexts, such as frontend web, Tauri desktop, backend APIs, devops/deploy work, and current-docs verification. These are reviewed local files under `.agentrail/skills/`, not arbitrary third-party hot installs.
 
-Upstream planning — turning a fuzzy idea into a stress-tested PRD, milestones, and house-template issues — lives in the Jace coordinator (`grill-me`, `to-prd`, `to-milestones`, `to-issues`), not in this project. The house issue format is the hand-off contract: implementation work here starts from the issues Jace produces.
+Your connected coding agent can plan work directly. Jace is an optional independent trust layer at https://github.com/Bensigo/jace; it is never required to start or execute AgentRail work.
+
+When the AgentRail workflow MCP tools are connected, use `workflow_start` for the user-approved task, retrieve bounded context, implement with tests, report configured checks through `workflow_check`, and finish with `workflow_update` phase `needs_review`. Use `workflow_get` before resuming and keep event keys stable when retrying. The user inspects the same task in the Console and makes the final closure decision. Reported progress/check receipts are not independent verification. Do not launch another coding agent merely because this agent is already connected through MCP.
 
 Skill supply-chain rule: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Treat upstream skill repositories as provenance candidates until reviewed. When updating provenance, verify the upstream source still exists before editing `.agentrail/agents/skill-registry.json`, record the source URL and observed commit or content SHA when available, check license/audit status, update the local vendored skill deliberately, and include verification evidence in the PR.
 
 Preferred sequence:
 
 ```text
-(Jace: grill-me -> to-prd -> to-milestones -> to-issues) -> tdd -> agentrail run issue -> agentrail prompt review -> review-fix
+MCP: clarify -> workflow_start -> context -> tdd/implement -> workflow_check -> review -> needs_review
+Native runner (optional): clear issue -> agentrail run issue -> agentrail prompt review -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.
 
 ## Issue Workflow
 
-Implementation work starts from GitHub issues, not loose chat instructions.
+For the optional GitHub/native queue, implementation starts from a clear issue. An explicitly user-approved MCP task can begin directly in the connected agent.
 
 Canonical labels:
 

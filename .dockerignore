@@ -51,3 +51,6 @@ docs/
 .vscode/
 .idea/
 .DS_Store
+
+# Generated local-only credentials
+.local/

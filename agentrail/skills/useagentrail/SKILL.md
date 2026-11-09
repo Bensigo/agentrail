@@ -31,7 +31,9 @@ Run this workflow only when the work is large enough to benefit from staged thin
    - Turn each milestone into independently grabbable implementation issues.
    - Each issue must include context links, acceptance criteria, verification steps, and any visual evidence requirement.
 
-6. Run the Ralph implementation loop.
+6. Execute through the selected workflow.
+   - With workflow MCP connected, stay in the user's current coding agent: `workflow_start` → bounded context → implementation/tests → `workflow_check` → `workflow_update` to `needs_review`. Read with `workflow_get` before resuming. Do not nest another agent automatically.
+   - For the optional native queued workflow, use the bounded Ralph implementation loop.
    - Use the repo's Ralph runner to pick ready issues, implement, verify, and open or update PRs.
    - Recall relevant project memory before editing, then verify it against current code and docs.
    - Bound the run: choose one issue or a small fixed batch. Do not launch unbounded agent loops.

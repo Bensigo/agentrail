@@ -3,13 +3,12 @@ import { resolvePrimaryNavItems } from "./sidebar";
 import { YOUR_ENGINEER_ZONE } from "./sidebar-nav";
 
 describe("resolvePrimaryNavItems", () => {
-  it("returns the Trust Layer destinations in their configured order", () => {
+  it("returns the workflow destinations in their configured order", () => {
     expect(resolvePrimaryNavItems()).toBe(YOUR_ENGINEER_ZONE.items);
     expect(resolvePrimaryNavItems().map((item) => item.href)).toEqual([
-      "",
-      "briefs",
-      "changes",
-      "approvals",
+      "work",
+      "runs",
+      "review-gates",
     ]);
   });
 
@@ -21,6 +20,6 @@ describe("resolvePrimaryNavItems", () => {
 
     expect(hrefs).not.toContain("chat");
     expect(hrefs).not.toContain("goals");
-    expect(hrefs).not.toContain("work");
+    expect(hrefs).not.toContain("changes");
   });
 });

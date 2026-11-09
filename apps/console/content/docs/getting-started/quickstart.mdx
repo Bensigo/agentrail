@@ -1,56 +1,13 @@
 ---
-title: Quickstart
-description: From sign-up to a reviewed PR — message Jace and approve the brief.
+title: Quick start
+description: Connect your coding agent to AgentRail through MCP.
 ---
 
-This walks through the fastest path from nothing to a reviewed pull request:
-sign up, connect GitHub, and message Jace. No CLI, no runner to install —
-the work runs in the cloud. (Want to run the worker on your own machine
-instead? See [Self-hosting](/docs/getting-started/self-hosting).)
+1. Start your own AgentRail Console using the repository README. Sign in, create a workspace and connect a repository.
+2. Build the MCP server with `pnpm --filter @agentrail/mcp build`.
+3. Open **Agents** in the Console and create a workspace workflow key. Configure your client's MCP command as `node`, with the absolute server path as its argument. Set `AGENTRAIL_TARGET`, `AGENTRAIL_BIN`, `AGENTRAIL_WORKFLOW_BASE_URL` and `AGENTRAIL_WORKFLOW_API_KEY` using the displayed settings.
+4. Index your project with `agentrail context index --target /path/to/project`.
+5. Ask your agent to use `workflow_repositories` and `workflow_start`. It can use `context_search` and `context_get` for bounded source context, `workflow_update` for progress and `workflow_check` for a configured local check.
+6. Inspect the task in **Work**. Read check receipts and history, then make the human decision to close or reopen it.
 
-## 1. Sign up
-
-Go to [heyjace.com](https://heyjace.com) and sign in with GitHub. The first
-time in, you'll create a workspace — just a name and a slug.
-
-## 2. Connect GitHub
-
-On the setup steps, connect GitHub: add the repo(s) you want Jace to work in.
-The workspace creates the GitHub webhook automatically, so issues can flow
-into your queue. If that fails, it gives you a payload URL and secret to add
-by hand.
-
-## 3. Message Jace on Telegram
-
-Connect a channel: Telegram is the one open door today. Message the bot at
-the link shown once — that conversation becomes your connection to Jace, no
-token to paste.
-
-If you're on a self-hosted deploy with no shared bot configured, you'll see a
-form to bring your own bot instead — see
-[Self-hosting](/docs/getting-started/self-hosting).
-
-## 4. Describe the work
-
-Send Jace a message describing what you want done — a bug, a small feature,
-anything scoped enough to hand to an engineer. You can also just hand over a
-GitHub issue you've already written.
-
-## 5. Approve the brief
-
-Before touching any code, Jace replies with a brief: the task type, the model
-it picked, and a dollar estimate. Approving is the one confirmation this flow
-needs — it's what sets the run's budget.
-
-## 6. Get your PR
-
-Jace opens a pull request against your repo and messages you when it's ready.
-You review and merge it — or turn on merge permission under **Settings →
-Permissions** and Jace will merge it itself once its review gate is green.
-
-## Next steps
-
-- See what "green" actually means in [Review & Gates](/docs/concepts/review-and-gates).
-- [Dashboard](/docs/dashboard) — track runs and costs, and invite your team.
-- Want to run the worker on your own machine instead? See
-  [Self-hosting](/docs/getting-started/self-hosting).
+Use stable task/event keys when retrying and read the current revision before resuming. A reported pass is not independently verified acceptance evidence. No Jace account or service is required. CLI-native queued work is a separate optional path.

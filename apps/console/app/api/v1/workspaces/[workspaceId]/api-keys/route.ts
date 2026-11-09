@@ -74,16 +74,16 @@ export async function POST(
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
   const kind: ApiKeyKind = body.kind === undefined ? "self_hosted"
-    : body.kind === "self_hosted" || body.kind === "agent_mcp" ? body.kind
+    : body.kind === "self_hosted" || body.kind === "workflow_mcp" ? body.kind
       : "self_hosted";
-  if (body.kind !== undefined && body.kind !== "self_hosted" && body.kind !== "agent_mcp") {
-    return NextResponse.json({ error: "kind must be self_hosted or agent_mcp" }, { status: 400 });
+  if (body.kind !== undefined && body.kind !== "self_hosted" && body.kind !== "workflow_mcp") {
+    return NextResponse.json({ error: "kind must be self_hosted or workflow_mcp" }, { status: 400 });
   }
   const teamId = typeof body.team_id === "string" && body.team_id.trim()
     ? body.team_id.trim() : null;
-  if (kind === "agent_mcp" && teamId !== null) {
+  if (kind === "workflow_mcp" && teamId !== null) {
     return NextResponse.json(
-      { error: "agent_mcp keys are workspace-scoped; team-scoped Jace authority is not supported" },
+      { error: "workflow_mcp keys are workspace-scoped" },
       { status: 400 },
     );
   }

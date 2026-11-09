@@ -30,7 +30,6 @@ const AUDITED_ROOTS = [
   "dashboard/[workspaceId]/layout.tsx",
   "dashboard/[workspaceId]/components",
   "dashboard/[workspaceId]/work",
-  "dashboard/[workspaceId]/approvals",
   "dashboard/[workspaceId]/runs",
   "dashboard/[workspaceId]/review-gates",
   "dashboard/[workspaceId]/costs",

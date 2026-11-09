@@ -11,6 +11,12 @@ const result: NextAuthResult = NextAuth({
     sessionsTable: sessions,
     verificationTokensTable: verificationTokens,
   }),
+  // Distinct localhost ports share a cookie jar. Namespace local product
+  // sessions so signing into Jace cannot sign AgentRail out (or vice versa).
+  ...(process.env.AUTH_COOKIE_PREFIX ? { cookies: { sessionToken: {
+    name: `${process.env.AUTH_COOKIE_PREFIX}.session-token`,
+    options: { httpOnly: true, sameSite: "lax" as const, path: "/", secure: (process.env.AUTH_URL || "").startsWith("https:") },
+  } } } : {}),
   providers: [
     GitHub({
       // The Jace GitHub App's OAuth credentials (spec

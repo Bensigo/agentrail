@@ -100,6 +100,8 @@ class _FakeDaemonServer:
                 if not chunk:
                     break
                 chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
             raw = b"".join(chunks)
             try:
                 req = json.loads(raw.decode())
@@ -153,7 +155,7 @@ class _FakeDaemonServer:
         # Wait for socket to appear
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            if self.socket_path.exists():
+            if self.socket_path.exists() and daemon_mod.ping(self.socket_path, timeout=0.2):
                 break
             time.sleep(0.02)
 

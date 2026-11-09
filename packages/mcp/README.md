@@ -1,116 +1,38 @@
-# @agentrail/mcp
+# AgentRail MCP
 
-MCP server that exposes AgentRail's compact context retrieval as native tools, so
-coding agents (Claude, Cursor, Codex, …) prefer it over raw file search/read —
-the MCP/tool-enforcement level from
-`docs/benchmarks/context-retrieval-cli-benchmark.md`.
+Agent-neutral stdio MCP tools for project context and development workflow. No Jace service or key is required.
 
 ## Tools
+- `context_search`, `context_get`, `context_build_pack`, `context_explain_pack`: bounded context through the Python CLI.
+- `context_def`, `context_callers`, `context_callees`, `context_impact`: code graph navigation.
+- `workflow_repositories`, `workflow_list`, `workflow_start`, `workflow_get`, `workflow_update`: workspace-scoped durable tasks shared with the Console.
+- `workflow_check`: execute a configured local check once, bound to the connected task repository/branch, and report its exit code, commit SHA, dirty flag and output digest.
 
-| Tool | Maps to | Returns |
-| --- | --- | --- |
-| `acceptance_correction_packets_get` | authenticated AgentRail server read | the complete immutable packet set for one Record's server-derived current exact head |
-| `jace_turn` | authenticated direct Jace turn | one idempotent planning, brainstorming, intake, or control message in the credential-bound task conversation |
-| `jace_task_get` | authenticated direct Jace read | the exact `messageKey` reply plus the task-linked Intake, Record, Contract, exact-head Context Pack, and status |
-| `context_search` | `agentrail context search` | ranked path + line range + symbol + bounded snippet + reason + score |
-| `context_get` | `agentrail context get` | only the requested line range / symbol block — never the whole file |
-| `context_build_pack` | `agentrail context build` | a bounded context pack for an issue/PR phase |
-| `context_explain_pack` | `agentrail context explain` | why sources were included / excluded / boosted / demoted |
+## Build and configure
 
-The context tools shell out to the existing `agentrail context …` CLI, so
-context retrieval behaviour has a single source of truth. The correction tool
-is a separate read-only server call; it cannot acknowledge, dispatch, resume,
-approve, or claim a repair.
-
-The Jace tools extend this server; they do not replace repository-context
-tools. They derive the workspace from the configured credential and derive the
-Acceptance Record from its task Intake. Neither tool accepts a workspace or
-Record locator. MCP task text cannot confirm a Contract, and these tools expose
-no builder dispatch, implementation, merge, deploy, shell, or filesystem action.
-
-## Build
-
-```bash
-pnpm --filter @agentrail/mcp build   # emits dist/index.js
+```sh
+pnpm --filter @agentrail/mcp build
 ```
 
-## Configuration
+Use any MCP-compatible client's configuration format with these values:
+- command: `node`
+- arguments: `/absolute/path/to/agentrail/packages/mcp/dist/index.js`
+- `AGENTRAIL_BIN`: the absolute AgentRail CLI path
+- `AGENTRAIL_TARGET`: the project checkout
+- `AGENTRAIL_WORKFLOW_BASE_URL`: your Console origin (HTTPS remotely; loopback HTTP locally)
+- `AGENTRAIL_WORKFLOW_API_KEY`: a workspace `workflow_mcp` key created in Console → Agents
 
-The server resolves:
+Index the target first: `agentrail context index --target /path/to/project`.
 
-- the AgentRail CLI from `AGENTRAIL_BIN` (default `agentrail` on `PATH`),
-- the repo to operate on from the per-call `target` argument, else
-  `AGENTRAIL_TARGET`, else the server's working directory.
+Tasks are credential/workspace-scoped. Agent labels are unverified client-provided labels. Event keys deduplicate retries; revisions reject stale writes. A configured check reserves execution under its credential, blocks concurrent progress/closure, and has bounded process-group execution. An expired ambiguous reservation needs an explicit owner/admin release. Reports and check receipts do not become independent verification, and only a human can close/reopen through the Console. Raw check logs are not uploaded. Costs are not recorded by these tools.
 
-The authenticated Console-backed tools use fixed process configuration:
+Jace conversation, Acceptance Record and correction tools moved to [Bensigo/jace](https://github.com/Bensigo/jace).
 
-- `AGENTRAIL_SERVER_BASE_URL` — the AgentRail Console base URL;
-- `AGENTRAIL_MCP_CORRECTION_API_KEY` — a workspace-scoped AgentRail API key
-  dedicated to this MCP correction read.
-- `AGENTRAIL_MCP_JACE_API_KEY` — a dedicated workspace-level `agent_mcp` API
-  key used only for direct Jace turns and bounded task-state reads. Generic
-  self-hosted runner and fleet keys are rejected; `agent_mcp` keys are denied
-  by default from legacy bearer routes.
+## Local integration proof
+After building the Console and applying migrations to a dedicated local database ending `_proof`, set `DATABASE_URL` and run:
 
-An AgentRail workspace owner or admin issues the Jace key through the
-session-authenticated Console API. From an authenticated same-origin client,
-send:
-
-```http
-POST /api/v1/workspaces/<workspace-id>/api-keys
-Content-Type: application/json
-
-{"name":"Codex to Jace","kind":"agent_mcp"}
+```sh
+node packages/mcp/scripts/proof-with-console.mjs
 ```
 
-The response returns `secret` once. Store that value only in
-`AGENTRAIL_MCP_JACE_API_KEY`; do not reuse a runner key, add `team_id`, or place
-the secret in a tool argument or prompt. The endpoint refuses non-owner/admin
-members and any team-scoped `agent_mcp` request.
-
-The tool accepts only a Change Record id. The key supplies workspace authority;
-the server derives and revalidates the Record's current PR head, head cycle,
-review job, confirmed Acceptance Contract, and complete packet custody. Never
-place the API key in an MCP tool argument or prompt.
-
-The target repo must already be indexed (`agentrail context index`).
-
-### Claude Code / Claude Desktop / Cursor
-
-```json
-{
-  "mcpServers": {
-    "agentrail-context": {
-      "command": "node",
-      "args": ["/abs/path/to/agentrail/packages/mcp/dist/index.js"],
-      "env": {
-        "AGENTRAIL_BIN": "/abs/path/to/agentrail/scripts/agentrail",
-        "AGENTRAIL_TARGET": "/abs/path/to/your/repo",
-        "AGENTRAIL_SERVER_BASE_URL": "https://console.example.com",
-        "AGENTRAIL_MCP_CORRECTION_API_KEY": "<workspace-api-key>",
-        "AGENTRAIL_MCP_JACE_API_KEY": "<agent-mcp-workspace-api-key>"
-      }
-    }
-  }
-}
-```
-
-## Why route agents through this
-
-Pair it with the AGENTS.md guidance (soft enforcement) so agents are both *told*
-to use retrieval first and *given* the native tools to do it: search for
-candidates, then `context_get` only the line ranges you need, instead of reading
-whole files and burning context.
-
-## CLI vs MCP — token cost
-
-The MCP is for **convenience and enforcement** (agents that prefer native
-tools), not for the lowest token cost. Each MCP call carries protocol overhead
-(tool schemas in context, structured `tool_use`/`tool_result` round-trips), so
-in a pilot agent run the same task cost noticeably more tokens via MCP than via
-the `agentrail context` **CLI** (which returns compact plain text through the
-shell the agent already has). When token budget is the priority, point agents at
-the CLI (see `.agentrail/agents/agent-instructions.md` in an installed project,
-or `agentrail/templates/docs/agents/agent-instructions.md` for the source);
-use the MCP when you want a native, enforceable tool surface. See
-`docs/benchmarks/agent-ab-protocol.md`.
+The script starts the production Console and exercises actual MCP clients, PostgreSQL persistence, scoped credentials, retries, configured checks and human decisions. It does not exercise real third-party coding-agent applications or production services.

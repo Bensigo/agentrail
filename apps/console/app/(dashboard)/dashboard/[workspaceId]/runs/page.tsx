@@ -21,7 +21,7 @@ export default async function RunsPage({
     <div className="mx-auto max-w-[1440px]">
       <h1 className="text-sm font-bold text-[var(--gray-12)]">Runs</h1>
       <p className="mb-4 mt-1 text-xs text-[var(--gray-09)]">
-        Every work session Jace ran, with full receipts.
+        Every work session AgentRail ran, with full receipts.
       </p>
       <RunsTable workspaceId={workspaceId} repositories={repositories} />
     </div>

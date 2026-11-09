@@ -28,35 +28,35 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
   vi.mocked(createApiKey).mockResolvedValue({
     id: "key-1",
-    name: "Codex to Jace",
+    name: "Codex to workflow",
     keyPrefix: "ar_12345678",
     teamId: null,
-    kind: "agent_mcp",
+    kind: "workflow_mcp",
     createdAt: new Date("2026-08-14T00:00:00Z"),
   } as never);
 });
 
 describe("workspace API-key issuance", () => {
-  it("lets an owner issue a dedicated workspace-level agent_mcp key", async () => {
-    const response = await POST(request({ name: "Codex to Jace", kind: "agent_mcp" }), params);
+  it("lets an owner issue a dedicated workspace-level workflow_mcp key", async () => {
+    const response = await POST(request({ name: "Codex to workflow", kind: "workflow_mcp" }), params);
 
     expect(response.status).toBe(201);
     expect(createApiKey).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: "workspace-1",
       teamId: null,
-      name: "Codex to Jace",
-      kind: "agent_mcp",
+      name: "Codex to workflow",
+      kind: "workflow_mcp",
     }));
     await expect(response.json()).resolves.toMatchObject({
-      api_key: { kind: "agent_mcp", team_id: null },
+      api_key: { kind: "workflow_mcp", team_id: null },
       secret: expect.stringMatching(/^ar_[0-9a-f]{64}$/),
     });
   });
 
   it("fails closed instead of pretending a team-scoped MCP key is enforced", async () => {
     const response = await POST(request({
-      name: "Team Codex to Jace",
-      kind: "agent_mcp",
+      name: "Team Codex to workflow",
+      kind: "workflow_mcp",
       team_id: "team-1",
     }), params);
 
@@ -83,10 +83,10 @@ describe("workspace API-key issuance", () => {
   it("lists credential kinds so operators can distinguish least-authority keys", async () => {
     vi.mocked(listApiKeys).mockResolvedValue([{
       id: "key-1",
-      name: "Codex to Jace",
+      name: "Codex to workflow",
       keyPrefix: "ar_12345678",
       teamId: null,
-      kind: "agent_mcp",
+      kind: "workflow_mcp",
       createdAt: new Date("2026-08-14T00:00:00Z"),
       lastUsedAt: null,
       revokedAt: null,
@@ -95,7 +95,7 @@ describe("workspace API-key issuance", () => {
     const response = await GET(request({}), params);
 
     await expect(response.json()).resolves.toMatchObject({
-      api_keys: [{ kind: "agent_mcp" }],
+      api_keys: [{ kind: "workflow_mcp" }],
     });
   });
 });

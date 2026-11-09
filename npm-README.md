@@ -1,79 +1,29 @@
 # AgentRail
 
-Control plane for AI coding agents. Gives agents durable context, bounded issue execution, review loops, and verification gates — so agent work is easier to inspect, resume, and trust.
+Open-source development workflow, project context and Console for any MCP-compatible coding agent. Jace is an independent optional trust layer, not a signup prerequisite.
 
-Works with Claude Code, Codex, Cursor, Hermes, or any custom command. You bring your own LLM keys.
+## Current source setup
 
-## Install
+Use the repository's [local setup](https://github.com/Bensigo/agentrail/blob/main/LOCAL.md):
 
-```bash
-npm install -g @useagentrail/cli
+```sh
+pnpm install --frozen-lockfile
+pnpm local:up
 ```
 
-## Quick Start
+The local command prepares a Python virtual environment and MCP server, builds the Console, starts isolated databases/storage, applies migrations and opens your local operator session. In Console → Agents, create a workspace workflow key and connect your agent using the displayed MCP command and environment. No hosted product account is needed.
 
-Sign up at [heyjace.com](https://heyjace.com), connect your
-GitHub repos on the Connectors page (trigger label: `ready-for-agent`), then:
+## Optional native runner
 
-Log in to your workspace (required):
+Connect to your own AgentRail Console:
 
-```bash
-agentrail login
-```
-
-Start the local runner:
-
-```bash
+```sh
+agentrail login --url http://localhost:3000
 agentrail runner
 ```
 
-The runner claims queued issues from the dashboard, executes them on your
-machine, opens PRs, and reports back. Label any GitHub issue `ready-for-agent`
-and a reviewed PR comes back automatically.
+This is the native queue/issue execution path. MCP-connected agents can work directly with `workflow_start`, bounded context, `workflow_update` and configured `workflow_check` calls. Reports, actual check receipts and human decisions stay distinct.
 
-## What It Does
+Published npm releases may lag the repository. Use the source checkout for the separated local-first product until a new version is released. See the repository README for installation, context indexing and verification details.
 
-- **Context engine** — builds scoped context packs from your repo so agents see what matters
-- **Bounded execution** — plan → execute → verify phases with automatic retry on verification failure
-- **Review loops** — PR review with finding triage (P0 → new issues, non-P0 → comments)
-- **AFK mode** — unattended batch execution across issues using git worktrees
-- **Project memory** — lessons, decisions, and failure patterns agents recall before acting
-- **Skills** — curated workflow skills that guide agents through complex tasks
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `agentrail login` | Sign in to your AgentRail workspace (required) |
-| `agentrail runner` | Start the local worker that claims and runs queued issues |
-| `agentrail whoami` | Show the logged-in workspace |
-| `agentrail init` | Install workflow files into a project |
-| `agentrail run issue N` | Execute a bounded plan/execute/verify loop |
-| `agentrail afk` | Unattended queue loop for labeled issues |
-| `agentrail doctor` | Check installation health |
-| `agentrail status` | Print workflow state |
-| `agentrail context query "task"` | Query the context engine |
-| `agentrail memory recall "topic"` | Recall project memory |
-| `agentrail console` | Open the dashboard console |
-| `agentrail upgrade` | Upgrade managed files without overwriting edits |
-
-## Dashboard
-
-The [console at heyjace.com](https://heyjace.com) is the central workspace
-for connecting repos, managing the issue queue, reviewing run outcomes, and
-tracking cost across your team:
-
-- Agent operations console across repos and teams
-- Run event streaming and cross-repo analytics
-- Context pack audit trails
-- Team collaboration and workspace sharing
-
-## Requirements
-
-- Node.js 18+
-- Python 3.9+ (for the context engine)
-- `gh` CLI (optional, for GitHub integration)
-
-## License
-
-Proprietary
+Apache-2.0.

@@ -31,7 +31,9 @@ jobs:
           POSTGRES_PASSWORD: agentrail
           POSTGRES_DB: agentrail_proof
         ports: ['5432:5432']
-        options: --health-cmd 'pg_isready -U agentrail' --health-interval 5s --health-timeout 5s --health-retries 10
+        options: >-
+          --health-cmd "pg_isready -U agentrail"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgres://agentrail:agentrail@127.0.0.1:5432/agentrail_proof
       AUTH_SECRET: isolated-ci-workflow-proof-only

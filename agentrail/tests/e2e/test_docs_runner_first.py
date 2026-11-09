@@ -20,7 +20,7 @@ def test_quickstart_does_not_require_jace():
 def test_mcp_documents_report_and_human_boundaries():
     text = (ROOT / "packages/mcp/README.md").read_text()
     assert "only a human can close/reopen" in text
-    assert "Costs are not recorded" in text
+    assert "agent-reported" in text and "private-context access" in text
     assert "AGENTRAIL_MCP_JACE_API_KEY" not in text
 
 def test_cli_package_keeps_native_runner_setup():

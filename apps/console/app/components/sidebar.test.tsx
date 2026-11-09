@@ -6,6 +6,7 @@ describe("resolvePrimaryNavItems", () => {
   it("returns the workflow destinations in their configured order", () => {
     expect(resolvePrimaryNavItems()).toBe(YOUR_ENGINEER_ZONE.items);
     expect(resolvePrimaryNavItems().map((item) => item.href)).toEqual([
+      "office",
       "work",
       "runs",
       "review-gates",

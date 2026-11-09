@@ -15,6 +15,7 @@
 export const SEGMENT_LABELS: Record<string, string> = {
   runs: "Runs",
   agents: "Agents",
+  office: "Office",
   "native-work": "Native runner",
   work: "Work",
   approvals: "Approvals",

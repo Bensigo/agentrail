@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   BookOpen,
-  CirclePause,
   GitBranch,
   RefreshCw,
   Radio,
@@ -19,148 +18,8 @@ import {
   type OfficeSnapshot,
   type OfficeTask,
 } from "./office-model";
+import { OfficeScene } from "./office-scene";
 import "./office.css";
-
-function Desk({
-  task,
-  selected,
-  recent,
-  onSelect,
-}: {
-  task: OfficeTask;
-  selected: boolean;
-  recent: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      className={`office-desk ${selected ? "is-selected" : ""} ${recent ? "is-working" : ""} ${task.phase === "closed" ? "is-closed" : ""}`}
-      onClick={onSelect}
-      aria-pressed={selected}
-      aria-label={`${task.agent}: ${task.title}, ${phaseName[task.phase] || task.phase}`}
-    >
-      <span className="office-desk-state">
-        <i className={`office-status ${task.phase}`} />
-        {phaseName[task.phase] || task.phase}
-      </span>
-      <svg viewBox="0 0 180 130" aria-hidden="true" className="office-desk-art">
-        <ellipse
-          cx="90"
-          cy="109"
-          rx="47"
-          ry="8"
-          fill="currentColor"
-          opacity=".06"
-        />
-        <rect
-          x="18"
-          y="18"
-          width="144"
-          height="69"
-          rx="12"
-          fill="var(--desk-top)"
-          stroke="var(--desk-line)"
-        />
-        <rect
-          x="25"
-          y="78"
-          width="130"
-          height="9"
-          rx="4"
-          fill="var(--desk-line)"
-          opacity=".3"
-        />
-        <path
-          d="M38 87v12m104-12v12"
-          stroke="var(--desk-line)"
-          strokeWidth="5"
-          strokeLinecap="round"
-        />
-        <rect x="61" y="25" width="59" height="34" rx="4" fill="#333631" />
-        <rect
-          x="66"
-          y="30"
-          width="49"
-          height="22"
-          rx="1"
-          fill={recent ? "#424c3a" : "#464842"}
-        />
-        <path
-          d="M70 36h18m-18 5h31m-31 5h24"
-          stroke={recent ? "#b3ce83" : "#7e8378"}
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
-        <path
-          className="office-cursor"
-          d="M100 46h5"
-          stroke="#e8dc62"
-          strokeWidth="2"
-        />
-        <path
-          d="M90 59v6m-13 0h27"
-          stroke="#777b70"
-          strokeWidth="3"
-          strokeLinecap="round"
-        />
-        <rect x="69" y="69" width="42" height="10" rx="3" fill="#d4d7ce" />
-        <path
-          d="M73 73h33"
-          stroke="#a4a99d"
-          strokeWidth="2"
-          strokeDasharray="2 2"
-        />
-        <rect
-          x="38"
-          y="39"
-          width="14"
-          height="21"
-          rx="2"
-          fill="#eeeee6"
-          transform="rotate(-8 38 39)"
-        />
-        <path d="M41 45h7m-7 4h6m-6 4h5" stroke="#b4b7a9" strokeWidth="1.5" />
-        <circle cx="140" cy="40" r="7" fill="#d9caa9" />
-        <circle cx="140" cy="40" r="4" fill="#7b6650" />
-        <rect x="65" y="91" width="51" height="31" rx="14" fill="#697365" />
-        <g className="office-person">
-          <path
-            d="M72 96c0-14 36-14 36 0v12H72z"
-            fill={selected ? "#e3cb40" : "#c6c6b8"}
-          />
-          <path
-            d="M74 91l-8-11m40 11 8-11"
-            stroke={selected ? "#e3cb40" : "#c6c6b8"}
-            strokeWidth="9"
-            strokeLinecap="round"
-          />
-          <ellipse cx="90" cy="84" rx="13" ry="14" fill="#bb9879" />
-          <path d="M77 83c-3-18 29-22 27 0-6-5-20-7-27 0" fill="#47483c" />
-        </g>
-      </svg>
-      <span className="office-desk-label">
-        <strong>{task.agent}</strong>
-        <span>{task.title}</span>
-      </span>
-      <span className="office-desk-cost">
-        {task.usage?.costUsd != null
-          ? `${usd(task.usage.costUsd)} reported`
-          : "Cost not reported"}
-      </span>
-    </button>
-  );
-}
-function Plant({ className = "" }: { className?: string }) {
-  return (
-    <span className={`office-plant ${className}`} aria-hidden="true">
-      <i />
-      <i />
-      <i />
-      <i />
-      <b />
-    </span>
-  );
-}
 
 export function Office({
   workspaceId,
@@ -173,6 +32,7 @@ export function Office({
     [selectedId, setSelectedId] = useState(initial.tasks[0]?.id || ""),
     [now, setNow] = useState(() => new Date(initial.observedAt).getTime()),
     [error, setError] = useState(""),
+    [live, setLive] = useState(false),
     [refreshing, setRefreshing] = useState(false),
     [showClosed, setShowClosed] = useState(false);
   const observed = useRef({
@@ -216,26 +76,69 @@ export function Office({
     }
   }, [workspaceId]);
   useEffect(() => {
+    let source: EventSource | null = null,
+      connected = false;
+    const connect = () => {
+      source?.close();
+      connected = false;
+      setLive(false);
+      if (document.hidden) return;
+      source = new EventSource(
+        `/api/v1/workflow/office/events?workspaceId=${workspaceId}`,
+      );
+      source.onopen = () => {
+        connected = true;
+        setLive(true);
+        setError("");
+      };
+      source.onerror = () => {
+        connected = false;
+        setLive(false);
+      };
+      source.addEventListener("snapshot", (event) => {
+        const data: OfficeSnapshot = JSON.parse((event as MessageEvent).data);
+        ++request.current;
+        controller.current?.abort();
+        setRefreshing(false);
+        setSnapshot((previous) =>
+          Date.parse(data.observedAt) < Date.parse(previous.observedAt)
+            ? previous
+            : data,
+        );
+        observed.current = {
+          server: Date.parse(data.observedAt),
+          client: Date.now(),
+        };
+        setNow(observed.current.server);
+        setError("");
+      });
+      source.addEventListener("heartbeat", (event) => {
+        const data = JSON.parse((event as MessageEvent).data);
+        observed.current = {
+          server: Date.parse(data.observedAt),
+          client: Date.now(),
+        };
+      });
+    };
+    connect();
     const poll = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, 10000);
+      if (!document.hidden && !connected) void refresh();
+    }, 5000);
     const clock = setInterval(
       () =>
         setNow(observed.current.server + Date.now() - observed.current.client),
-      10000,
+      1000,
     );
-    const visible = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", visible);
+    document.addEventListener("visibilitychange", connect);
     return () => {
+      source?.close();
       clearInterval(poll);
       clearInterval(clock);
-      document.removeEventListener("visibilitychange", visible);
+      document.removeEventListener("visibilitychange", connect);
       request.current++;
       controller.current?.abort();
     };
-  }, [refresh]);
+  }, [refresh, workspaceId]);
   const visible = snapshot.tasks.filter(
     (t) => showClosed || t.phase !== "closed",
   );
@@ -252,12 +155,19 @@ export function Office({
             Office
             <span className="office-heading-dot" />
           </h1>
-          <p>Select a desk to inspect a work session.</p>
+          <p>
+            Watch your agents move through the office. Select one to inspect its
+            work.
+          </p>
         </div>
         <div className="office-refresh">
           <span>
             <Radio size={13} />
-            {error ? "Updates unavailable" : "Updates every 10s"}
+            {error
+              ? "Updates unavailable"
+              : live
+                ? "Live updates"
+                : "Reconnecting · polling"}
           </span>
           <button
             onClick={() => void refresh()}
@@ -296,104 +206,29 @@ export function Office({
         </p>
       )}
       <div className="office-layout">
-        <section
-          id="office-floor"
-          tabIndex={-1}
-          className="office-floor"
-          aria-label="Office floor plan"
-        >
-          <div className="office-floor-top">
-            <span>
-              <i />
-              FLOOR 01
-            </span>
-            <span>
-              {visible.length} work session{visible.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-          <div className="office-room">
-            <div className="office-windows" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
-            <Plant className="office-plant-top" />
-            <div className="office-work-area">
-              <div className="office-area-label">WORKSPACE</div>
-              {visible.length ? (
-                <div className="office-desks">
-                  {visible.map((task) => (
-                    <Desk
-                      key={task.id}
-                      task={task}
-                      selected={selected?.id === task.id}
-                      recent={recentlyReporting(task, now)}
-                      onSelect={() => {
-                        setSelectedId(task.id);
-                        if (window.matchMedia("(max-width: 760px)").matches)
-                          requestAnimationFrame(() => {
-                            inspector.current?.focus({ preventScroll: true });
-                            inspector.current?.scrollIntoView({
-                              block: "start",
-                              behavior: window.matchMedia(
-                                "(prefers-reduced-motion: reduce)",
-                              ).matches
-                                ? "auto"
-                                : "smooth",
-                            });
-                          });
-                      }}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="office-empty">
-                  <div className="office-empty-desks" aria-hidden="true">
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                  <h2>
-                    {snapshot.tasks.length
-                      ? "Work is wrapped up"
-                      : "Your office is ready"}
-                  </h2>
-                  <p>
-                    {snapshot.tasks.length
-                      ? "Show closed sessions to revisit their history."
-                      : "Connect your coding agent and start a task to take a desk."}
-                  </p>
-                  <Link
-                    href={`/dashboard/${workspaceId}/${snapshot.tasks.length ? "work" : "agents"}`}
-                  >
-                    {snapshot.tasks.length ? "View work" : "Connect an agent"}
-                    <ArrowUpRight size={14} />
-                  </Link>
-                </div>
-              )}
-            </div>
-            <div className="office-lounge" aria-hidden="true">
-              <div className="office-sofa">
-                <i />
-                <i />
-                <i />
-              </div>
-              <span className="office-coffee-table" />
-              <Plant />
-              <span className="office-lounge-label">COMMON ROOM</span>
-            </div>
-          </div>
-          <div className="office-floor-bottom">
-            <span>
-              <i className="office-status implementing" />
-              Recent agent report
-            </span>
-            <span>
-              <CirclePause size={12} />
-              Quiet / waiting
-            </span>
-          </div>
-        </section>
+        <OfficeScene
+          tasks={snapshot.tasks}
+          selectedId={selected?.id || ""}
+          now={now}
+          showClosed={showClosed}
+          onSelect={(id) => {
+            setSelectedId(id);
+            if (snapshot.tasks.find((t) => t.id === id)?.phase === "closed")
+              setShowClosed(true);
+            if (window.matchMedia("(max-width: 760px)").matches)
+              requestAnimationFrame(() => {
+                inspector.current?.focus({ preventScroll: true });
+                inspector.current?.scrollIntoView({
+                  block: "start",
+                  behavior: window.matchMedia(
+                    "(prefers-reduced-motion: reduce)",
+                  ).matches
+                    ? "auto"
+                    : "smooth",
+                });
+              });
+          }}
+        />
         <aside
           ref={inspector}
           tabIndex={-1}
@@ -401,7 +236,7 @@ export function Office({
           aria-label="Selected work session"
         >
           <a className="office-back" href="#office-floor">
-            ↑ Back to desks
+            ↑ Back to office
           </a>
           {selected ? (
             <>

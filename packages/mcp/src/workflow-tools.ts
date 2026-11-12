@@ -1,11 +1,6 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { executeCheck } from "./check-execution.js";
+import { RELEASE_CHECK_NAME, runWorkflowCheck } from "./workflow-check.js";
 import { workflowRequest } from "./workflow-client.js";
 
 const phase = z.enum([
@@ -21,6 +16,37 @@ const event = {
   eventKey: z.string().min(1).max(128),
   expectedRevision: z.number().int().nonnegative(),
 };
+const worktree = z
+  .string()
+  .min(1)
+  .max(4096)
+  .optional()
+  .describe(
+    "Path to a registered Git worktree of AGENTRAIL_TARGET. Omit for the configured checkout.",
+  );
+const commit = z.string().regex(/^[a-f0-9]{40}$/);
+const prUrl = z.string().url().max(512);
+const checkpoint = z.discriminatedUnion("step", [
+  z
+    .object({
+      step: z.literal("ready"),
+      criteria: z.array(z.string().min(1).max(400)).min(1).max(8),
+      planPath: z.string().min(1).max(256).optional(),
+      issueUrl: z.string().url().max(512).optional(),
+    })
+    .strict(),
+  z.object({ step: z.literal("review"), headSha: commit }).strict(),
+  z.object({ step: z.literal("rework") }).strict(),
+  z.object({ step: z.literal("ship") }).strict(),
+  z
+    .object({
+      step: z.literal("follow_up"),
+      issueUrl: z.string().url().max(512).optional(),
+    })
+    .strict(),
+  z.object({ step: z.literal("release"), commitSha: commit }).strict(),
+]);
+
 const READ = { readOnlyHint: true, openWorldHint: false } as const;
 const WRITE = {
   readOnlyHint: false,
@@ -51,6 +77,35 @@ export function registerWorkflowTools(
   server: McpServer,
   childEnv: () => NodeJS.ProcessEnv,
 ) {
+  server.registerPrompt(
+    "agentrail_work",
+    {
+      description:
+        "Carry an idea, fix, issue, or pull request to the user's requested outcome.",
+      argsSchema: { request: z.string().min(1).max(3000) },
+    },
+    ({ request }) => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Use AgentRail for this request:
+
+${request}
+
+Read the repository instructions and use workflow_list or workflow_get to resume existing work before starting a new task. For a new task use workflow_repositories, then workflow_start with delivery.kind and the requested endpoint. Choose review by default and release only when the user asks to ship. Use the intended work branch for the task.
+
+For a feature, clarify decisions that materially change the outcome, write the repository plan and vertical slices, and link the selected GitHub issue and its testable criteria in a ready checkpoint. For a clear fix, start implementation directly. For an existing PR, start with its URL and continue from review.
+
+Use repo-native context, commands, and tests. Use the existing AgentRail runner for queued work when requested. Keep the same workflow task through handoffs. Review actual behavior and record the current PR head. If the head changes, resolve feedback and review that head. Run named checks through workflow_check when configured.
+
+If the user adds release to a task started for review, use the ship checkpoint on the same task. Check that the project has a configured release verifier, then follow the repository's authorized merge and deploy path. Once GitHub reports the reviewed PR merged, record its merge commit as the release checkpoint. Run workflow_verify_release from a clean worktree at that commit. If a prerequisite is missing or a product decision blocks progress, record the specific blocker. Use a follow_up checkpoint for release observations and a linked follow-up issue when applicable. Keep the user informed when they need to act or the requested endpoint is reached.`,
+          },
+        },
+      ],
+    }),
+  );
   server.registerTool(
     "workflow_repositories",
     {
@@ -75,7 +130,7 @@ export function registerWorkflowTools(
     "workflow_start",
     {
       description:
-        "Start an AgentRail task for work the user requested. Reuse a stable taskKey for retries. This records workflow state; it does not launch another agent, confirm a Jace Contract, or grant merge/deploy authority.",
+        "Start an AgentRail task. For a daily workflow, set delivery and choose feature (shape an idea), fix (implement a clear change), or pr (resume an existing PR). Record the user’s requested endpoint. Reuse a stable taskKey for retries. This grants no merge/deploy authority.",
       inputSchema: {
         taskKey: z.string().min(1).max(128),
         title: z.string().min(1).max(300),
@@ -88,6 +143,17 @@ export function registerWorkflowTools(
           ),
         repositoryId: z.string().uuid(),
         branch: z.string().min(1).max(256),
+        delivery: z
+          .object({
+            kind: z.enum(["feature", "fix", "pr"]),
+            endpoint: z.enum(["review", "release"]),
+            brief: z.string().min(1).max(3000),
+            prUrl: prUrl
+              .optional()
+              .describe("Required only when picking up an existing PR."),
+          })
+          .strict()
+          .optional(),
       },
       annotations: WRITE,
     },
@@ -97,7 +163,7 @@ export function registerWorkflowTools(
     "workflow_get",
     {
       description:
-        "Read task state, revision and latest 100 events. Read before resuming or resolving a write conflict.",
+        "Read task state, durable delivery checkpoint, revision and latest 100 events. Read before resuming or resolving a write conflict.",
       inputSchema: { taskId: z.string().uuid() },
       annotations: READ,
     },
@@ -107,12 +173,13 @@ export function registerWorkflowTools(
     "workflow_update",
     {
       description:
-        "Record bounded progress, a blocker or a needs_review handoff for the current revision. Reports are agent-reported, not verified acceptance evidence. Only a human can close/reopen a task in the Console. Use a unique stable eventKey for each logical write.",
+        "Record progress, a blocker, or a delivery checkpoint. ready links planning and testable criteria, review records the reviewed PR head, rework invalidates review, and release records the observed GitHub merge commit. ship extends a review task to release when the user requests it. Use workflow_verify_release for the live check, then follow_up to link post-release work. Use a stable eventKey per logical write.",
       inputSchema: {
         ...event,
         phase,
         summary: z.string().min(1).max(4000),
-        prUrl: z.string().url().max(512).optional(),
+        prUrl: prUrl.optional(),
+        checkpoint: checkpoint.optional(),
         usage: z
           .object({
             inputTokens: z.number().int().nonnegative().max(1e12).nullable(),
@@ -147,121 +214,27 @@ export function registerWorkflowTools(
     {
       description:
         "Run one operator-configured named check from .agentrail/config.json workflow.checks in AGENTRAIL_TARGET. The command is an argv array, never supplied by this tool. Reports exit code/output digest to the Console without uploading logs. Read the task first. A check report is not independent Jace proof. Reusing eventKey reads the stored result without executing again.",
-      inputSchema: { ...event, check: z.string().min(1).max(100) },
+      inputSchema: { ...event, check: z.string().min(1).max(100), worktree },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
-    ({ taskId, check, ...input }) =>
-      result(async () => {
-        const current = await workflowRequest(`tasks/${taskId}`);
-        const task = current.task as {
-          revision: number;
-          phase: string;
-          repository_url: string;
-          branch: string;
-        };
-        const target = resolve(process.env.AGENTRAIL_TARGET || process.cwd());
-        const localGit = async (args: string[]) =>
-          (
-            await promisify(execFile)("git", ["-C", target, ...args], {
-              env: childEnv(),
-              timeout: 10000,
-              maxBuffer: 1024 * 1024,
-            })
-          ).stdout.trim();
-        const canonicalRepo = (value: string) =>
-          value
-            .trim()
-            .replace(/^git@github\.com:/, "https://github.com/")
-            .replace(/\.git$/, "")
-            .replace(/\/$/, "")
-            .toLowerCase();
-        const [remote, branch, commitSha, status] = await Promise.all([
-          localGit(["remote", "get-url", "origin"]),
-          localGit(["symbolic-ref", "--short", "HEAD"]),
-          localGit(["rev-parse", "HEAD"]),
-          localGit(["status", "--porcelain"]),
-        ]);
-        if (
-          canonicalRepo(remote) !== canonicalRepo(task.repository_url) ||
-          branch !== task.branch
-        )
+    ({ check, ...input }) =>
+      result(() => {
+        if (check === RELEASE_CHECK_NAME)
           throw new Error(
-            "Configured checkout does not match this task's repository and branch",
+            "Use workflow_verify_release for release verification",
           );
-        if (!/^[a-f0-9]{40}$/.test(commitSha))
-          throw new Error("Checkout has no canonical Git commit");
-        const config = JSON.parse(
-          await readFile(resolve(target, ".agentrail/config.json"), "utf8"),
-        );
-        const command = config.workflow?.checks?.[check];
-        if (
-          !Array.isArray(command) ||
-          command.length === 0 ||
-          command.length > 64 ||
-          !command.every(
-            (arg) =>
-              typeof arg === "string" &&
-              arg.length > 0 &&
-              arg.length <= 4096 &&
-              !arg.includes("\u0000"),
-          )
-        )
-          throw new Error(
-            "Check is not configured as an argv array in this project's .agentrail/config.json",
-          );
-        // Reserve this exact logical check before any subprocess. A retry or
-        // competing client never re-executes a possibly completed check.
-        const reservation = await workflowRequest(`tasks/${taskId}`, {
-          ...input,
-          phase: "testing",
-          summary: `Configured check ${check}: execution reserved; result not recorded yet.`,
-          checkReservation: { name: check },
-        });
-        if (reservation.replayed)
-          return {
-            ...current,
-            replayed: true,
-            note: "Check was already reserved. Inspect history; do not automatically execute it again.",
-          };
-        const reserved = reservation.task as { revision: number };
-        const execution = await executeCheck(command, target, childEnv());
-        let exitCode = execution.exitCode;
-        const output = execution.output;
-        let dirty = status.length > 0;
-        try {
-          const after = await Promise.all([
-            localGit(["remote", "get-url", "origin"]),
-            localGit(["symbolic-ref", "--short", "HEAD"]),
-            localGit(["rev-parse", "HEAD"]),
-            localGit(["status", "--porcelain"]),
-          ]);
-          dirty = dirty || after[3].length > 0;
-          if (
-            canonicalRepo(after[0]) !== canonicalRepo(task.repository_url) ||
-            after[1] !== task.branch ||
-            after[2] !== commitSha
-          )
-            exitCode = 1;
-        } catch {
-          exitCode = 1;
-          dirty = true;
-        }
-        const receipt = {
-          name: check,
-          commitSha,
-          dirty,
-          passed: exitCode === 0,
-          exitCode,
-          outputSha256: createHash("sha256").update(output).digest("hex"),
-        };
-        const updated = await workflowRequest(`tasks/${taskId}`, {
-          eventKey: `check:${createHash("sha256").update(input.eventKey).digest("hex")}:finish`,
-          expectedRevision: reserved.revision,
-          phase: exitCode === 0 ? "testing" : "blocked",
-          summary: `Configured check ${check}: exit ${exitCode}. Logs remain local.`,
-          check: receipt,
-        });
-        return { ...updated, check: receipt };
+        return runWorkflowCheck(input, check, childEnv());
       }),
+  );
+  server.registerTool(
+    "workflow_verify_release",
+    {
+      description:
+        "Verify the requested release. Checks that GitHub merged the reviewed PR at the prepared release commit, then runs the repository's configured workflow.release.verify argv on a clean worktree at that commit. The command must exercise the deployed app and report its observed commit and URL. Use a stable eventKey per attempt.",
+      inputSchema: { ...event, worktree },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    (input) =>
+      result(() => runWorkflowCheck(input, RELEASE_CHECK_NAME, childEnv())),
   );
 }

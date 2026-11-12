@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
-import { getWorkspaceMembership } from "@agentrail/db-postgres";
+import {
+  getWorkspaceMembership,
+  isCommit,
+  RELEASE_CHECK_NAME,
+  releaseUrlValid,
+} from "@agentrail/db-postgres";
 import { requireBearer } from "./bearer-auth";
 
 export const UUID =
@@ -97,17 +102,91 @@ export async function workflowBody(
     return null;
   }
 }
+const record = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+function githubLink(value: unknown, kind: "pull" | "issues") {
+  return (
+    workflowString(value, 512) &&
+    new RegExp(
+      `^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/${kind}/[1-9][0-9]*$`,
+    ).test(value)
+  );
+}
+
+function deliveryStartValid(value: unknown) {
+  return (
+    record(value) &&
+    Object.keys(value).every((key) =>
+      ["kind", "endpoint", "brief", "prUrl"].includes(key),
+    ) &&
+    (value.kind === "feature" || value.kind === "fix" || value.kind === "pr") &&
+    (value.endpoint === "review" || value.endpoint === "release") &&
+    workflowString(value.brief, 3000) &&
+    (value.kind === "pr"
+      ? githubLink(value.prUrl, "pull")
+      : value.prUrl === undefined)
+  );
+}
+
+function checkpointValid(value: unknown) {
+  if (!record(value)) return false;
+  switch (value.step) {
+    case "ready":
+      return (
+        Object.keys(value).every((key) =>
+          ["step", "criteria", "planPath", "issueUrl"].includes(key),
+        ) &&
+        Array.isArray(value.criteria) &&
+        value.criteria.length >= 1 &&
+        value.criteria.length <= 8 &&
+        value.criteria.every((item) => workflowString(item, 400)) &&
+        (value.issueUrl === undefined ||
+          githubLink(value.issueUrl, "issues")) &&
+        (value.planPath === undefined ||
+          (workflowString(value.planPath, 256) &&
+            value.planPath.endsWith(".md") &&
+            !/^[A-Za-z]:|[\\\x00-\x1f]/.test(value.planPath) &&
+            !value.planPath
+              .split("/")
+              .some((part) => !part || part === "." || part === "..")))
+      );
+    case "review":
+      return Object.keys(value).length === 2 && isCommit(value.headSha);
+    case "release":
+      return Object.keys(value).length === 2 && isCommit(value.commitSha);
+    case "follow_up":
+      return (
+        Object.keys(value).every((key) => ["step", "issueUrl"].includes(key)) &&
+        (value.issueUrl === undefined || githubLink(value.issueUrl, "issues"))
+      );
+    case "ship":
+    case "rework":
+      return Object.keys(value).length === 1;
+    default:
+      return false;
+  }
+}
+
 export function workflowStartValid(body: Record<string, unknown>) {
   return (
     Object.keys(body).every((k) =>
-      ["taskKey", "title", "agent", "repositoryId", "branch"].includes(k),
+      [
+        "taskKey",
+        "title",
+        "agent",
+        "repositoryId",
+        "branch",
+        "delivery",
+      ].includes(k),
     ) &&
     workflowString(body.taskKey, 128) &&
     workflowString(body.title, 300) &&
     workflowString(body.agent, 100) &&
     typeof body.repositoryId === "string" &&
     UUID.test(body.repositoryId) &&
-    workflowString(body.branch, 256)
+    workflowString(body.branch, 256) &&
+    (body.delivery === undefined || deliveryStartValid(body.delivery))
   );
 }
 export function workflowUpdateValid(
@@ -137,6 +216,7 @@ export function workflowUpdateValid(
         "prUrl",
         "check",
         "checkReservation",
+        "checkpoint",
         "usage",
         "context",
       ].includes(k),
@@ -148,16 +228,14 @@ export function workflowUpdateValid(
     !workflowString(body.summary, 4000)
   )
     return false;
+  if (body.prUrl !== undefined && !githubLink(body.prUrl, "pull")) return false;
   if (
-    body.prUrl !== undefined &&
-    (!workflowString(body.prUrl, 512) ||
-      !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9][0-9]*$/.test(
-        body.prUrl,
-      ))
+    body.checkpoint !== undefined &&
+    (!checkpointValid(body.checkpoint) ||
+      body.check !== undefined ||
+      body.checkReservation !== undefined)
   )
     return false;
-  const record = (value: unknown): value is Record<string, unknown> =>
-    Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const count = (value: unknown) =>
     value === null ||
     (Number.isSafeInteger(value) &&
@@ -231,6 +309,7 @@ export function workflowUpdateValid(
           "outputSha256",
           "commitSha",
           "dirty",
+          "releaseUrl",
         ].includes(k),
       ) ||
       !workflowString(c.name, 100) ||
@@ -239,8 +318,10 @@ export function workflowUpdateValid(
       Number(c.exitCode) < 0 ||
       Number(c.exitCode) > 255 ||
       c.passed !== (c.exitCode === 0) ||
-      typeof c.commitSha !== "string" ||
-      !/^[a-f0-9]{40}$/.test(c.commitSha) ||
+      !isCommit(c.commitSha) ||
+      (c.name === RELEASE_CHECK_NAME && c.passed === true
+        ? !releaseUrlValid(c.releaseUrl)
+        : c.releaseUrl !== undefined) ||
       typeof c.dirty !== "boolean" ||
       typeof c.outputSha256 !== "string" ||
       !/^[a-f0-9]{64}$/.test(c.outputSha256)

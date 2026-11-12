@@ -23,6 +23,10 @@ In **Agents**, add your repository and create a workflow key. Copy the displayed
 
 ## Daily workflow
 
+Say **“Use AgentRail for this”** in your connected coding agent, or select the `agentrail_work` MCP prompt. Start from an idea, a clear fix, or an existing PR. Work follows one task through planning, implementation, review, and the requested release verification. See the [daily workflow guide](docs/daily-workflow.md) for setup, checkpoints, and resuming a task.
+
+### Basic task reporting
+
 1. Ask the agent to use `workflow_repositories`, then `workflow_start` with a stable task key, its own agent label, connected repository and branch.
 2. Retrieve bounded project context through `context_search`, `context_get` and `context_build_pack`. Index the project first with `agentrail context index --target /path/to/project`.
 3. Use `workflow_update` to report implementation/review progress or a blocker. Use `workflow_get` before resuming and after a revision conflict.

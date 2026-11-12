@@ -13,7 +13,7 @@ describe("independent AgentRail MCP surface", () => {
   expect(names.some(n => n.startsWith("jace_") || n.startsWith("acceptance_"))).toBe(false);
  });
  it("keeps workflow and Jace secrets out of configured check children", () => {
-  const env = source.agentrailChildEnvironment({ PATH: "/bin", AGENTRAIL_WORKFLOW_API_KEY: "workflow", AGENTRAIL_MCP_JACE_API_KEY: "jace", AGENTRAIL_MCP_CORRECTION_API_KEY: "correction" });
+  const env = source.agentrailChildEnvironment({ PATH: "/bin", AGENTRAIL_WORKFLOW_API_KEY: "workflow", AGENTRAIL_WORKFLOW_RELEASE_API_KEY: "verifier", AGENTRAIL_MCP_JACE_API_KEY: "jace", AGENTRAIL_MCP_CORRECTION_API_KEY: "correction" });
   expect(env).toEqual({ PATH: "/bin" });
  });
 });

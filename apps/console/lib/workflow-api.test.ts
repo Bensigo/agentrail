@@ -71,7 +71,7 @@ describe("delivery inputs", () => {
     expect(workflowUpdateValid({ ...update, checkpoint: plan }, false)).toBe(true);
     expect(workflowUpdateValid({ ...update, checkpoint: { ...plan, planPath: "../private.md" } }, false)).toBe(false);
     expect(workflowUpdateValid({ ...update, checkpoint: { step: "verified", commitSha } }, false)).toBe(false);
-    expect(workflowUpdateValid({ ...update, checkpoint: { step: "release", commitSha } }, false)).toBe(true);
+    expect(workflowUpdateValid({ ...update, checkpoint: { step: "release", commitSha, targetUrl: "https://example.com/" } }, false)).toBe(true);
     expect(workflowUpdateValid({ ...update, checkpoint: { step: "release", commitSha, verifiedAt: "today" } }, false)).toBe(false);
   });
 

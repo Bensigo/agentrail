@@ -133,7 +133,10 @@ function advanceDelivery(
         state: {
           ...state,
           stage: "releasing",
-          release: { commitSha: checkpoint.commitSha },
+          release: {
+            commitSha: checkpoint.commitSha,
+            targetUrl: new URL(checkpoint.targetUrl).href,
+          },
         },
         phase: "reviewing",
       };
@@ -265,7 +268,16 @@ export async function updateWorkflowTask(
       },
   human = false,
   actorId = "",
+  releaseVerifier = false,
 ) {
+  const releaseCheckEvent =
+    !("decision" in input) &&
+    (input.checkReservation?.name === RELEASE_CHECK_NAME ||
+      input.check?.name === RELEASE_CHECK_NAME);
+  if (releaseCheckEvent !== releaseVerifier)
+    throw new WorkflowConflict(
+      "Release checks require the dedicated verifier credential",
+    );
   const digest = hash({ input, human, actorId });
   return db.transaction(async (tx) => {
     const tasks = await tx.execute(
@@ -396,15 +408,20 @@ export async function updateWorkflowTask(
             "Release check must match the prepared release commit",
           );
         if (check.passed) {
-          if (check.dirty || !releaseUrlValid(check.releaseUrl))
+          if (
+            check.dirty ||
+            !releaseUrlValid(check.releaseUrl) ||
+            new URL(check.releaseUrl).href !== delivery.release.targetUrl
+          )
             throw new WorkflowConflict(
-              "Release verification requires a clean commit and observed URL",
+              "Release verification requires a clean commit and the prepared target URL",
             );
           delivery = {
             ...delivery,
             stage: "verified",
             release: {
               commitSha: check.commitSha,
+              targetUrl: delivery.release.targetUrl,
               url: check.releaseUrl,
               verifiedAt: new Date().toISOString(),
             },
@@ -446,13 +463,13 @@ export async function updateWorkflowTask(
         ? null
         : task.active_check_name;
     const nextDeadline = reservation
-      ? new Date(Date.now() + 130000).toISOString()
+      ? new Date(Date.now() + 160000).toISOString()
       : finishingCheck || releaseCheck
         ? null
         : task.active_check_deadline;
     const revision = Number(task.revision) + 1;
     await tx.execute(sql`INSERT INTO workflow_events (workspace_id, task_id, revision, event_key, kind, request_hash, payload)
-      VALUES (${workspaceId}, ${taskId}, ${revision}, ${input.eventKey}, ${human ? "human_decision" : "agent_report"}, ${digest}, ${JSON.stringify({ ...input, ...(!human && delivery ? { phase } : {}), actorId })}::jsonb)`);
+      VALUES (${workspaceId}, ${taskId}, ${revision}, ${input.eventKey}, ${human ? "human_decision" : releaseVerifier ? "release_verifier" : "agent_report"}, ${digest}, ${JSON.stringify({ ...input, ...(!human && delivery ? { phase } : {}), actorId })}::jsonb)`);
     const summary =
       "summary" in input ? input.summary : `Human decision: ${input.decision}`;
     const updated =

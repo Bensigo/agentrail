@@ -18,9 +18,17 @@ const PHASES = [
   "blocked",
   "needs_review",
 ];
-export async function workflowAuthority(req: NextRequest, writing = false) {
+export async function workflowAuthority(
+  req: NextRequest,
+  writing = false,
+  admitVerifier = false,
+) {
   if (req.headers.has("authorization")) {
-    const bearer = await requireBearer(req, { allowedKinds: ["workflow_mcp"] });
+    const bearer = await requireBearer(req, {
+      allowedKinds: admitVerifier
+        ? ["workflow_mcp", "workflow_release"]
+        : ["workflow_mcp"],
+    });
     if (bearer instanceof NextResponse) return bearer;
     if (bearer.teamId)
       return NextResponse.json(
@@ -31,6 +39,7 @@ export async function workflowAuthority(req: NextRequest, writing = false) {
       workspaceId: bearer.workspaceId,
       human: false,
       actorId: bearer.apiKeyId,
+      releaseVerifier: bearer.kind === "workflow_release",
     };
   }
   const session = await auth();
@@ -64,7 +73,12 @@ export async function workflowAuthority(req: NextRequest, writing = false) {
         { status: 403 },
       );
   }
-  return { workspaceId, human: true, actorId: session.user.id };
+  return {
+    workspaceId,
+    human: true,
+    actorId: session.user.id,
+    releaseVerifier: false,
+  };
 }
 
 export function workflowString(value: unknown, max: number): value is string {
@@ -154,7 +168,11 @@ function checkpointValid(value: unknown) {
     case "review":
       return Object.keys(value).length === 2 && isCommit(value.headSha);
     case "release":
-      return Object.keys(value).length === 2 && isCommit(value.commitSha);
+      return (
+        Object.keys(value).length === 3 &&
+        isCommit(value.commitSha) &&
+        releaseUrlValid(value.targetUrl)
+      );
     case "follow_up":
       return (
         Object.keys(value).every((key) => ["step", "issueUrl"].includes(key)) &&

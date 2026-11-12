@@ -66,8 +66,8 @@ export default async function TaskPage({
             <h2 className="font-normal">Delivery</h2>
             <span className="text-sm text-[var(--gray-09)]">
               {delivery.endpoint === "release"
-                ? "Verified release"
-                : "Ready for review"}
+                ? "Target: verified release"
+                : "Target: review"}
             </span>
           </div>
           <p className="whitespace-pre-wrap break-words text-sm">
@@ -123,6 +123,11 @@ export default async function TaskPage({
                   {delivery.release.commitSha.slice(0, 12)}
                 </code>
               </p>
+              {!delivery.release.url && (
+                <p className="mt-2 break-all">
+                  Target {delivery.release.targetUrl}
+                </p>
+              )}
               {delivery.release.url && (
                 <a
                   className="mt-2 inline-block break-all underline"
@@ -193,7 +198,9 @@ export default async function TaskPage({
                   Revision {Number(e.revision)} ·{" "}
                   {e.kind === "human_decision"
                     ? "Human decision"
-                    : "Agent-reported"}
+                    : e.kind === "release_verifier"
+                      ? "Release verifier"
+                      : "Agent-reported"}
                 </div>
                 <p className="mt-2 whitespace-pre-wrap break-words text-sm">
                   {String(

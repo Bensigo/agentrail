@@ -44,7 +44,13 @@ const checkpoint = z.discriminatedUnion("step", [
       issueUrl: z.string().url().max(512).optional(),
     })
     .strict(),
-  z.object({ step: z.literal("release"), commitSha: commit }).strict(),
+  z
+    .object({
+      step: z.literal("release"),
+      commitSha: commit,
+      targetUrl: z.string().url().max(512),
+    })
+    .strict(),
 ]);
 
 const READ = { readOnlyHint: true, openWorldHint: false } as const;
@@ -100,7 +106,7 @@ For a feature, clarify decisions that materially change the outcome, write the r
 
 Use repo-native context, commands, and tests. Use the existing AgentRail runner for queued work when requested. Keep the same workflow task through handoffs. Review actual behavior and record the current PR head. If the head changes, resolve feedback and review that head. Run named checks through workflow_check when configured.
 
-If the user adds release to a task started for review, use the ship checkpoint on the same task. Check that the project has a configured release verifier, then follow the repository's authorized merge and deploy path. Once GitHub reports the reviewed PR merged, record its merge commit as the release checkpoint. Run workflow_verify_release from a clean worktree at that commit. If a prerequisite is missing or a product decision blocks progress, record the specific blocker. Use a follow_up checkpoint for release observations and a linked follow-up issue when applicable. Keep the user informed when they need to act or the requested endpoint is reached.`,
+If the user adds release to a task started for review, use the ship checkpoint on the same task. Check that the project has a configured release verifier, then follow the repository's authorized merge and deploy path. Once GitHub reports the reviewed PR merged, record its merge commit and intended deployment URL as the release checkpoint. Run workflow_verify_release from a clean worktree at that commit. If a prerequisite is missing or a product decision blocks progress, record the specific blocker. Use a follow_up checkpoint for release observations and a linked follow-up issue when applicable. Keep the user informed when they need to act or the requested endpoint is reached.`,
           },
         },
       ],

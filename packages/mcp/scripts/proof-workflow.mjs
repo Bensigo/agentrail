@@ -120,7 +120,7 @@ await new Promise((resolve, reject) =>
 );
 const previewUrl = `http://127.0.0.1:${preview.address().port}/`;
 const clients = [];
-async function client(name, secret = key) {
+async function client(name, secret = key, verifierKey) {
   const c = new Client({ name, version: "1.0.0" });
   await c.connect(
     new StdioClientTransport({
@@ -132,6 +132,9 @@ async function client(name, secret = key) {
         AGENTRAIL_TARGET: target,
         AGENTRAIL_WORKFLOW_BASE_URL: base,
         AGENTRAIL_WORKFLOW_API_KEY: secret,
+        ...(verifierKey
+          ? { AGENTRAIL_WORKFLOW_RELEASE_API_KEY: verifierKey }
+          : {}),
       },
       stderr: "pipe",
     }),
@@ -413,6 +416,16 @@ try {
   ).task;
   assert.equal(delivery.delivery.stage, "shaping");
   const deliveryId = delivery.id;
+  const verifierResponse = await fetch(
+    `${base}/api/v1/workflow/keys?workspaceId=${workspaceId}&purpose=release`,
+    {
+      method: "POST",
+      headers: { cookie, origin: base },
+    },
+  );
+  assert.equal(verifierResponse.status, 201);
+  const verifierKey = (await verifierResponse.json()).secret;
+  const verifier = await client("operator-release-verifier", key, verifierKey);
   const update = (checkpoint, extra = {}, client = b) =>
     tool(client, "workflow_update", {
       taskId: deliveryId,
@@ -454,7 +467,11 @@ try {
   delivery = payload(await update({ step: "ship" })).task;
   assert.equal(delivery.delivery.endpoint, "release");
   delivery = payload(
-    await update({ step: "release", commitSha: releaseCommit }),
+    await update({
+      step: "release",
+      commitSha: releaseCommit,
+      targetUrl: previewUrl,
+    }),
   ).task;
   const verify = (eventKey = randomUUID()) => ({
     taskId: deliveryId,
@@ -462,24 +479,101 @@ try {
     eventKey,
     worktree: releaseCheckout,
   });
-  assert((await tool(a, "workflow_verify_release", verify())).isError);
+  assert((await tool(verifier, "workflow_verify_release", verify())).isError);
   assert.equal(observations, 0);
   delivery = payload(await update({ step: "rework" })).task;
   delivery = payload(
     await update({ step: "review", headSha: reviewedHead }),
   ).task;
   delivery = payload(
-    await update({ step: "release", commitSha: releaseCommit }),
+    await update({
+      step: "release",
+      commitSha: releaseCommit,
+      targetUrl: previewUrl,
+    }),
   ).task;
 
-  const mismatch = payload(await tool(a, "workflow_verify_release", verify()));
+  const attemptRaw = (bearer, fields) =>
+    fetch(`${base}/api/v1/workflow/tasks/${deliveryId}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        eventKey: randomUUID(),
+        expectedRevision: delivery.revision,
+        phase: "testing",
+        summary: "Rejected credential scope",
+        ...fields,
+      }),
+    });
+  assert.equal(
+    (
+      await attemptRaw(key, {
+        checkReservation: { name: "agentrail:release-verification" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await attemptRaw(key, {
+        check: {
+          name: "agentrail:release-verification",
+          passed: true,
+          exitCode: 0,
+          dirty: false,
+          commitSha: releaseCommit,
+          outputSha256: "0".repeat(64),
+          releaseUrl: previewUrl,
+        },
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await attemptRaw(verifierKey, {})).status, 403);
+  assert((await tool(a, "workflow_verify_release", verify())).isError);
+
+  const mismatch = payload(
+    await tool(verifier, "workflow_verify_release", verify()),
+  );
   assert.equal(mismatch.check.passed, false);
   assert.equal(mismatch.task.delivery.stage, "releasing");
   assert.equal(mismatch.task.active_check_key, null);
   delivery = mismatch.task;
   deployedCommit = releaseCommit;
+  delivery = payload(await update({ step: "rework" })).task;
+  delivery = payload(
+    await update({ step: "review", headSha: reviewedHead }),
+  ).task;
+  delivery = payload(
+    await update({
+      step: "release",
+      commitSha: releaseCommit,
+      targetUrl: new URL("/different", previewUrl).href,
+    }),
+  ).task;
+  const wrongTarget = payload(
+    await tool(verifier, "workflow_verify_release", verify()),
+  );
+  assert.equal(wrongTarget.check.passed, false);
+  delivery = wrongTarget.task;
+  delivery = payload(await update({ step: "rework" })).task;
+  delivery = payload(
+    await update({ step: "review", headSha: reviewedHead }),
+  ).task;
+  delivery = payload(
+    await update({
+      step: "release",
+      commitSha: releaseCommit,
+      targetUrl: previewUrl,
+    }),
+  ).task;
   smokePasses = false;
-  const broken = payload(await tool(b, "workflow_verify_release", verify()));
+  const broken = payload(
+    await tool(verifier, "workflow_verify_release", verify()),
+  );
   assert.equal(broken.check.passed, false);
   delivery = broken.task;
   delivery = payload(
@@ -505,13 +599,15 @@ try {
 
   smokePasses = true;
   const pass = verify();
-  const verified = payload(await tool(a, "workflow_verify_release", pass));
+  const verified = payload(
+    await tool(verifier, "workflow_verify_release", pass),
+  );
   assert.equal(verified.task.delivery.stage, "verified");
   assert.equal(verified.task.delivery.release.commitSha, releaseCommit);
   assert.equal(verified.task.delivery.release.url, previewUrl);
   const afterPass = observations;
   assert.equal(
-    payload(await tool(b, "workflow_verify_release", pass)).replayed,
+    payload(await tool(verifier, "workflow_verify_release", pass)).replayed,
     true,
   );
   assert.equal(observations, afterPass);
@@ -717,7 +813,8 @@ try {
         "Office tenant isolation",
         "feature, fix and PR entry points",
         "cross-client planning, review and release checkpoints",
-        "wrong PR head, deployed version and smoke failures refuse verified status",
+        "wrong PR head, deployed version, deployment URL, and smoke failures refuse verified status",
+        "ordinary workflow keys cannot submit verifier receipts",
         "release check replay does not contact the deployment twice",
         "verified release and follow-up visible in Console",
       ],

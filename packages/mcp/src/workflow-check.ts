@@ -24,7 +24,7 @@ interface CheckTask {
   delivery?: {
     stage: string;
     reviewHead?: string;
-    release?: { commitSha: string };
+    release?: { commitSha: string; targetUrl: string };
   };
 }
 
@@ -59,6 +59,7 @@ function configuredCommand(value: unknown): string[] {
 function observedRelease(
   output: string,
   commitSha: string,
+  targetUrl: string,
 ): string | undefined {
   try {
     const receipt = JSON.parse(output.trim().split(/\r?\n/).at(-1) ?? "");
@@ -70,7 +71,14 @@ function observedRelease(
     )
       return;
     const url = new URL(receipt.url);
-    if (url.username || url.password || url.search || url.hash) return;
+    if (
+      url.href !== targetUrl ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      return;
     if (
       url.protocol === "https:" ||
       (url.protocol === "http:" &&
@@ -126,8 +134,14 @@ export async function runWorkflowCheck(
   { taskId, worktree, ...event }: CheckInput,
   name: string,
   env: NodeJS.ProcessEnv,
-) {
+): Promise<Record<string, unknown>> {
   const path = `tasks/${taskId}`;
+  const release = name === RELEASE_CHECK_NAME;
+  if (release && !process.env.AGENTRAIL_WORKFLOW_RELEASE_API_KEY)
+    throw new Error(
+      "Use the operator verifier invocation for this release. The coding agent key can only report workflow progress.",
+    );
+
   const current = await workflowRequest(path);
   const reservationInput = {
     ...event,
@@ -151,11 +165,10 @@ export async function runWorkflowCheck(
       entry.payload.checkReservation?.name === name,
   );
   if (prior) {
-    const existing = await workflowRequest(path, reservationInput);
+    const existing = await workflowRequest(path, reservationInput, release);
     if (existing.replayed) return replay();
   }
   const task = current.task as CheckTask;
-  const release = name === RELEASE_CHECK_NAME;
   const root = resolve(process.env.AGENTRAIL_TARGET || process.cwd());
   const git = async (target: string, args: string[]) =>
     (
@@ -231,7 +244,7 @@ export async function runWorkflowCheck(
       ? config.workflow?.release?.verify
       : config.workflow?.checks?.[name],
   );
-  const reservation = await workflowRequest(path, reservationInput);
+  const reservation = await workflowRequest(path, reservationInput, release);
   if (reservation.replayed) return replay();
 
   let exitCode = 1;
@@ -256,6 +269,7 @@ export async function runWorkflowCheck(
           ? {
               ...env,
               AGENTRAIL_RELEASE_COMMIT: before.commitSha,
+              AGENTRAIL_RELEASE_TARGET_URL: task.delivery?.release?.targetUrl,
             }
           : env,
         release ? 110000 : undefined,
@@ -275,7 +289,11 @@ export async function runWorkflowCheck(
   }
   const releaseUrl =
     release && exitCode === 0
-      ? observedRelease(stdout, before.commitSha)
+      ? observedRelease(
+          stdout,
+          before.commitSha,
+          task.delivery?.release?.targetUrl ?? "",
+        )
       : undefined;
   if (release && exitCode === 0 && !releaseUrl) {
     exitCode = 1;
@@ -290,15 +308,19 @@ export async function runWorkflowCheck(
     outputSha256: createHash("sha256").update(output).digest("hex"),
     ...(releaseUrl ? { releaseUrl } : {}),
   };
-  const updated = await workflowRequest(path, {
-    eventKey: `check:${createHash("sha256").update(event.eventKey).digest("hex")}:finish`,
-    expectedRevision: (reservation.task as { revision: number }).revision,
-    phase: exitCode === 0 ? "testing" : "blocked",
-    summary: releaseUrl
-      ? "The configured verifier observed the expected live release and passed its smoke checks."
-      : failure ||
-        `Configured check ${name}: exit ${exitCode}. Logs remain local.`,
-    check: receipt,
-  });
+  const updated = await workflowRequest(
+    path,
+    {
+      eventKey: `check:${createHash("sha256").update(event.eventKey).digest("hex")}:finish`,
+      expectedRevision: (reservation.task as { revision: number }).revision,
+      phase: exitCode === 0 ? "testing" : "blocked",
+      summary: releaseUrl
+        ? "The configured verifier observed the expected live release and passed its smoke checks."
+        : failure ||
+          `Configured check ${name}: exit ${exitCode}. Logs remain local.`,
+      check: receipt,
+    },
+    release,
+  );
   return { ...updated, check: receipt };
 }

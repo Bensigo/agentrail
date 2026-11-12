@@ -13,7 +13,7 @@ export type DeliveryCheckpoint =
   | { step: "rework" }
   | { step: "ship" }
   | { step: "follow_up"; issueUrl?: string }
-  | { step: "release"; commitSha: string };
+  | { step: "release"; commitSha: string; targetUrl: string };
 
 export interface DeliveryState extends Omit<DeliveryStart, "prUrl"> {
   stage: "shaping" | "building" | "review" | "releasing" | "verified";
@@ -22,7 +22,12 @@ export interface DeliveryState extends Omit<DeliveryStart, "prUrl"> {
   issueUrl?: string;
   reviewHead?: string;
   followUpIssueUrl?: string;
-  release?: { commitSha: string; url?: string; verifiedAt?: string };
+  release?: {
+    commitSha: string;
+    targetUrl: string;
+    url?: string;
+    verifiedAt?: string;
+  };
 }
 
 export const isCommit = (value: unknown): value is string =>

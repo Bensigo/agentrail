@@ -53,5 +53,6 @@ export {
 } from "./queries/github-app-token.js";
 
 export * from "./queries/workflow.js";
+export * from "./queries/workflow-delivery.js";
 
 export * from "./queries/local-login.js";

@@ -1,11 +1,17 @@
 ---
 name: useagentrail
-description: Use when shaping a substantial product or engineering idea into durable context, PRD, milestones, GitHub issues, implementation PRs, review, and follow-up fix issues. Trigger when the user asks to run AgentRail, convert an idea into implementation work, create PRD/milestones/issues, orchestrate Ralph, or manage review-fix loops. Do not use for tiny edits, one-off bug fixes, simple copy changes, or tasks that can be completed directly in one context.
+description: Use when the user asks AgentRail to carry an idea, fix, GitHub issue or pull request through implementation, review, release verification or follow-up.
 ---
 
 # AgentRail Workflow
 
-Run this workflow only when the work is large enough to benefit from staged thinking and agent handoffs. The goal is to keep agents in the smart zone: clear context, bounded tasks, concrete verification, and no open-ended autonomous wandering.
+Use one AgentRail task from the request to the user’s requested endpoint. When available, load the `agentrail_work` MCP prompt with the request. Otherwise use the following workflow.
+
+## Entry points
+
+- Resume an existing task with `workflow_get`. Look for it before opening a duplicate.
+- Start new work with `workflow_start` and the `delivery` fields. A feature begins with shaping. A clear fix goes straight to implementation. An existing PR starts with its URL at review. Choose review as the endpoint unless the user requests release.
+- Only use the planning steps below for work that needs them. Link a shaped feature's plan, selected GitHub issue, and testable criteria with the `ready` checkpoint.
 
 ## Workflow
 
@@ -31,10 +37,10 @@ Run this workflow only when the work is large enough to benefit from staged thin
    - Turn each milestone into independently grabbable implementation issues.
    - Each issue must include context links, acceptance criteria, verification steps, and any visual evidence requirement.
 
-6. Run the Ralph implementation loop.
-   - Use the repo's Ralph runner to pick ready issues, implement, verify, and open or update PRs.
-   - Recall relevant project memory before editing, then verify it against current code and docs.
-   - Bound the run: choose one issue or a small fixed batch. Do not launch unbounded agent loops.
+6. Execute through the selected workflow.
+   - Stay in the connected coding agent for interactive work. For an authorized queued run, use the existing bounded Ralph runner on the selected ready issue.
+   - Reuse the project's context, commands, and user-facing verification harness. Run named checks through `workflow_check` where configured.
+   - Carry the same task ID through review and later sessions. Record progress and specific blockers with `workflow_update`.
 
 7. Require PR visual evidence.
    - Every implementation PR needs a visual evidence section.
@@ -55,9 +61,15 @@ Run this workflow only when the work is large enough to benefit from staged thin
     - Create or pick the review-fix issue, implement the fix, verify it, and update the PR.
     - Repeat review only as far as needed to resolve the specific findings.
 
+11. Follow the requested endpoint.
+    - After reviewing the current PR head, record the `review` checkpoint with the SHA and PR URL. Use `rework` when another implementation pass is needed. Continue routine feedback and CI work within the run's scope.
+    - When the user extends a review task to release, use `ship`. Follow the project's authorized merge and deploy procedure. Record the observed GitHub merge SHA with the `release` checkpoint.
+    - Call `workflow_verify_release` from a clean checkout of that SHA. Its configured verifier must check the deployed version and smoke-test the live behavior. Resolve failures or report the specific blocker.
+    - Use `follow_up` to record observations or link follow-up issues after a verified release. Turn recurring corrections into project checks or clearer code boundaries.
+
 ## Guardrails
 
-- Do not use this workflow for tiny changes. Direct implementation is cheaper and clearer.
+- Keep small changes direct. Reserve the full planning flow for features that need it.
 - Keep each agent run bounded by a specific artifact or issue.
 - Stop and ask when the idea lacks a real user, measurable outcome, or buildable scope.
 - Prefer vertical slices over broad platform rewrites.

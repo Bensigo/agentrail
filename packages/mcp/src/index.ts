@@ -28,6 +28,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { registerWorkflowTools } from "./workflow-tools.js";
 
+import { agentrailChildEnvironment } from "./child-environment.js";
+export { agentrailChildEnvironment };
+
 const execFileAsync = promisify(execFile);
 
 const AGENTRAIL_BIN = process.env.AGENTRAIL_BIN || "agentrail";
@@ -38,17 +41,6 @@ type ToolResult = {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
-
-/** Keep the correction bearer in the MCP process, never unrelated CLI children. */
-export function agentrailChildEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const child = { ...source };
-  delete child.AGENTRAIL_MCP_CORRECTION_API_KEY;
-  delete child.AGENTRAIL_MCP_JACE_API_KEY;
-  delete child.AGENTRAIL_WORKFLOW_API_KEY;
-  return child;
-}
 
 export function agentrailChildExecOptions(source: NodeJS.ProcessEnv = process.env) {
   return {

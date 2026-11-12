@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 const { auth, membership } = vi.hoisted(() => ({ auth: vi.fn(), membership: vi.fn() }));
 vi.mock("@agentrail/auth", () => ({ auth }));
-vi.mock("@agentrail/db-postgres", () => ({ getWorkspaceMembership: membership, lookupApiKeyByHash: vi.fn() }));
+vi.mock("@agentrail/db-postgres", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@agentrail/db-postgres")>(),
+  getWorkspaceMembership: membership,
+  lookupApiKeyByHash: vi.fn(),
+}));
 import { workflowAuthority, workflowBody, workflowStartValid, workflowUpdateValid } from "./workflow-api";
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 beforeEach(() => { vi.unstubAllEnvs(); auth.mockResolvedValue({ user: { id: "owner" } }); membership.mockResolvedValue({ role: "owner" }); });
@@ -57,4 +61,25 @@ describe("Office telemetry bounds", () => {
   expect(workflowUpdateValid({...base,context:{...context,summary:"x".repeat(1601)}},false)).toBe(false);
   expect(workflowUpdateValid({...base,usage:{costUsd:1,inputTokens:1,outputTokens:1,verified:true}},false)).toBe(false);
  });
+});
+
+describe("delivery inputs", () => {
+  const update = { eventKey: "step", expectedRevision: 1, phase: "reviewing", summary: "Progress" };
+  const commitSha = "a".repeat(40);
+  it("validates typed steps and refuses an agent-supplied verified stage", () => {
+    const plan = { step: "ready", criteria: ["An invite opens the game"], planPath: "docs/prd/invite.md" };
+    expect(workflowUpdateValid({ ...update, checkpoint: plan }, false)).toBe(true);
+    expect(workflowUpdateValid({ ...update, checkpoint: { ...plan, planPath: "../private.md" } }, false)).toBe(false);
+    expect(workflowUpdateValid({ ...update, checkpoint: { step: "verified", commitSha } }, false)).toBe(false);
+    expect(workflowUpdateValid({ ...update, checkpoint: { step: "release", commitSha, targetUrl: "https://example.com/" } }, false)).toBe(true);
+    expect(workflowUpdateValid({ ...update, checkpoint: { step: "release", commitSha, verifiedAt: "today" } }, false)).toBe(false);
+  });
+
+  it("accepts a safe URL only on a passing release receipt", () => {
+    const check = { name: "agentrail:release-verification", passed: true, exitCode: 0, commitSha, outputSha256: "a".repeat(64), dirty: false };
+    expect(workflowUpdateValid({ ...update, check: { ...check, releaseUrl: "https://example.com/app" } }, false)).toBe(true);
+    expect(workflowUpdateValid({ ...update, check }, false)).toBe(false);
+    expect(workflowUpdateValid({ ...update, check: { ...check, releaseUrl: "https://user:secret@example.com/" } }, false)).toBe(false);
+    expect(workflowUpdateValid({ ...update, check: { ...check, name: "test", releaseUrl: "https://example.com/" } }, false)).toBe(false);
+  });
 });
